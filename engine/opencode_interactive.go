@@ -479,14 +479,13 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 	}
 	if p.graphNode() {
 		var health struct {
-			Version string `json:"version"`
-			Healthy bool   `json:"healthy"`
+			Healthy bool `json:"healthy"`
 		}
 		if err := h.json(ctx, http.MethodGet, "/global/health", nil, &health); err != nil {
 			return failed(err)
 		}
-		if !health.Healthy || health.Version != "1.18.30" {
-			return failed(errors.New("Graph gating requires the inspected OpenCode 1.18.30 protocol; this server version has not been checked."))
+		if !health.Healthy {
+			return failed(errors.New("OpenCode server health check failed."))
 		}
 	}
 	var bridgeStatus map[string]any

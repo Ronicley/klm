@@ -177,7 +177,7 @@ function ActiveWorkPlaceholder({ startedAt }: { startedAt?: string }) {
   return <AgentWork status="running" durationLabel={durationLabel} />;
 }
 
-function EventSequence({ events, status, updatedAt, renderEvent, showActiveWork = false, activeWorkStartedAt }: {
+export function EventSequence({ events, status, updatedAt, renderEvent, showActiveWork = false, activeWorkStartedAt }: {
   events: EngineEvent[];
   status: Session['status'];
   updatedAt: string;

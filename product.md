@@ -294,7 +294,12 @@ and minimal-monitor decisions take precedence over earlier visual experiments.
 The Go engine implements asynchronous graph invocation, persistent activities and
 runs, and Agent, Choice, Terminal, Fork and Join execution. The main-chat agent
 invokes work with references to the user's express authorization and a self-contained
-task, available as `run.input.task`. Selection alone is not authorization. One run
+task, available as `run.input.task`. The orchestrator catalog exposes each graph's
+initial node ID, type and name, plus the associated agent's name and description
+when available. The orchestrator prepares the task for that entry role (for example,
+planning rather than implementation), while preserving the user's overall goal
+in the objective. This uses existing agent descriptions, not a new input schema
+or the full graph topology. Selection alone is not authorization. One run
 may be active per conversation, independently of the invoking chat turn. The
 orchestrator receives results and assesses whether the objective was satisfied
 before success-dependent activities proceed. Corrective attempts retain the approved
@@ -339,8 +344,10 @@ resumption, while retaining scheduled activities and pending result notification
 
 Windows mechanisms for Pi, OpenCode and Codex are implemented and admitted by the
 capability preflight, but `RuntimeValidated=false`: real model tasks and native
-session continuation still require human validation. OpenCode requires version
-1.18.30 and its owned plugin handshake. Unix graph execution is not enabled.
+session continuation still require human validation. OpenCode requires its owned
+plugin handshake and a healthy server, but graph execution is not blocked by the
+harness version. Protocol incompatibilities surface as runtime failures instead
+of requiring prior version approval. Unix graph execution is not enabled.
 
 External-MCP boundary approved on 2026-09-13 (refinement section 14): permit
 configured MCPs in OpenCode/Codex without a server-name allowlist or disabling
@@ -349,7 +356,10 @@ node and tool-call lifecycle, not shutdown of shared MCP servers or detached
 remote tasks continuing beyond a tool response. A "task started" response finishes
 that call's lifecycle responsibility without proving task success. Error/cancellation
 or a lost callback without evidence of call completion retains uncertain finality;
-local shutdown is not proof of remote cancellation or a normal result. Grants,
+local shutdown is not proof of remote cancellation or a normal result. Once all
+activation workers have returned, a run with uncertain finality terminates as
+`failed`, retaining the diagnostic and notifying the orchestrator. Uncertainty
+does not leave the run in `ending` indefinitely or accept a pending Choice. Grants,
 approval flows and sandbox settings remain unchanged. Implementation and runtime
 validation of this revised boundary are tracked separately.
 
@@ -382,12 +392,19 @@ earlier completion. Join collecting inputs is distinct from its agent running.
 The composer graph icon becomes a blinking LED for that matching active run,
 including startup, shutdown and human waits. The name remains plain text. On run
 completion, activity and LED clear and the view returns to idle configuration;
-unexecuted nodes are never marked completed.
+an already-open node activity panel remains available until closed so its final
+output can be read. Unexecuted nodes are never marked completed.
 
 The active cards retain the pink-to-blue body shimmer and Running indicator.
-Earlier CSV timers and Run/Input/Output panels are historical visual experiments,
-replaced in the production path by the minimal monitor approved in section 12 of
-`GRAPH_AUTHORING_REFINEMENT.md`. Separate run tabs, execution history/detail panels
+The Run/Input/Output panel is connected to real Agent and Join activations during
+a run. Run reuses the chat timeline for the reasoning and tool events exposed by
+the harness, including reads, writes, commands, results and errors. Input shows
+the activation's received task and other incoming fields; Output shows its submitted
+Choice and payload, distinguishing pending acceptance from accepted settlement.
+Repeated activations can be selected independently without mixing their histories.
+Activity is fetched only while its panel is visible, separately from the graph
+progress projection. This supersedes the earlier deferral of this panel in section
+12 of `GRAPH_AUTHORING_REFINEMENT.md`. Separate run tabs, execution history lists
 and a new sidebar request component remain deferred. Final results still reach
 the main-chat orchestrator. Integrated runtime/UI behavior awaits human validation.
 

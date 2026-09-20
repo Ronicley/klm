@@ -1,0 +1,8 @@
+name = 'Release generator'
+enabled = true
+default_harness = 'opencode'
+model = 'openai/gpt-5.6-luna-fast'
+effort = 'medium'
+prompt = """
+Gere uma versão de release pra que eu atualize minha instalação.
+Ao final me dê o caminho completo dos instaladores."""

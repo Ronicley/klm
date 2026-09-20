@@ -1,0 +1,21 @@
+{
+  "positions": {
+    "0bec9811-69de-4b55-973b-94cae881c2aa": {
+      "x": 0,
+      "y": 0
+    },
+    "af673821-5fb0-4662-9e98-b1b3cad7ab7b": {
+      "x": 491,
+      "y": -30
+    },
+    "choice:submit-paths": {
+      "x": 491,
+      "y": -30
+    }
+  },
+  "viewport": {
+    "x": 314,
+    "y": 441,
+    "zoom": 1
+  }
+}

@@ -165,8 +165,19 @@ func addGraphDelivery(d *diskState, r *GraphRun, x GraphActivation, edge GraphCo
 func (a *app) finishGraphRunLocked(runID string) error {
 	return a.graphChangeLocked(func(d *diskState) error {
 		r := d.graphRun(runID)
-		if r == nil || r.Status != "ending" || r.Result == nil || r.FinalityError != "" {
+		if r == nil || r.Status != "ending" || r.Result == nil {
 			return errors.New("Run cannot publish an unsettled result.")
+		}
+		// Workers have returned. Unconfirmed external effects are a failure
+		// diagnostic, not a reason to keep the graph executing indefinitely.
+		// Retain FinalityError without claiming cancellation or accepting Choice.
+		if r.FinalityError != "" {
+			r.Result.Kind = "failed"
+			if r.Result.Error == "" {
+				r.Result.Error = r.FinalityError
+			} else if !strings.Contains(r.Result.Error, r.FinalityError) {
+				r.Result.Error += "\n" + r.FinalityError
+			}
 		}
 		stamp := now()
 		for i := range d.GraphActivations {
@@ -262,17 +273,15 @@ func (a *app) runGraph(runID string, g *graphExecution) {
 			r = a.state.graphRun(runID)
 		}
 		if r.Status == "ending" && len(workers) == 0 {
-			if r.FinalityError == "" {
-				if err := a.finishGraphRunLocked(runID); err == nil || a.storageErr != nil {
-					a.mu.Unlock()
-					return
-				} else {
-					_ = a.graphChangeLocked(func(d *diskState) error {
-						d.graphRun(runID).FinalityError = "Cannot settle graph result: " + err.Error()
-						return nil
-					})
-					r = a.state.graphRun(runID)
-				}
+			if err := a.finishGraphRunLocked(runID); err == nil || a.storageErr != nil {
+				a.mu.Unlock()
+				return
+			} else {
+				_ = a.graphChangeLocked(func(d *diskState) error {
+					d.graphRun(runID).FinalityError = "Cannot settle graph result: " + err.Error()
+					return nil
+				})
+				r = a.state.graphRun(runID)
 			}
 			if a.ctx.Err() != nil {
 				a.mu.Unlock()
@@ -677,6 +686,7 @@ func (a *app) completeGraphActivationLocked(runID string, result graphCompletion
 		_ = a.graphChangeLocked(func(d *diskState) error {
 			activation := d.graphActivation(x.ID)
 			activation.Error = detail
+			activation.Status, activation.EndedAt, activation.UpdatedAt = "failed", now(), now()
 			e := event("error", detail)
 			if result.native != nil {
 				e.Data = map[string]any{"toolCallsSettled": result.native.ToolCallsSettled, "uncertainToolCalls": result.native.UncertainToolCalls}

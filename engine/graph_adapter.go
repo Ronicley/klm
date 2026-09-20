@@ -79,7 +79,7 @@ func GraphAdapterCapabilities() []GraphAdapterCapability {
 		{Harness: "pi", PreExecutionGate: true, OwnedContainment: contained,
 			Limitation: "Gate covers agent-dispatched tools in the owned extension only. No containment of remote work delegated by a command. Native continuation has not been exercised."},
 		{Harness: "opencode", PreExecutionGate: true, OwnedContainment: contained,
-			Limitation: "Requires the owned pre-tool plugin handshake and inspected OpenCode version. Tracks tool-call responses, not server lifetime or detached remote tasks. Ambiguous transport/cancellation errors retain finality uncertainty."},
+			Limitation: "Requires the owned pre-tool plugin handshake; harness versions are not gated. Tracks tool-call responses, not server lifetime or detached remote tasks. Ambiguous transport/cancellation errors retain finality uncertainty."},
 		{Harness: "codex", OwnedContainment: contained, ProcessSeal: contained,
 			Limitation: "Choice stays reserved until native settlement, returned MCP calls and termination of the owned Job. Local cancellation is not a remote response. Detached tasks after a tool response are outside the guarantee."},
 	}

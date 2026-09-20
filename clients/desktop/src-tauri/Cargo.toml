@@ -1,6 +1,6 @@
 [package]
 name = "klm-desktop"
-version = "0.2.0"
+version = "0.2.1"
 description = "KLM interface for coding-agent harnesses"
 edition = "2021"
 rust-version = "1.77.2"

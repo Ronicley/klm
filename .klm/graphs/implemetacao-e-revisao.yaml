@@ -1,0 +1,99 @@
+name: Implemetação e revisão
+enabled: true
+initial_node: 4d8bdf5b-f543-4ca6-9f75-a9bac948ac86
+nodes:
+    4d8bdf5b-f543-4ca6-9f75-a9bac948ac86:
+        type: agent
+        name: Implement backend
+        agent: issue-writer
+        choices:
+            - work-done
+            - blocked
+    9e6c321a-7bfe-47cb-877e-563a5ce712b1:
+        type: agent
+        name: security review
+        agent: issue-writer
+        overrides:
+            model: openai/gpt-6-astra-fast
+            effort: xhigh
+        choices:
+            - needs-adjustements
+            - approved
+    29a4300d-c79c-4686-8737-7ee6897acdbb:
+        type: join
+        agent: issue-writer
+        choices:
+            - done
+        output_branch: feature/integrated
+    1206e43b-519c-48e8-a8d8-ef73df85c813:
+        type: fork
+        name: Parallel checks
+        branches:
+            70877d51-4631-4821-a4c0-d71b0b45b8aa:
+                separate_worktree: true
+                name: Security review
+                git_branch: parallel/security-review
+                output:
+                    focus: Access control and input validation
+                    instructions: Review the changes for security issues.
+                to: 9e6c321a-7bfe-47cb-877e-563a5ce712b1
+            b47fd364-07ea-4132-b041-c45ae1162e81:
+                separate_worktree: true
+                name: Tests
+                git_branch: parallel/write-tests
+                output:
+                    instructions: Write tests for the implemented changes.
+                    report: Test coverage and results
+                to: 6900e81e-d177-46ba-8550-f09b7aa34037
+    6900e81e-d177-46ba-8550-f09b7aa34037:
+        type: agent
+        name: write test
+        agent: release-generator
+        overrides:
+            harness: codex
+            model: gpt-5.6-terra
+            effort: high
+        choices:
+            - approved
+    e3a56a4b-7375-41f6-a138-80c304dd5715:
+        type: terminal
+        name: Update repo
+        command: git pull
+choices:
+    approved:
+        name: approved
+        input: {}
+        output: {}
+        to: 29a4300d-c79c-4686-8737-7ee6897acdbb
+    blocked:
+        name: blocked
+        input:
+            reason:
+                type: string
+                required: true
+        output: {}
+        terminal: true
+    done:
+        name: done
+        input: {}
+        output: {}
+        terminal: true
+    needs-adjustements:
+        name: needs_adjustements
+        input:
+            findings:
+                type: string
+                required: true
+        output:
+            task: Você precisa ajustar as seguintes falhas:{{choice.findings}}
+        to: 4d8bdf5b-f543-4ca6-9f75-a9bac948ac86
+        session: continue_target
+    work-done:
+        name: work_done
+        input:
+            summary:
+                type: string
+                required: true
+        output:
+            instructions: '{{choice.summary}}'
+        to: 1206e43b-519c-48e8-a8d8-ef73df85c813

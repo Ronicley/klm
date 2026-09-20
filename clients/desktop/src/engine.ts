@@ -97,6 +97,16 @@ export type GraphRunProjection = {
   activeNodeIds: string[]; completedNodeIds: string[];
   completedChoiceIds: string[]; collectingJoinIds: string[];
 };
+export type GraphActivationSummary = { id: string; occurrence: number; status: string };
+export type GraphNodeActivity = {
+  runActive: boolean;
+  activations: GraphActivationSummary[];
+  activation: (GraphActivationSummary & {
+    input: Record<string, string>; events: EngineEvent[]; error?: string;
+    createdAt: string; updatedAt: string;
+    submission?: { choice: { origin: string; id: string }; payload: Record<string, string>; acceptedAt?: string };
+  }) | null;
+};
 export type GraphRequestProjection = {
   runId: string; graphId: string; nodeId: string; nodeName: string;
   activationId: string; sessionId: string; requestId: string;

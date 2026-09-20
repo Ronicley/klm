@@ -78,6 +78,11 @@
 .graph-run-status--running { display: inline-flex; align-items: center; gap: 6px; color: var(--color-accent); }
 .graph-run-status--completed { color: var(--color-success); }
 .graph-run-event-log, .graph-run-payload { height: 200px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 16px; background: var(--color-code); font-family: var(--font-mono); font-size: var(--text-sm); }
+.graph-run-timeline { height: 360px; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px; }
+.graph-run-timeline .conversation-events { min-width: 0; }
+.graph-run-notice { margin: 12px 16px; }
+.graph-run-activation-picker { display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: var(--text-sm); }
+.graph-run-activation-picker select { background: var(--color-elevated); color: var(--color-heading); border: 1px solid var(--color-muted); border-radius: var(--radius-sm); padding: 4px 8px; }
 .graph-run-payload pre { margin: 0; font: inherit; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .graph-run-output-choice { display: flex; gap: 12px; margin-bottom: 12px; font-size: var(--text-xs); }
 .graph-run-output-choice > span { color: var(--color-muted); }

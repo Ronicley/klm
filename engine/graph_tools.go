@@ -51,7 +51,7 @@ func graphConversationFactory(a *app, t *turn, s Session) (*GraphAdapterHooks, e
 	textField := map[string]any{"type": "string"}
 	integer := map[string]any{"type": "integer"}
 	tools := []map[string]any{
-		graphTool("graph_catalog", "List project graphs and execution capabilities.", map[string]any{}),
+		graphTool("graph_catalog", "List project graphs, their initial node and agent descriptions for preparing the input task, and execution capabilities.", map[string]any{}),
 		graphTool("graph_activities", "Inspect authorized activities, ordering, assessments and pending decisions.", map[string]any{}),
 		graphTool("graph_get_run", "Read a real run's progress, result, activations and workspace associations.", map[string]any{"runId": textField}, "runId"),
 		graphTool("graph_recent_events", "Read bounded recent events of one node in a run.", map[string]any{"runId": textField, "nodeId": textField, "limit": integer}, "runId", "nodeId"),
@@ -112,9 +112,26 @@ func (a *app) graphCatalog(conversationID string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	agents := make(map[string]AgentRecord, len(catalog.Agents))
+	for _, agent := range catalog.Agents {
+		agents[agent.ID] = agent
+	}
 	graphs := []map[string]any{}
 	for _, g := range catalog.Graphs {
-		graphs = append(graphs, map[string]any{"id": g.ID, "name": g.Definition.Name, "description": g.Definition.Description, "enabled": g.Definition.Enabled, "revision": g.Revision})
+		entry := map[string]any{"id": g.ID, "name": g.Definition.Name, "description": g.Definition.Description, "enabled": g.Definition.Enabled, "revision": g.Revision}
+		if node, ok := g.Definition.Nodes[g.Definition.InitialNode]; ok {
+			initial := map[string]any{"id": g.Definition.InitialNode, "type": node.Type, "name": node.Name, "description": ""}
+			if agent, ok := agents[node.Agent]; ok && node.Type == "agent" {
+				initial["agentId"] = agent.ID
+				initial["agentName"] = agent.Name
+				initial["description"] = agent.Description
+				if node.Name == "" {
+					initial["name"] = agent.Name
+				}
+			}
+			entry["initialNode"] = initial
+		}
+		graphs = append(graphs, entry)
 	}
 	return map[string]any{"graphs": graphs, "errors": catalog.Errors, "capabilities": GraphAdapterCapabilities()}, nil
 }
