@@ -23,6 +23,10 @@ func TestPermissionDecisionPersistence(t *testing.T) {
 			defer cancel()
 			active := &turn{ctx: ctx, cancel: cancel}
 			a := &app{dir: t.TempDir(), state: permissionPersistenceState(), runs: map[string]*turn{"main": active}, historyJournal: map[string]*sessionJournal{}}
+			// Startup persists the base before commands append durable journal frames.
+			if err := saveState(a.dir, &a.state); err != nil {
+				t.Fatal(err)
+			}
 			root := t.TempDir()
 			p := &adapter{app: a, id: "main", turn: active, harness: "opencode", cwd: filepath.Join(root, "workspace")}
 			input := map[string]any{"filePath": filepath.Join(root, "other-project", "audio.rs")}
@@ -53,6 +57,9 @@ func TestPermissionDecisionPersistence(t *testing.T) {
 			loaded, err := loadState(a.dir)
 			if err != nil {
 				t.Fatalf("saved permission cannot survive restart: %v", err)
+			}
+			if err := replayStreamJournal(a.dir, &loaded); err != nil {
+				t.Fatalf("permission journal cannot survive restart: %v", err)
 			}
 			if decision == "once" || decision == "reject" {
 				if len(loaded.Grants) != 0 {

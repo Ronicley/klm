@@ -20,7 +20,7 @@ function recordingFilename(type: string) {
 }
 
 export function MessageComposer({ onSend, onTranscription, draft, onDraftChange, projectId, disabled = false, running = false, onStop, modelControl, graphControl, placeholder = 'Message the agent' }: {
-  onSend: (draft: ComposerDraft, mode?: SendMode) => void | Promise<boolean | void>; draft: ComposerDraft; onDraftChange: (draft: ComposerDraft) => void;
+  onSend: (draft: ComposerDraft, mode?: SendMode) => boolean | void; draft: ComposerDraft; onDraftChange: (draft: ComposerDraft) => void;
   onTranscription?: (text: string) => void;
   projectId?: string;
   disabled?: boolean; running?: boolean; onStop?: () => void;
@@ -35,8 +35,10 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
   const [dismissed, setDismissed] = useState('');
   const [active, setActive] = useState(0);
   const listId = useId();
-  const sending = useRef(false);
-  const [submitting, setSubmitting] = useState(false);
+  const submittedDraft = useRef<ComposerDraft | null>(null);
+  // A submission guard is only valid while the editor still shows that draft.
+  // Clearing the editor ends the gesture, even if Restore later reuses its object.
+  if (submittedDraft.current !== draft) submittedDraft.current = null;
   const [error, setError] = useState('');
   const editor = useRef<MentionEditorHandle>(null);
   const [audioState, setAudioState] = useState<AudioState>('idle');
@@ -44,7 +46,7 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
   const audioStream = useRef<MediaStream | null>(null);
   const transcriptionRequest = useRef<AbortController | null>(null);
   const mounted = useRef(true);
-  const query = focused && !composing && !submitting && projectId ? mentionQuery(text, caret, mentions) : null;
+  const query = focused && !composing && projectId ? mentionQuery(text, caret, mentions) : null;
   const queryKey = query ? JSON.stringify([projectId, query.start, query.query]) : '';
   const open = !!queryKey && dismissed !== queryKey;
   const [search, setSearch] = useState<{ key: string; paths: ProjectPath[]; partial: boolean; error: string }>({ key: '', paths: [], partial: false, error: '' });
@@ -87,14 +89,13 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
     editor.current?.insertMention(path, query);
     setDismissed(queryKey);
   }
-  async function send(mode: SendMode = 'queue') {
-    if (!text.trim() || disabled || sending.current) return;
-    sending.current = true; setSubmitting(true); setError('');
+  function send(mode: SendMode = 'queue') {
+    if (!text.trim() || disabled || submittedDraft.current === draft) return;
+    setError('');
     try {
-      const accepted = await onSend(draft, mode);
-      if (accepted !== false) onDraftChange({ text: '', mentions: [] });
+      // The parent synchronously owns the pending draft before starting HTTP.
+      if (onSend(draft, mode) !== false) { submittedDraft.current = draft; onDraftChange({ text: '', mentions: [] }); }
     } catch (error) { setError(error instanceof Error ? error.message : 'Message could not be sent. Retry.'); }
-    finally { sending.current = false; setSubmitting(false); }
   }
   function releaseAudio() {
     audioStream.current?.getTracks().forEach(track => track.stop());
@@ -178,13 +179,13 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       })}</ul>
       <div className="mention-search-status" role="status">{loading ? 'Searching…' : search.error || (!paths.length ? 'No matching paths.' : search.partial ? 'Partial results. Refine your search.' : '')}</div>
     </div>}
-    <MentionEditor ref={editor} aria-label={placeholder} placeholder={placeholder} draft={draft} readOnly={submitting}
+    <MentionEditor ref={editor} aria-label={placeholder} placeholder={placeholder} draft={draft} readOnly={false}
       aria-autocomplete={projectId ? 'list' : undefined} aria-controls={open ? listId : undefined} aria-expanded={open} aria-haspopup="listbox" aria-activedescendant={open && paths[active] ? `${listId}-${active}` : undefined}
       onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
       onCompositionStart={() => setComposing(true)} onCompositionEnd={() => setComposing(false)}
       onCaretChange={setCaret}
       onChange={next => { onDraftChange(next); setDismissed(''); }} onKeyDown={event => {
-      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing || submitting) return;
+       if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing) return;
       if (open && !event.shiftKey && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
         event.preventDefault(); event.stopPropagation();
         if (event.key === 'Escape') setDismissed(queryKey);
@@ -198,6 +199,6 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       } else if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
     }} />
     {error && <p role="alert" className="form-error composer-error">{error}</p>}
-    <div className="composer-controls">{graphControl && <div className="composer-graph-control">{graphControl}</div>}<div className="composer-model-controls">{modelControl}{running && text.trim() && <Button size="sm" disabled={disabled || submitting} onClick={() => void send('steer')}>Send now</Button>}{running && onStop && <IconButton label="Stop response" variant="outline" onClick={onStop}><Square /></IconButton>}{onTranscription && <IconButton label={audioState === 'recording' ? 'Stop recording' : audioState === 'transcribing' ? 'Transcribing audio' : 'Record audio'} aria-pressed={audioState === 'recording'} variant={audioState === 'recording' ? 'danger-soft' : 'ghost'} disabled={(disabled && audioState === 'idle') || submitting || audioState === 'transcribing'} className={`audio-record-button ${audioState === 'recording' ? 'is-recording' : ''}`} onClick={() => void toggleRecording()}>{audioState === 'recording' ? <Square /> : audioState === 'transcribing' ? <LoaderCircle className="audio-spinner" /> : <Mic />}</IconButton>}<IconButton label={running ? 'Queue message' : 'Send message'} variant="soft" type="submit" disabled={!text.trim() || disabled || submitting} className="send-button">{running ? <ListPlus /> : <ArrowUp />}</IconButton></div></div>
+    <div className="composer-controls">{graphControl && <div className="composer-graph-control">{graphControl}</div>}<div className="composer-model-controls">{modelControl}{running && text.trim() && <Button size="sm" disabled={disabled} onClick={() => void send('steer')}>Send now</Button>}{running && onStop && <IconButton label="Stop response" variant="outline" onClick={onStop}><Square /></IconButton>}{onTranscription && <IconButton label={audioState === 'recording' ? 'Stop recording' : audioState === 'transcribing' ? 'Transcribing audio' : 'Record audio'} aria-pressed={audioState === 'recording'} variant={audioState === 'recording' ? 'danger-soft' : 'ghost'} disabled={(disabled && audioState === 'idle') || audioState === 'transcribing'} className={`audio-record-button ${audioState === 'recording' ? 'is-recording' : ''}`} onClick={() => void toggleRecording()}>{audioState === 'recording' ? <Square /> : audioState === 'transcribing' ? <LoaderCircle className="audio-spinner" /> : <Mic />}</IconButton>}<IconButton label={running ? 'Queue message' : 'Send message'} variant="soft" type="submit" disabled={!text.trim() || disabled} className="send-button">{running ? <ListPlus /> : <ArrowUp />}</IconButton></div></div>
   </form>;
 }

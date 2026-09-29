@@ -48,6 +48,11 @@ function terminalLabel(status: Exclude<AgentWorkStatus, 'running'>, durationLabe
   return durationLabel ? `Worked for ${durationLabel}` : 'Work completed';
 }
 
+function LazyDisclosure({ className, details, children }: { className: string; details: ReactNode; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return <details className={className} onToggle={event => setOpen(event.currentTarget.open)}>{children}{open && <div className="agent-work__item-details">{details}</div>}</details>;
+}
+
 function ActivityRow({ activity }: { activity: AgentWorkActivity }) {
   const tone = activity.status === 'running' ? 'pending' : activity.tone ?? (activity.status === 'failed' ? 'danger' : 'muted');
   const row = <>
@@ -61,10 +66,9 @@ function ActivityRow({ activity }: { activity: AgentWorkActivity }) {
     </>;
   return activity.details ? (
     <li className="agent-work__activity-item">
-      <details className="agent-work__activity-disclosure">
+      <LazyDisclosure className="agent-work__activity-disclosure" details={activity.details}>
         <summary className="agent-work__activity">{row}</summary>
-        <div className="agent-work__item-details">{activity.details}</div>
-      </details>
+      </LazyDisclosure>
     </li>
   ) : <li className="agent-work__activity">{row}</li>;
 }
@@ -113,10 +117,9 @@ export function AgentWork({ status, durationLabel, label, thoughts = [], activit
           <div className={`agent-work__items${itemCount > 5 ? ' agent-work__items--scrollable' : ''}`} ref={itemsRef}>
             {thoughts.map(thought => (
               <div className="agent-work__thought" key={thought.id}>
-                {thought.details ? <details className="agent-work__thought-disclosure">
+                {thought.details ? <LazyDisclosure className="agent-work__thought-disclosure" details={thought.details}>
                   <summary className="agent-work__thought-row"><Icon glyph={Clock3} size={12} /><span className="agent-work__thought-copy"><strong>Thought:</strong> {(thought.preview ?? thought.text) || 'Thinking...'}{thought.durationLabel ? ` · ${thought.durationLabel}` : ''}</span><Icon glyph={ChevronDown} size={10} /></summary>
-                  <div className="agent-work__item-details">{thought.details}</div>
-                </details> : <div className="agent-work__thought-row"><Icon glyph={Clock3} size={12} /><span><strong>Thought:</strong> {thought.text || 'Thinking...'}{thought.durationLabel ? ` · ${thought.durationLabel}` : ''}</span></div>}
+                </LazyDisclosure> : <div className="agent-work__thought-row"><Icon glyph={Clock3} size={12} /><span><strong>Thought:</strong> {thought.text || 'Thinking...'}{thought.durationLabel ? ` · ${thought.durationLabel}` : ''}</span></div>}
               </div>
             ))}
             {activities.length > 0 ? <ul className="agent-work__activities" role="list">{activities.map(activity => <ActivityRow activity={activity} key={activity.id} />)}</ul> : null}

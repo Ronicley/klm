@@ -23,11 +23,12 @@ try {
     if ($environment.GetValueNames() -contains 'Path') { $kind = $environment.GetValueKind('Path') }
     $entries = @($path -split ';')
     if ($Action -eq 'Install') {
-        if (-not ($entries | Where-Object { $_.Trim().Trim('"').TrimEnd('\') -ieq $installDir })) {
-            $newPath = if ($path) { "$path;$installDir" } else { $installDir }
-            $environment.SetValue('Path', $newPath, $kind)
-            $registration.SetValue('AddedPath', $installDir)
-        }
+        # Put the current CLI first so stale MVP/legacy `klm.exe` installs later
+        # on PATH cannot shadow `klm start` or `klm stop`.
+        $remaining = @($entries | Where-Object { $_.Trim().Trim('"').TrimEnd('\') -ine $installDir })
+        $newPath = (@($installDir) + $remaining | Where-Object { $_ } | Select-Object -Unique) -join ';'
+        if ($newPath -cne $path) { $environment.SetValue('Path', $newPath, $kind) }
+        $registration.SetValue('AddedPath', $installDir)
         $launcher = Join-Path $installDir 'start-engine.vbs'
         $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
         $run.SetValue('KLM Engine', "`"$wscript`" `"$launcher`"")

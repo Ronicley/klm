@@ -187,7 +187,6 @@ func (a *app) answerQuestion(w http.ResponseWriter, r *http.Request) {
 		err = pending.reply(body.Answers, body.Cancelled)
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if err != nil {
 		pending.busy = false
 		if err := a.commitLocked(func(d *diskState) {
@@ -199,9 +198,11 @@ func (a *app) answerQuestion(w http.ResponseWriter, r *http.Request) {
 			}
 			s.UpdatedAt = now()
 		}); err != nil {
+			a.mu.Unlock()
 			fail(w, 503, err.Error())
 			return
 		}
+		a.mu.Unlock()
 		fail(w, 409, "Could not deliver the answer. The question may have expired; refresh or stop the turn.")
 		return
 	}
@@ -227,8 +228,11 @@ func (a *app) answerQuestion(w http.ResponseWriter, r *http.Request) {
 		entry.ConsultationID = t.consultationID
 		s.Events = append(s.Events, entry)
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
-	respond(w, 200, a.currentSessionUpdateLocked(id))
+	response := a.currentSessionUpdateLocked(id)
+	a.mu.Unlock()
+	respond(w, 200, response)
 }

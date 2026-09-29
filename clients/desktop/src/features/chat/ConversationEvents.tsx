@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Bot, FileCode2, FilePenLine, MessagesSquare, Plug, Search, SquareTerminal, Wrench, type LucideIcon } from 'lucide-react';
 import { AgentWork, type AgentWorkActivity, type AgentWorkItemStatus, type AgentWorkStatus, type AgentWorkThought, type AgentWorkTone } from '../../design-system/AgentWork';
 import { Button } from '../../design-system/Button';
@@ -148,7 +148,7 @@ function activityPresentation(event: WorkEvent): { icon: LucideIcon; tone: Agent
   return { icon: Wrench, tone: 'muted' };
 }
 
-function ConversationWork({ item }: { item: Extract<TimelineItem, { kind: 'work' }> }) {
+const ConversationWork = memo(function ConversationWork({ item }: { item: Extract<TimelineItem, { kind: 'work' }> }) {
   const durationLabel = useWorkDuration(item.startedAt, item.completedAt, item.status === 'running');
   const thoughts: AgentWorkThought[] = item.events.filter(event => event.type === 'reasoning').map(event => ({
     id: event.id,
@@ -170,7 +170,7 @@ function ConversationWork({ item }: { item: Extract<TimelineItem, { kind: 'work'
     };
   });
   return <AgentWork status={item.status} durationLabel={durationLabel} thoughts={thoughts} activities={activities} />;
-}
+}, (before, after) => before.item.status === after.item.status && before.item.startedAt === after.item.startedAt && before.item.completedAt === after.item.completedAt && before.item.events.length === after.item.events.length && before.item.events.every((event, index) => event === after.item.events[index]));
 
 function ActiveWorkPlaceholder({ startedAt }: { startedAt?: string }) {
   const durationLabel = useWorkDuration(startedAt, undefined, true);
@@ -185,7 +185,7 @@ export function EventSequence({ events, status, updatedAt, renderEvent, showActi
   showActiveWork?: boolean;
   activeWorkStartedAt?: string;
 }) {
-  const items = projectTimeline(events, status, updatedAt);
+  const items = useMemo(() => projectTimeline(events, status, updatedAt), [events, status, updatedAt]);
   const hasActiveWork = items.some(item => item.kind === 'work' && item.status === 'running');
   const lastItem = items.at(-1);
   const responding = lastItem?.kind === 'event' && lastItem.event.type === 'assistant';
@@ -311,18 +311,21 @@ export function ConversationEvents({ session, subagents, onSnapshot, onEventChan
   }, [!!onAskSide, session.id]);
   // Only answering the other agent is background work. A continuation on the
   // requesting side is its response to the user, including in saved histories.
-  const incoming = incomingConsultationIds(session);
-  const visibleEvents = visibleConversationEvents(session);
+  const incoming = useMemo(() => incomingConsultationIds(session), [session.events, session.id]);
+  const visibleEvents = useMemo(() => visibleConversationEvents(session), [session.events, session.id]);
   const active = working ?? session.status === 'running';
   const timelineStatus: Session['status'] = active ? 'running' : session.status;
-  const lastUserEvent = [...visibleEvents].reverse().find(event => event.type === 'user');
+  const lastUserEvent = [...visibleEvents].reverse().find(event => event.type === 'user' || event.type === 'agent_prompt');
   const activeWorkStartedAt = active && session.status !== 'running' ? undefined : lastUserEvent?.createdAt;
-  const grouped = new Map<string, EngineEvent[]>();
-  for (const event of session.events) {
-    if (!event.consultationId || !incoming.has(event.consultationId)) continue;
-    const group = grouped.get(event.consultationId) ?? [];
-    group.push(event); grouped.set(event.consultationId, group);
-  }
+  const grouped = useMemo(() => {
+    const result = new Map<string, EngineEvent[]>();
+    for (const event of session.events) {
+      if (!event.consultationId || !incoming.has(event.consultationId)) continue;
+      const group = result.get(event.consultationId) ?? [];
+      group.push(event); result.set(event.consultationId, group);
+    }
+    return result;
+  }, [session.events, incoming]);
   return <div ref={root} className="conversation-events">
     <EventSequence events={visibleEvents} status={timelineStatus} updatedAt={session.updatedAt} showActiveWork={active} activeWorkStartedAt={activeWorkStartedAt} renderEvent={event => event.type === 'consultation'
       ? <ConsultationActivity event={event} output={grouped.get(String(event.data?.requestId)) ?? []} sessionId={session.id} onSnapshot={onSnapshot} />

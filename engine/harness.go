@@ -231,12 +231,10 @@ func (l *jsonLines) resetTurn() {
 	l.mu.Unlock()
 }
 
-const linkedPromptPrefix = "KLM linked-agent tools are available: linked_discover, linked_read, linked_ask, linked_answer. When the user refers to work in the linked main agent or side agent conversation, retrieve it or consult that agent before continuing. For linked_ask, action=continue means the result is ready: use the answer to respond to the user or continue their task now. Only action=yield means it is still pending: finish the turn so KLM can resume you automatically. A KLM continuation already contains the result and requires no further wait or user follow-up. Do not poll or repeat a pending question.\n\n"
-
 func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd string, payload submission) {
 	defer a.wg.Done()
 	defer t.cancel()
-	p := &adapter{app: a, turn: t, id: s.ID, harness: s.Harness, yolo: s.YOLO, cwd: cwd,
+	p := &adapter{app: a, turn: t, id: s.ID, harness: s.Harness, role: s.Role, yolo: s.YOLO, cwd: cwd,
 		keys: map[string]string{}, toolNames: map[string]string{}, commands: map[string]string{}, processesDrained: true}
 	var stopCancellation func() bool
 	if s.Role != "graph_node" {
@@ -266,6 +264,13 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 	if t.prompt != "" {
 		payload.Text = t.prompt
 	}
+	if err == nil && s.Role != "graph_node" && s.Role != sessionRoleSubagent {
+		var guidance string
+		guidance, err = sessionCollaborationPrompt()
+		if err == nil {
+			payload.Text = guidance + "\n\n" + payload.Text
+		}
+	}
 	// Resolve defaults from the harness catalog, not a previous native turn's override.
 	p.model, p.effort = s.Model, s.Effort
 	if err == nil {
@@ -287,9 +292,6 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 			err = bridgeErr
 		} else {
 			p.bridge = bridge
-			if !p.graphNode() {
-				payload.Text = linkedPromptPrefix + payload.Text
-			}
 			switch s.Harness {
 			case "opencode":
 				err = p.runOpenCode(b, cwd, payload)
@@ -329,8 +331,42 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 			a.mu.Lock()
 		}
 	}
-	finalErr := a.commitLocked(func(d *diskState) {
-		s := d.session(s.ID)
+	finalErr := p.finishTurnStateLocked(err)
+	if finalErr != nil {
+		// Failed persistence never publishes an in-memory terminal success.
+		p.failed = true
+	}
+	delete(a.runs, s.ID)
+	for _, c := range a.state.Consultations {
+		if c.From == s.ID && c.Status == "cancelled" {
+			if recipient := a.runs[c.To]; recipient != nil && recipient.consultationID == c.ID {
+				recipient.cancel()
+			}
+		}
+	}
+	t.approvals = nil
+	t.questions = nil
+	close(t.done)
+	a.scheduleLinkedLocked()
+	a.mu.Unlock()
+	if finalErr != nil {
+		graphResult.Outcome, graphResult.Error = "failed", finalErr
+	}
+	if p.graph != nil && p.graph.hooks.Finished != nil {
+		p.graph.hooks.Finished(graphResult)
+	} else if t.graphNotificationID != "" {
+		// Prompt loading may fail before the factory can construct its hooks.
+		// Still settle the core's already-reserved notification outbox entry.
+		a.graphNotificationFinished(t.graphNotificationID, graphResult)
+	}
+}
+
+// Called by execute only after native settlement/drain and stream flush. Kept as
+// one transaction so queue uncertainty and linked completion cannot split.
+func (p *adapter) finishTurnStateLocked(err error) error {
+	t := p.turn
+	return p.app.commitLocked(func(d *diskState) {
+		s := d.session(p.id)
 		s.Status, s.UpdatedAt = "idle", now()
 		s.Permissions = nil
 		s.Questions = nil
@@ -366,13 +402,14 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 		}
 		// A killed process cannot send terminal updates for its in-flight items.
 		for i := range s.Events {
-			e := &s.Events[i]
+			e := s.Events[i]
 			if e.Status == "running" || e.Status == "pending" {
 				if s.Status == "error" {
 					e.Status = "error"
 				} else {
 					e.Status = "cancelled"
 				}
+				d.setEvent(s, i, e)
 			}
 		}
 		if t.consultationID != "" {
@@ -412,42 +449,16 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 			}
 		}
 	})
-	if finalErr != nil {
-		// No in-memory success is published after a failed disk write. Restart
-		// recovers the last durable running snapshot as interrupted.
-		p.failed = true
-	}
-	delete(a.runs, s.ID)
-	for _, c := range a.state.Consultations {
-		if c.From == s.ID && c.Status == "cancelled" {
-			if recipient := a.runs[c.To]; recipient != nil && recipient.consultationID == c.ID {
-				recipient.cancel()
-			}
-		}
-	}
-	t.approvals = nil
-	t.questions = nil
-	close(t.done)
-	a.scheduleLinkedLocked()
-	a.mu.Unlock()
-	if finalErr != nil {
-		graphResult.Outcome, graphResult.Error = "failed", finalErr
-	}
-	if p.graph != nil && p.graph.hooks.Finished != nil {
-		p.graph.hooks.Finished(graphResult)
-	} else if t.graphNotificationID != "" {
-		// Prompt loading may fail before the factory can construct its hooks.
-		// Still settle the core's already-reserved notification outbox entry.
-		a.graphNotificationFinished(t.graphNotificationID, graphResult)
-	}
 }
 
 type adapter struct {
+	role                string
 	yolo                bool
 	cwd                 string
 	gatedPermissions    map[string]string // Protected by app.mu; native call -> tool.
 	openCodeMCPPrefixes []string          // Protected by app.mu; discovered server namespaces.
 	stream              *streamBatch
+	finalBatch          []streamUpdate // non-nil only during OpenCode final reconciliation
 	graph               *graphAdapterBinding
 	nativeSettled       bool
 	choiceToolSettled   bool
@@ -540,8 +551,21 @@ func (p *adapter) put(key, kind, title, text, status string, appendText bool, ra
 	for k, v := range raw {
 		data[k] = v
 	}
+	// Native adapters reuse maps (notably OpenCode parts). The queued update and
+	// published history must own their payload before the native reader continues.
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(encoded, &data); err != nil {
+		return err
+	}
 	update := streamUpdate{event: Event{ID: id, Type: kind, Title: title, Text: text,
 		Status: status, ConsultationID: p.turn.consultationID, CreatedAt: now(), Data: data}, appendText: appendText}
+	if p.finalBatch != nil {
+		p.finalBatch = append(p.finalBatch, update)
+		return nil
+	}
 	if p.stream != nil {
 		if key != "" && status == "running" && (kind == "assistant" || kind == "reasoning" || appendText) {
 			return p.stream.enqueue(update)
@@ -551,6 +575,25 @@ func (p *adapter) put(key, kind, title, text, status string, appendText bool, ra
 		return p.stream.flush(&update)
 	}
 	return p.commitStreamUpdates([]streamUpdate{update})
+}
+
+// Persist valid reconciliation events even when a later native part fails.
+// The batch is disabled before flushing so follow-up diagnostics cannot be lost.
+func (p *adapter) withFinalBatch(reconcile func() error) error {
+	p.finalBatch = []streamUpdate{}
+	reconcileErr := reconcile()
+	batch := p.finalBatch
+	p.finalBatch = nil
+	if len(batch) == 0 {
+		return reconcileErr
+	}
+	var flushErr error
+	if p.stream != nil {
+		flushErr = p.stream.flushUpdates(batch)
+	} else {
+		flushErr = p.commitStreamUpdates(batch)
+	}
+	return errors.Join(reconcileErr, flushErr)
 }
 
 func (p *adapter) nativeID(id string) error {

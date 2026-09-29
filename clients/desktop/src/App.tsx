@@ -20,12 +20,14 @@ import { GraphPicker } from './features/chat/GraphPicker';
 import { PermissionCard } from './features/chat/PermissionCard';
 import { QuestionCard } from './features/chat/QuestionCard';
 import { MessageQueue } from './features/chat/MessageQueue';
+import { PendingSubmission, readPendingSubmissions, savePendingSubmissions, type LocalSubmission } from './features/chat/PendingSubmission';
 import { MessageComposer, type ComposerDraft, type SendMode } from './features/chat/MessageComposer';
+import { connectUpdates } from './features/chat/updatesConnection';
 import { DesignSystem } from './DesignSystem';
 import { ProjectRail } from './features/projects/ProjectRail';
 import { ProjectDialog } from './features/projects/ProjectDialog';
 import { SettingsDialog } from './features/settings/SettingsDialog';
-import { ENGINE_URL, getConversationGraph, mergeGraphState, selectConversationGraph, request, type ConversationGraphState, type EngineEvent, type EngineState, type EngineSnapshot, type EventPage, type Harness, type Project, type Session, type SessionResponse, type SessionMetadata, type SourceReference } from './engine';
+import { ENGINE_URL, EngineRequestError, getConversationGraph, mergeGraphState, selectConversationGraph, request, type ConversationGraphState, type EngineEvent, type EngineState, type EngineSnapshot, type EventPage, type Harness, type Project, type Session, type SessionResponse, type SessionMetadata, type SourceReference } from './engine';
 import { Select } from './design-system/Select';
 import paperBoatIcon from './features/projects/paper-boat-rail.png';
 
@@ -34,6 +36,14 @@ type SessionTab = 'chat' | 'graph' | `subagent:${string}`;
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'The engine request failed. Please retry.';
+}
+
+function clientMessageId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function moveBefore<T extends { id: string }>(items: T[], id: string, beforeId: string) {
@@ -75,7 +85,11 @@ function readWorkspaceNavigation(): WorkspaceNavigation {
 
 export function App() {
   const [engine, setEngine] = useState<EngineState>({ projects: [], sessions: [], harnesses: [] });
-  const { projects, sessions, harnesses } = engine;
+  const [modelPreviews, setModelPreviews] = useState<Record<string, { model: string; effort: string }>>({});
+  const { projects, harnesses } = engine;
+  const sessions = useMemo(() => engine.sessions.map(item => modelPreviews[item.id] ? { ...item, ...modelPreviews[item.id] } : item), [engine.sessions, modelPreviews]);
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
   const [loaded, setLoaded] = useState(false);
   const [connectionError, setConnectionError] = useState('');
   const [focusError, setFocusError] = useState('');
@@ -85,14 +99,19 @@ export function App() {
   }
   const [sessionErrors, setSessionErrors] = useState<Record<string, string>>({});
   const [pendingSessions, setPendingSessions] = useState<Record<string, boolean>>({});
-  const [pendingMessages, setPendingMessages] = useState<Record<string, boolean>>({});
+  const [localMessages, setLocalMessages] = useState(readPendingSubmissions);
+  useEffect(() => savePendingSubmissions(localMessages), [localMessages]);
+  const submissionTails = useRef(new Map<string, Promise<void>>());
+  const submissionRequests = useRef(new Set<string>());
+  const submissionControllers = useRef(new Map<string, { sessionId: string; controller: AbortController }>());
+  const stopVersions = useRef(new Map<string, number>());
   const pending = useRef(new Set<string>());
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [sessionMetadata, setSessionMetadata] = useState<SessionMetadata | null>(null);
   const metadataRequest = useRef(0);
   const projectRevision = useRef(0);
   const navigation = useRef(0);
-  const streams = useRef(new Map<string, EventSource>());
+  const stream = useRef<EventSource | null>(null);
   const [workspaceNavigation, setWorkspaceNavigation] = useState(readWorkspaceNavigation);
   const { activeProjectId, selectedSessions, openSideSessions, collapsedFolders, collapsedArchivedProjects } = workspaceNavigation;
   const [addingProject, setAddingProject] = useState<string | null>(null);
@@ -104,8 +123,22 @@ export function App() {
   const visibleProjectSessions = projectSessions.filter(item => !item.archived && !project?.archivedFolders.includes(item.workspace));
   const session = visibleProjectSessions.find(item => item.id === selectedSessions[project?.id ?? '']) ?? visibleProjectSessions[0];
   const activeId = session?.id ?? '';
+  useEffect(() => {
+    setLocalMessages(current => {
+      let updated = current;
+      for (const item of sessions) {
+        const pending = current[item.id];
+        if (!pending?.length) continue;
+        const remaining = pending.filter(message => !item.queue?.some(entry => entry.id === message.id) && !item.events.some(event => event.id === message.id));
+        if (remaining.length !== pending.length) updated = { ...updated, [item.id]: remaining };
+      }
+      return updated;
+    });
+  }, [sessions]);
+  // Spawned sessions arrive in the multiplexed inventory; no history scan or
+  // reconnect is necessary to discover them.
   const gitBranch = sessionMetadata?.sessionId === activeId ? sessionMetadata.gitBranch ?? '' : '';
-  const working = session?.status === 'running' || !!pendingMessages[activeId];
+  const working = session?.status === 'running' || !!localMessages[activeId]?.some(item => item.status === 'sending');
   const awaitingPermission = !!session?.permissions?.length;
   const awaitingQuestion = !!session?.questions?.length;
   const createProject = projects.find(item => item.id === creatingSession?.projectId);
@@ -114,10 +147,11 @@ export function App() {
   const catalogGraphs = useMemo(() => catalog?.graphs.map(graphListEntry) ?? [], [catalog]);
   const [graphErrors, setGraphErrors] = useState<Record<string, string>>({});
   const [selectingGraphs, setSelectingGraphs] = useState<Record<string, boolean>>({});
+  const [graphPreview, setGraphPreview] = useState<Record<string, string>>({});
   const graphSelectionPending = useRef(new Set<string>());
   const [sessionTabs, setSessionTabs] = useState<Record<string, SessionTab>>({});
   const [openSubagentTabs, setOpenSubagentTabs] = useState<Record<string, string[]>>({});
-  const selectedGraphId = session?.graph?.selectedGraphId ?? session?.selectedGraphId ?? '';
+  const selectedGraphId = graphPreview[activeId] ?? session?.graph?.selectedGraphId ?? session?.selectedGraphId ?? '';
   const graphRun = session?.graph?.run;
   const graphRunInProgress = !!selectedGraphId && !!graphRun?.active && graphRun.graphId === selectedGraphId;
   const catalogSelectedGraph = catalog?.graphs.find(graph => graph.id === selectedGraphId);
@@ -185,15 +219,15 @@ export function App() {
         setLoaded(true);
         setConnectionError('');
       } catch (error) {
-        if (active) setConnectionError(errorMessage(error));
+        if (active && !loaded) setConnectionError(errorMessage(error));
       } finally {
         refreshing = false;
       }
     }
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 5000);
+    const timer = window.setInterval(() => void refresh(), 30000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [refreshVersion]);
+  }, [refreshVersion, loaded]);
 
   useEffect(() => {
     if (!activeId) {
@@ -240,7 +274,7 @@ export function App() {
       } finally { pending = false; }
     }
     void refreshGraph();
-    const timer = window.setInterval(() => void refreshGraph(), 5000);
+    const timer = window.setInterval(() => { if (stream.current?.readyState !== EventSource.OPEN) void refreshGraph(); }, 30000);
     return () => { active = false; window.clearInterval(timer); };
   }, [activeId, catalog, refreshVersion, applyGraph]);
   useEffect(() => {
@@ -249,14 +283,16 @@ export function App() {
   async function chooseGraph(id: string, graphId: string) {
     if (graphSelectionPending.current.has(id)) return;
     graphSelectionPending.current.add(id);
+    setGraphPreview(current => ({ ...current, [id]: graphId }));
     setSelectingGraphs(current => ({ ...current, [id]: true }));
     setGraphErrors(current => ({ ...current, [id]: '' }));
     try { applyGraph(await selectConversationGraph(id, graphId)); }
     catch (error) { setGraphErrors(current => ({ ...current, [id]: errorMessage(error) })); }
-    finally { graphSelectionPending.current.delete(id); setSelectingGraphs(current => ({ ...current, [id]: false })); }
+    finally { graphSelectionPending.current.delete(id); setGraphPreview(current => { const next = { ...current }; delete next[id]; return next; }); setSelectingGraphs(current => ({ ...current, [id]: false })); }
   }
-  const streamSet = new Set(sessions.filter(item => item.role !== 'graph_node' && item.role !== 'subagent' && (item.status === 'running' || item.runtimeActive || item.graph?.run?.active || item.id === activeId || (sideVisible && item.id === sideSession?.id))).map(item => item.id));
-  sessions.filter(item => item.role === 'subagent' && item.status === 'running').forEach(item => streamSet.add(item.id));
+  const streamSet = new Set<string>();
+  if (activeId) streamSet.add(activeId);
+  if (sideVisible && sideSession) streamSet.add(sideSession.id);
   session?.events.forEach(event => {
     const childSessionId = event.type === 'subagent' && ['running', 'pending', 'started'].includes(event.status ?? 'running') && typeof event.data?.childSessionId === 'string' ? event.data.childSessionId : '';
     if (childSessionId) streamSet.add(childSessionId);
@@ -264,36 +300,29 @@ export function App() {
   openSubagentIds.forEach(id => streamSet.add(id));
   const streamIds = JSON.stringify([...streamSet].sort());
   useEffect(() => {
-    const ids = new Set<string>(JSON.parse(streamIds) as string[]);
-    for (const [id, source] of streams.current) {
-      if (!ids.has(id)) { source.close(); streams.current.delete(id); }
-    }
-    for (const id of ids) {
-      if (streams.current.has(id)) continue;
-      const source = new EventSource(`${ENGINE_URL}/api/sessions/${encodeURIComponent(id)}/events`);
-      streams.current.set(id, source);
-      source.onopen = () => {
-        if (streams.current.get(id) === source) setRefreshVersion(current => current + 1);
-      };
-      source.onmessage = event => {
-        if (streams.current.get(id) !== source) return;
-        try {
-          const snapshot: unknown = JSON.parse(event.data);
-          if (!isSessionResponse(snapshot) || ('summary' in snapshot ? snapshot.summary.id : snapshot.id) !== id) throw new Error('Invalid snapshot');
-          setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [snapshot], true) }));
-        } catch {
-          setConnectionError('The engine sent an invalid session update. Retry to refresh the session.');
-        }
-      };
-      source.onerror = () => {
-        if (streams.current.get(id) === source) setConnectionError(`Live updates disconnected from ${ENGINE_URL}. Reconnecting automatically; check that the engine is running.`);
-      };
-    }
-  }, [streamIds]);
-  useEffect(() => {
-    const sources = streams.current;
-    return () => { sources.forEach(source => source.close()); sources.clear(); };
-  }, []);
+    const ids = JSON.parse(streamIds) as string[];
+    return connectUpdates(ENGINE_URL, ids,
+      () => Object.fromEntries(sessionsRef.current.filter(item => ids.includes(item.id) && item.history).map(item => [item.id, item.history!.revision])),
+      (event, source) => {
+      if (stream.current !== source) return;
+      try {
+        const packet: unknown = JSON.parse(event.data);
+        if (!packet || typeof packet !== 'object' || !('kind' in packet)) throw new Error('Invalid update');
+        if (packet.kind === 'inventory' && 'sessions' in packet && 'projects' in packet && 'harnesses' in packet) {
+          const snapshot = packet as EngineSnapshot & { kind: string };
+          setEngine(current => ({ projects: snapshot.projects, sessions: orderSessionSnapshot(current.sessions, snapshot.sessions), harnesses: snapshot.harnesses }));
+          setLoaded(true);
+        } else if (packet.kind === 'summary' && 'summary' in packet) {
+          setEngine(current => { const sessions = mergeSessions(current.sessions, [packet.summary as Session]); return sessions === current.sessions ? current : { ...current, sessions }; });
+        } else if (packet.kind === 'session' && 'update' in packet && isSessionResponse(packet.update)) {
+          setEngine(current => { const sessions = mergeSessions(current.sessions, [packet.update as SessionResponse], true); return sessions === current.sessions ? current : { ...current, sessions }; });
+        } else throw new Error('Invalid update');
+        setConnectionError('');
+      } catch { setConnectionError('The engine sent an invalid live update. Retry to refresh the session.'); }
+      },
+      () => setConnectionError('Live updates disconnected. Reconnecting automatically.'),
+      source => { stream.current = source; });
+  }, [streamIds, refreshVersion]);
 
   useEffect(() => {
     const resetPosition = () => {
@@ -338,22 +367,23 @@ export function App() {
   }
   async function updateSession(target: Session, action: 'messages' | 'stop' | 'harness', body: (ComposerDraft & { sources?: SourceReference[]; mode?: SendMode }) | { harness: Harness['id'] } | Record<string, never>) {
     const id = target.id;
-    if (pending.current.has(id)) return false;
-    pending.current.add(id);
-    setPendingSessions(current => ({ ...current, [id]: true }));
-    if (action === 'messages') setPendingMessages(current => ({ ...current, [id]: true }));
+    if (action === 'stop') {
+      stopVersions.current.set(id, (stopVersions.current.get(id) ?? 0) + 1);
+      for (const item of submissionControllers.current.values()) if (item.sessionId === id) item.controller.abort();
+    }
+    if (action !== 'stop' && pending.current.has(id)) return false;
+    if (action !== 'stop') pending.current.add(id);
+    if (action !== 'stop') setPendingSessions(current => ({ ...current, [id]: true }));
     setSessionErrors(current => ({ ...current, [id]: '' }));
     try {
       const next = await request<SessionResponse>(`/api/sessions/${encodeURIComponent(id)}/${action}`, action === 'harness' ? 'PATCH' : 'POST', body);
-      setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [next]) }));
+      setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [next], action === 'messages' ? 'mutation' : false) }));
       return true;
     } catch (error) {
       setSessionErrors(current => ({ ...current, [id]: errorMessage(error) }));
       return false;
     } finally {
-      pending.current.delete(id);
-      setPendingSessions(current => ({ ...current, [id]: false }));
-      if (action === 'messages') setPendingMessages(current => ({ ...current, [id]: false }));
+      if (action !== 'stop') { pending.current.delete(id); setPendingSessions(current => ({ ...current, [id]: false })); }
     }
   }
   async function patchSession(target: Session, body: { title?: string; workspace?: string; archived?: boolean; position?: { workspace: string; beforeId: string } }): Promise<string | null> {
@@ -379,17 +409,67 @@ export function App() {
     const id = target.id;
     if (pending.current.has(id) || target.status === 'running') return false;
     pending.current.add(id); setPendingSessions(current => ({ ...current, [id]: true }));
+    setModelPreviews(current => ({ ...current, [id]: { model, effort } }));
     setSessionErrors(current => ({ ...current, [id]: '' }));
     try {
       const next = await request<SessionResponse>(`/api/sessions/${encodeURIComponent(id)}/settings`, 'PATCH', { model, effort });
       setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [next]) }));
       return true;
     } catch (error) { setSessionErrors(current => ({ ...current, [id]: errorMessage(error) })); return false; }
-    finally { pending.current.delete(id); setPendingSessions(current => ({ ...current, [id]: false })); }
+    finally {
+      pending.current.delete(id); setPendingSessions(current => ({ ...current, [id]: false }));
+      setModelPreviews(current => { const next = { ...current }; delete next[id]; return next; });
+    }
   }
-  async function send(draft: ComposerDraft, mode?: SendMode) {
+  function submitLocal(target: Session, message: LocalSubmission) {
+    const { id, draft, sources, mode } = message;
+    if (submissionRequests.current.has(id)) return;
+    submissionRequests.current.add(id);
+    setLocalMessages(current => ({ ...current, [target.id]: (current[target.id] ?? []).map(item => item.id === id ? { ...item, status: 'sending' } : item) }));
+    // Keep user sends FIFO even if earlier attachment preparation is slower.
+    // Only transport waits; each editor remains available for the next draft.
+    const previous = submissionTails.current.get(target.id) ?? Promise.resolve();
+    const stopVersion = stopVersions.current.get(target.id) ?? 0;
+    const task = previous.then(() => {
+      if ((stopVersions.current.get(target.id) ?? 0) !== stopVersion) throw new EngineRequestError('Message paused by Stop. Restore it when ready.', 409);
+      const controller = new AbortController();
+      submissionControllers.current.set(id, { sessionId: target.id, controller });
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]);
+      return request<SessionResponse>(`/api/sessions/${encodeURIComponent(target.id)}/messages`, 'POST', { ...draft, sources, mode, clientId: id }, 45000, signal);
+    })
+      .then(next => {
+        setEngine(current => { const sessions = mergeSessions(current.sessions, [next], 'mutation'); return sessions === current.sessions ? current : { ...current, sessions }; });
+        setLocalMessages(current => ({ ...current, [target.id]: (current[target.id] ?? []).map(item => item.id === id ? { ...item, status: 'accepted' } : item) }));
+        setSessionErrors(current => ({ ...current, [target.id]: '' }));
+      }).catch(error => {
+        const status = error instanceof EngineRequestError && error.status >= 400 && error.status < 500 && error.status !== 408 ? 'failed' : 'uncertain';
+        setLocalMessages(current => ({ ...current, [target.id]: (current[target.id] ?? []).map(item => item.id === id ? { ...item, status } : item) }));
+        setSessionErrors(current => ({ ...current, [target.id]: errorMessage(error) }));
+      }).finally(() => {
+        submissionRequests.current.delete(id);
+        submissionControllers.current.delete(id);
+        if (submissionTails.current.get(target.id) === task) submissionTails.current.delete(target.id);
+      });
+    submissionTails.current.set(target.id, task);
+  }
+  function sendMessage(target: Session, draft: ComposerDraft, sources: SourceReference[], mode: SendMode = 'queue') {
+    const message: LocalSubmission = { id: clientMessageId(), draft, sources, mode, status: 'sending' };
+    setLocalMessages(current => ({ ...current, [target.id]: [...(current[target.id] ?? []), message] }));
+    submitLocal(target, message);
+    return true;
+  }
+  function restoreLocal(target: Session, message: LocalSubmission, key = target.id) {
+    if (drafts[key]?.text || drafts[key]?.mentions.length) {
+      setSessionErrors(current => ({ ...current, [target.id]: 'Clear the current draft before restoring this message.' }));
+      return;
+    }
+    setDrafts(current => ({ ...current, [key]: message.draft }));
+    if (message.sources.length && key.startsWith('side:')) setSideSources(current => ({ ...current, [key.slice(5)]: [...message.sources, ...(current[key.slice(5)] ?? [])] }));
+    setLocalMessages(current => ({ ...current, [target.id]: (current[target.id] ?? []).filter(item => item.id !== message.id) }));
+  }
+  function send(draft: ComposerDraft, mode?: SendMode) {
     if (!session || !draft.text.trim()) return false;
-    return updateSession(session, 'messages', { ...draft, mode });
+    return sendMessage(session, draft, [], mode);
   }
   function receiveSession(snapshot: SessionResponse) {
     setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [snapshot]) }));
@@ -429,13 +509,12 @@ export function App() {
     setSideSources(current => ({ ...current, [session.id]: [...(current[session.id] ?? []), { sessionId: session.id, messageId, passage }] }));
     setSideOpen(true); setSidebarOpen(false);
   }
-  async function sendSide(draft: ComposerDraft, mode?: SendMode) {
+  function sendSide(draft: ComposerDraft, mode?: SendMode) {
     if (!sideSession) return false;
     const mainId = activeId;
     const sources = sideSources[mainId] ?? [];
-    const accepted = await updateSession(sideSession, 'messages', { ...draft, sources, mode });
-    if (accepted) setSideSources(current => ({ ...current, [mainId]: (current[mainId] ?? []).filter(source => !sources.includes(source)) }));
-    return accepted;
+    setSideSources(current => ({ ...current, [mainId]: (current[mainId] ?? []).filter(source => !sources.includes(source)) }));
+    return sendMessage(sideSession, draft, sources, mode);
   }
   async function exportSession() {
     if (!session) return;
@@ -631,19 +710,20 @@ export function App() {
                   ? <QuestionCard key={key} question={{ ...item.question, id: item.requestId }} sessionId={item.sessionId} origin={origin} onResolved={() => graphRequestResolved(session.id)} /> : null;
             })}
           </div>}
-          <MessageQueue key={`queue/${session.id}`} session={session} disabled={!!connectionError || !!pendingSessions[session.id]} onSnapshot={receiveSession} />
+          <PendingSubmission items={localMessages[session.id] ?? []} onRestore={item => restoreLocal(session, item)} onRetry={item => submitLocal(session, item)} />
+          <MessageQueue key={`queue/${session.id}`} session={session} disabled={!!pendingSessions[session.id]} onSnapshot={receiveSession} />
           <MessageComposer key={session.id} projectId={session.projectId} draft={drafts[session.id] ?? { text: '', mentions: [] }} onDraftChange={draft => setDrafts(current => ({ ...current, [session.id]: draft }))} onSend={send} onTranscription={text => setDrafts(current => {
             const draft = current[session.id] ?? { text: '', mentions: [] };
             const separator = !draft.text || draft.text.endsWith('\n\n') ? '' : draft.text.endsWith('\n') ? '\n' : '\n\n';
             return { ...current, [session.id]: { ...draft, text: `${draft.text}${separator}${text.trim()}` } };
-          })} disabled={!!connectionError || pendingSessions[session.id]} running={session.status === 'running'} onStop={() => void updateSession(session, 'stop', {})} graphControl={<GraphPicker key={session.id} graphs={catalogGraphs} value={selectedGraphId} selectedName={catalogSelectedGraph?.definition.name ?? selectedGraph?.definition.name} running={graphRunInProgress} disabled={!!connectionError || !!selectingGraphs[session.id] || !session.graph} loading={catalogLoading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reloadCatalog().catch(() => {})} onChange={graphId => void chooseGraph(session.id, graphId)} />} modelControl={<ModelPicker key={session.id} session={session} disabled={!!connectionError || !!pendingSessions[session.id] || working} onSave={(model, effort) => applyModelSettings(session, model, effort)} onSnapshot={receiveSession} />} />
+          })} disabled={!!pendingSessions[session.id]} running={session.status === 'running'} onStop={() => void updateSession(session, 'stop', {})} graphControl={<GraphPicker key={session.id} graphs={catalogGraphs} value={selectedGraphId} selectedName={catalogSelectedGraph?.definition.name ?? selectedGraph?.definition.name} running={graphRunInProgress} disabled={!!selectingGraphs[session.id] || !session.graph} loading={catalogLoading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reloadCatalog().catch(() => {})} onChange={graphId => void chooseGraph(session.id, graphId)} />} modelControl={<ModelPicker key={session.id} session={session} disabled={!!pendingSessions[session.id] || working} onSave={(model, effort) => applyModelSettings(session, model, effort)} onSnapshot={receiveSession} />} />
           <SessionStatusBar session={session} />
         </div>
       </>}
     </main>
     {sideVisible && project && session && <SideChatPanel key={session.id} session={sideSession} project={project} harnesses={harnesses}
-      draft={drafts[`side:${session.id}`] ?? { text: '', mentions: [] }} sources={sideSources[session.id] ?? []}
-      error={sideSession ? sessionErrors[sideSession.id] ?? '' : sideErrors[session.id] ?? ''} disconnected={!!connectionError} pending={!!sideSession && !!pendingSessions[sideSession.id]}
+      draft={drafts[`side:${session.id}`] ?? { text: '', mentions: [] }} sources={sideSources[session.id] ?? []} submissions={sideSession ? localMessages[sideSession.id] ?? [] : []} onRestoreSubmission={item => { if (sideSession) restoreLocal(sideSession, item, `side:${session.id}`); }} onRetrySubmission={item => { if (sideSession) submitLocal(sideSession, item); }}
+       error={sideSession ? sessionErrors[sideSession.id] ?? '' : sideErrors[session.id] ?? ''} disconnected={false} pending={!!sideSession && !!pendingSessions[sideSession.id]}
       onClose={() => setSideOpen(false)} onRetry={() => void ensureSide(session)} onSnapshot={receiveSession} onHistory={receiveHistory} onEventChange={receiveEvent}
       onDraftChange={draft => setDrafts(current => ({ ...current, [`side:${session.id}`]: draft }))}
       onRemoveSource={index => setSideSources(current => ({ ...current, [session.id]: (current[session.id] ?? []).filter((_, i) => i !== index) }))}

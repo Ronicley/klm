@@ -193,6 +193,25 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 		}
 		var frame map[string]any
 		var ok bool
+		// Give pending steering a dispatch opportunity even when the frame
+		// channel is continuously nonempty. Native acknowledgement is separate.
+		if inputReady != nil {
+			select {
+			case <-inputReady:
+				q, payload, err := p.takeSteering()
+				if err != nil {
+					return err
+				}
+				if q != nil {
+					steeringRequests["klm-steer-"+q.ID] = true
+					if err := c.send(map[string]any{"id": "klm-steer-" + q.ID, "method": "turn/steer", "params": map[string]any{"threadId": c.threadID, "expectedTurnId": c.turnID, "input": payload.codexInput()}}); err != nil {
+						return err
+					}
+				}
+				continue
+			default:
+			}
+		}
 		// Drain buffered output before interpreting process exit as a missing
 		// terminal turn. A completed turn does not require app-server to exit.
 		select {

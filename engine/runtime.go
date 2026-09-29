@@ -410,6 +410,13 @@ func (a *app) notifySessionLocked(id string) {
 		default:
 		}
 	}
+	for subscription := range a.updateListeners {
+		subscription.dirty[id] = true
+		select {
+		case subscription.wake <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (a *app) sessionViewLocked(id string) *Session {

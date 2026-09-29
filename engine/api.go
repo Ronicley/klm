@@ -106,6 +106,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/history", a.chatSessionHandler(a.history))
 	mux.HandleFunc("GET /api/sessions/{id}/export", a.chatSessionHandler(a.exportSession))
 	mux.HandleFunc("GET /api/sessions/{id}/events", a.chatSessionHandler(a.events))
+	mux.HandleFunc("GET /api/updates", a.updates)
 	mux.HandleFunc("PATCH /api/sessions/{id}/events/{eventID}", a.chatSessionHandler(a.patchEvent))
 	mux.HandleFunc("POST /api/sessions/{id}/stop", a.chatSessionHandler(a.stop))
 	mux.HandleFunc("POST /api/sessions/{id}/permissions/{permissionID}", a.permissionDecision)
@@ -152,9 +153,10 @@ func (a *app) routes() http.Handler {
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.storageErr != nil {
-		fail(w, 503, a.storageErr.Error())
+		err := a.storageErr
+		a.mu.Unlock()
+		fail(w, 503, err.Error())
 		return
 	}
 	activeGraphs := 0
@@ -163,7 +165,9 @@ func (a *app) health(w http.ResponseWriter, r *http.Request) {
 			activeGraphs++
 		}
 	}
-	respond(w, 200, map[string]any{"status": "ok", "version": 2, "runningSessions": len(a.runs), "activeGraphRuns": activeGraphs})
+	response := map[string]any{"status": "ok", "version": 2, "runningSessions": len(a.runs), "activeGraphRuns": activeGraphs}
+	a.mu.Unlock()
+	respond(w, 200, response)
 }
 
 func (a *app) getState(w http.ResponseWriter, r *http.Request) {
@@ -387,15 +391,16 @@ func (a *app) updateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	id := r.PathValue("id")
 	if p := a.state.project(id); p == nil || p.Removed {
+		a.mu.Unlock()
 		fail(w, 404, "Project not found.")
 		return
 	}
 	if body.Position != nil && body.Position.BeforeID != "" {
 		before := a.state.project(body.Position.BeforeID)
 		if before == nil || before.Removed {
+			a.mu.Unlock()
 			fail(w, 400, "Position target must be an existing project.")
 			return
 		}
@@ -412,39 +417,46 @@ func (a *app) updateProject(w http.ResponseWriter, r *http.Request) {
 			d.Projects = moveProjectBefore(d.Projects, id, body.Position.BeforeID)
 		}
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
-	respond(w, 200, a.state.project(id))
+	response := *a.state.project(id)
+	a.mu.Unlock()
+	respond(w, 200, response)
 }
 
 func (a *app) removeProject(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	id := r.PathValue("id")
 	p := a.state.project(id)
 	if p == nil {
+		a.mu.Unlock()
 		fail(w, 404, "Project not found.")
 		return
 	}
 	for _, session := range a.state.Sessions {
 		if session.ProjectID == id && a.runs[session.ID] != nil {
+			a.mu.Unlock()
 			fail(w, 409, "Stop running sessions before removing this project.")
 			return
 		}
 	}
 	for _, run := range a.state.GraphRuns {
 		if run.ProjectID == id && graphRunActive(run.Status) {
+			a.mu.Unlock()
 			fail(w, 409, "Project has an active graph run.")
 			return
 		}
 	}
 	if !p.Removed {
 		if err := a.commitLocked(func(d *diskState) { d.project(id).Removed = true }); err != nil {
+			a.mu.Unlock()
 			fail(w, 503, err.Error())
 			return
 		}
 	}
+	a.mu.Unlock()
 	respond(w, 200, map[string]bool{"removed": true})
 }
 
@@ -459,14 +471,15 @@ func (a *app) createFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	p := a.state.project(r.PathValue("id"))
 	if p == nil || p.Removed {
+		a.mu.Unlock()
 		fail(w, 404, "Project not found.")
 		return
 	}
 	for _, f := range p.Folders {
 		if strings.EqualFold(f, name) {
+			a.mu.Unlock()
 			fail(w, 409, "Folder already exists.")
 			return
 		}
@@ -476,10 +489,13 @@ func (a *app) createFolder(w http.ResponseWriter, r *http.Request) {
 		p := d.project(id)
 		p.Folders = append(p.Folders, name)
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
-	respond(w, 201, a.state.project(id))
+	response := *a.state.project(id)
+	a.mu.Unlock()
+	respond(w, 201, response)
 }
 
 func (a *app) patchFolder(w http.ResponseWriter, r *http.Request) {
@@ -498,9 +514,9 @@ func (a *app) patchFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	p := a.state.project(r.PathValue("id"))
 	if p == nil || p.Removed {
+		a.mu.Unlock()
 		fail(w, 404, "Project not found.")
 		return
 	}
@@ -512,6 +528,7 @@ func (a *app) patchFolder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if name == "" {
+		a.mu.Unlock()
 		fail(w, 404, "Session folder not found.")
 		return
 	}
@@ -524,6 +541,7 @@ func (a *app) patchFolder(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Position != nil {
 		if isArchived {
+			a.mu.Unlock()
 			fail(w, 400, "Archived folders cannot be reordered.")
 			return
 		}
@@ -536,6 +554,7 @@ func (a *app) patchFolder(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !beforeFound {
+				a.mu.Unlock()
 				fail(w, 400, "Position target must be an active session folder.")
 				return
 			}
@@ -562,11 +581,14 @@ func (a *app) patchFolder(w http.ResponseWriter, r *http.Request) {
 				project.Folders = moveStringBefore(project.Folders, name, body.Position.Before)
 			}
 		}); err != nil {
+			a.mu.Unlock()
 			fail(w, 503, err.Error())
 			return
 		}
 	}
-	respond(w, 200, a.state.project(p.ID))
+	response := *a.state.project(p.ID)
+	a.mu.Unlock()
+	respond(w, 200, response)
 }
 
 func folderArchived(p *Project, name string) bool {
@@ -615,33 +637,34 @@ func (a *app) createSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	p := a.state.project(body.ProjectID)
 	if p == nil || p.Removed {
+		a.mu.Unlock()
 		fail(w, 404, "Project not found.")
 		return
 	}
 	group, ok := workspace(p, body.Workspace)
 	if !ok {
+		a.mu.Unlock()
 		fail(w, 400, "Workspace must be Ungrouped or an existing project folder name.")
 		return
 	}
 	if _, ok := a.binaries[body.Harness]; !ok {
+		a.mu.Unlock()
 		fail(w, 400, "Harness is unknown or not installed.")
 		return
 	}
-	s := Session{ID: newID(), ProjectID: p.ID, Title: title, Workspace: group,
-		Harness: body.Harness, Model: model, Status: "idle", Events: []Event{}, CreatedAt: now(), UpdatedAt: now()}
+	s := newTopLevelSession(p.ID, title, group, body.Harness, model, "")
 	if err := a.commitLocked(func(d *diskState) {
-		d.Sessions = append(d.Sessions, s)
-		if s.Harness == "pi" {
-			d.Native[s.ID] = nativeSession{Path: filepath.Join(a.dir, "sessions", s.ID+".jsonl")}
-		}
+		a.appendTopLevelSession(d, s)
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
-	respond(w, 201, a.currentSessionUpdateLocked(s.ID))
+	response := a.currentSessionUpdateLocked(s.ID)
+	a.mu.Unlock()
+	respond(w, 201, response)
 }
 
 func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
@@ -662,17 +685,19 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	s := a.state.session(r.PathValue("id"))
 	if s == nil {
+		a.mu.Unlock()
 		fail(w, 404, "Session not found.")
 		return
 	}
 	if body.Archived != nil && s.ParentID != "" {
+		a.mu.Unlock()
 		fail(w, 400, "Only top-level sessions can be archived.")
 		return
 	}
 	if body.Position != nil && (s.ParentID != "" || s.Role == "graph_node" || s.Archived) {
+		a.mu.Unlock()
 		fail(w, 400, "Only active top-level sessions can be reordered.")
 		return
 	}
@@ -681,6 +706,7 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 	if body.Title != nil {
 		title, ok = cleanLabel(*body.Title, 200)
 		if !ok {
+			a.mu.Unlock()
 			fail(w, 400, "Session title must contain 1 to 200 characters.")
 			return
 		}
@@ -688,6 +714,7 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 	if body.Workspace != nil {
 		group, ok = workspace(a.state.project(s.ProjectID), *body.Workspace)
 		if !ok {
+			a.mu.Unlock()
 			fail(w, 400, "Workspace must be Ungrouped or an existing project folder name.")
 			return
 		}
@@ -695,16 +722,19 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 	if body.Position != nil {
 		group, ok = workspace(a.state.project(s.ProjectID), body.Position.Workspace)
 		if !ok {
+			a.mu.Unlock()
 			fail(w, 400, "Position workspace must be Ungrouped or an existing project folder name.")
 			return
 		}
 		if body.Workspace != nil && group != strings.TrimSpace(*body.Workspace) {
+			a.mu.Unlock()
 			fail(w, 400, "Workspace and position workspace must match.")
 			return
 		}
 		if body.Position.BeforeID != "" {
 			before := a.state.session(body.Position.BeforeID)
 			if before == nil || before.ID == s.ID || before.ProjectID != s.ProjectID || before.ParentID != "" || before.Role == "graph_node" || before.Archived || before.Workspace != group {
+				a.mu.Unlock()
 				fail(w, 400, "Position target must be another active session in the destination folder.")
 				return
 			}
@@ -721,10 +751,13 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 			d.Sessions = moveSessionBefore(d.Sessions, id, body.Position.BeforeID)
 		}
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
-	respond(w, 200, a.currentSessionUpdateLocked(id))
+	response := a.currentSessionUpdateLocked(id)
+	a.mu.Unlock()
+	respond(w, 200, response)
 }
 
 func (a *app) patchEvent(w http.ResponseWriter, r *http.Request) {
@@ -739,9 +772,9 @@ func (a *app) patchEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	s := a.state.session(r.PathValue("id"))
 	if s == nil {
+		a.mu.Unlock()
 		fail(w, 404, "Session not found.")
 		return
 	}
@@ -754,27 +787,35 @@ func (a *app) patchEvent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if index < 0 || s.Events[index].Type != "assistant" {
+		a.mu.Unlock()
 		fail(w, 404, "Assistant message not found.")
 		return
 	}
 	if status := s.Events[index].Status; status != "" && status != "completed" {
+		a.mu.Unlock()
 		fail(w, 409, "Only completed responses can be favorited.")
 		return
 	}
 	id := s.ID
 	if err := a.commitLocked(func(d *diskState) {
 		session := d.session(id)
-		session.Events[index].Favorite = *body.Favorite
+		e := session.Events[index]
+		e.Favorite = *body.Favorite
+		d.setEvent(session, index, e)
 		session.UpdatedAt = now()
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
-	respond(w, 200, a.state.session(id).Events[index])
+	response := a.state.session(id).Events[index]
+	a.mu.Unlock()
+	respond(w, 200, response)
 }
 
 func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	var body struct {
+		ClientID string `json:"clientId"`
 		Text     string
 		Mode     string            `json:"mode"`
 		Sources  []SourceReference `json:"sources"`
@@ -787,6 +828,12 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Message mode must be queue or steer.")
 		return
 	}
+	if body.ClientID != "" && (len(body.ClientID) > 128 || strings.IndexFunc(body.ClientID, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-')
+	}) != -1) {
+		fail(w, 400, "Invalid message identity.")
+		return
+	}
 	if strings.TrimSpace(body.Text) == "" || len(body.Text) > 128<<10 || !utf8.ValidString(body.Text) || strings.ContainsRune(body.Text, 0) {
 		fail(w, 400, "Message must be nonempty UTF-8 text, at most 128 KiB, without NUL characters.")
 		return
@@ -796,6 +843,29 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		a.mu.Unlock()
 		fail(w, 404, "Session not found.")
+		return
+	}
+	// The fingerprint covers user intent, never prepared filesystem content.
+	// This check precedes expensive preparation and repeats under the accept lock.
+	identity := body.ClientID
+	if identity == "" {
+		identity = newID()
+	}
+	fingerprint := messageFingerprint(body.Text, body.Mode, body.Sources, body.Mentions)
+	if previous, ok := a.state.AcceptedMessages[s.ID+"/"+identity]; ok {
+		if previous != fingerprint {
+			a.mu.Unlock()
+			fail(w, 409, "Message identity already belongs to different content.")
+			return
+		}
+		response := a.currentSessionUpdateLocked(s.ID)
+		a.mu.Unlock()
+		respond(w, 202, response)
+		return
+	}
+	if body.ClientID != "" && a.messageIdentityInUseLocked(identity) {
+		a.mu.Unlock()
+		fail(w, 409, "Message identity is already in use.")
 		return
 	}
 	if p := a.state.project(s.ProjectID); p == nil || p.Removed {
@@ -816,6 +886,7 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, projectID, harness := s.ID, s.ProjectID, s.Harness
+	stopVersion := a.stopVersions[id]
 	folder := a.state.project(projectID).Folder
 	a.mu.Unlock()
 	// Filesystem I/O never holds the application mutex. Recheck ownership and
@@ -832,6 +903,27 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	s = a.state.session(id)
+	if previous, ok := a.state.AcceptedMessages[id+"/"+identity]; ok {
+		if previous != fingerprint {
+			a.mu.Unlock()
+			fail(w, 409, "Message identity already belongs to different content.")
+			return
+		}
+		response := a.currentSessionUpdateLocked(id)
+		a.mu.Unlock()
+		respond(w, 202, response)
+		return
+	}
+	if body.ClientID != "" && a.messageIdentityInUseLocked(identity) {
+		a.mu.Unlock()
+		fail(w, 409, "Message identity is already in use.")
+		return
+	}
+	if a.stopVersions[id] != stopVersion {
+		a.mu.Unlock()
+		fail(w, 409, "Message preparation interrupted by Stop. Send it again when ready.")
+		return
+	}
 	p := a.state.project(projectID)
 	if s == nil || p == nil || p.Removed || s.ProjectID != projectID || p.Folder != folder || s.Harness != harness {
 		a.mu.Unlock()
@@ -850,7 +942,13 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err.Error())
 		return
 	}
-	payload.Text = linkedPromptPrefix + prompt
+	guidance, err := sessionCollaborationPrompt()
+	if err != nil {
+		a.mu.Unlock()
+		fail(w, 503, err.Error())
+		return
+	}
+	payload.Text = guidance + "\n\n" + prompt
 	if err := validateSubmissionSize(payload, harness); err != nil {
 		a.mu.Unlock()
 		fail(w, 400, err.Error())
@@ -869,8 +967,12 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	if mode == "steer" {
 		status = "steering"
 	}
-	q := QueuedMessage{ID: newID(), Text: body.Text, Mode: mode, Status: status, Sources: body.Sources, Mentions: body.Mentions}
+	q := QueuedMessage{ID: identity, Text: body.Text, Mode: mode, Status: status, Sources: body.Sources, Mentions: body.Mentions}
 	if err := a.commitLocked(func(d *diskState) {
+		if d.AcceptedMessages == nil {
+			d.AcceptedMessages = map[string]string{}
+		}
+		d.AcceptedMessages[id+"/"+identity] = fingerprint
 		next := d.session(id)
 		next.Queue = append(next.Queue, q)
 		next.UpdatedAt = now()
@@ -898,6 +1000,10 @@ func (a *app) stop(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "Session not found.")
 		return
 	}
+	if a.stopVersions == nil {
+		a.stopVersions = map[string]uint64{}
+	}
+	a.stopVersions[id]++
 	t := a.runs[id]
 	// Cancellation must not depend on a successful history/queue write.
 	if t != nil {
@@ -1033,13 +1139,15 @@ func (a *app) chatSessionHandler(handler http.HandlerFunc) http.HandlerFunc {
 
 func (a *app) getConversationGraph(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	s := a.state.session(r.PathValue("id"))
 	if s == nil || s.ParentID != "" || s.GraphRunID != "" {
+		a.mu.Unlock()
 		fail(w, 404, "Main conversation not found.")
 		return
 	}
-	respond(w, 200, a.state.graphProjection(s.ID))
+	projection := a.state.graphProjection(s.ID)
+	a.mu.Unlock()
+	respond(w, 200, projection)
 }
 
 func (a *app) selectConversationGraph(w http.ResponseWriter, r *http.Request) {
@@ -1103,10 +1211,10 @@ func (a *app) selectConversationGraph(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	s = a.state.session(sessionID)
 	p = a.state.project(project.ID)
 	if a.closing || a.storageErr != nil || s == nil || p == nil || p.Removed || p.Folder != project.Folder {
+		a.mu.Unlock()
 		fail(w, 409, "Conversation or project changed; retry selection.")
 		return
 	}
@@ -1115,11 +1223,14 @@ func (a *app) selectConversationGraph(w http.ResponseWriter, r *http.Request) {
 			session := d.session(sessionID)
 			session.SelectedGraphID, session.UpdatedAt = graphID, now()
 		}); err != nil {
+			a.mu.Unlock()
 			fail(w, 503, err.Error())
 			return
 		}
 	}
-	respond(w, 200, a.state.graphProjection(sessionID))
+	projection := a.state.graphProjection(sessionID)
+	a.mu.Unlock()
+	respond(w, 200, projection)
 }
 
 type GraphRunSummary struct {
@@ -1137,13 +1248,15 @@ type GraphRunSummary struct {
 
 func (a *app) getGraphRun(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	run := a.state.graphRun(r.PathValue("runID"))
 	if run == nil {
+		a.mu.Unlock()
 		fail(w, 404, "Graph run not found.")
 		return
 	}
-	respond(w, 200, GraphRunSummary{ID: run.ID, ActivityID: run.ActivityID, ConversationID: run.ConversationID, GraphID: run.GraphID, Status: run.Status, Active: graphRunActive(run.Status), Revision: a.state.GraphRevision, Result: run.Result, CreatedAt: run.CreatedAt, EndedAt: run.EndedAt})
+	response := GraphRunSummary{ID: run.ID, ActivityID: run.ActivityID, ConversationID: run.ConversationID, GraphID: run.GraphID, Status: run.Status, Active: graphRunActive(run.Status), Revision: a.state.GraphRevision, Result: run.Result, CreatedAt: run.CreatedAt, EndedAt: run.EndedAt}
+	a.mu.Unlock()
+	respond(w, 200, response)
 }
 
 func (a *app) directory(w http.ResponseWriter, r *http.Request) {

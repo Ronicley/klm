@@ -24,16 +24,17 @@ type graphActivityDetail struct {
 // Activity is fetched on demand, scoped to the owning conversation and captured run.
 func (a *app) getGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	s := a.state.session(r.PathValue("id"))
 	run := a.state.graphRun(r.PathValue("runId"))
 	if s == nil || s.ParentID != "" || s.GraphRunID != "" || run == nil || run.ConversationID != s.ID {
+		a.mu.Unlock()
 		fail(w, 404, "Run not found in this conversation.")
 		return
 	}
 	nodeID := r.PathValue("nodeId")
 	node, ok := run.Snapshot.Graph.Definition.Nodes[nodeID]
 	if !ok || (node.Type != "agent" && node.Type != "join") {
+		a.mu.Unlock()
 		fail(w, 404, "Agent node not found in this run.")
 		return
 	}
@@ -56,6 +57,7 @@ func (a *app) getGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(summaries, func(i, j int) bool { return summaries[i].Occurrence < summaries[j].Occurrence })
 	if requested != "" && selected == nil {
+		a.mu.Unlock()
 		fail(w, 404, "Activation not found in this node.")
 		return
 	}
@@ -76,5 +78,7 @@ func (a *app) getGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 		sort.SliceStable(events, func(i, j int) bool { return events[i].CreatedAt < events[j].CreatedAt })
 		detail = &graphActivityDetail{graphActivitySummary: graphActivitySummary{x.ID, x.Occurrence, x.Status}, Input: x.Input, Submission: x.Submission, Events: events, Error: x.Error, CreatedAt: x.CreatedAt, UpdatedAt: updatedAt}
 	}
-	respond(w, 200, map[string]any{"runActive": graphRunActive(run.Status), "activations": summaries, "activation": detail})
+	response := map[string]any{"runActive": graphRunActive(run.Status), "activations": summaries, "activation": detail}
+	a.mu.Unlock()
+	respond(w, 200, response)
 }

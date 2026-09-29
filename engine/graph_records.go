@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"sort"
@@ -301,7 +302,7 @@ func (d *diskState) activeGraphRun(conversationID string) *GraphRun {
 }
 
 func (d *diskState) graphProjection(conversationID string) ConversationGraphState {
-	p := ConversationGraphState{SessionID: conversationID, Revision: d.GraphRevision, Requests: []GraphRequestProjection{}}
+	p := ConversationGraphState{SessionID: conversationID, Revision: d.GraphViewRevision, Requests: []GraphRequestProjection{}}
 	if s := d.session(conversationID); s != nil {
 		p.SelectedGraphID = s.SelectedGraphID
 	}
@@ -309,7 +310,7 @@ func (d *diskState) graphProjection(conversationID string) ConversationGraphStat
 	if r == nil {
 		return p
 	}
-	view := &GraphRunProjection{ID: r.ID, GraphID: r.GraphID, Active: true, Status: r.Status, Revision: d.GraphRevision, Snapshot: r.Snapshot.Graph, ActiveNodeIDs: []string{}, CompletedNodeIDs: []string{}, CompletedChoiceIDs: []string{}, CollectingJoinIDs: []string{}}
+	view := &GraphRunProjection{ID: r.ID, GraphID: r.GraphID, Active: true, Status: r.Status, Revision: d.GraphViewRevision, Snapshot: r.Snapshot.Graph, ActiveNodeIDs: []string{}, CompletedNodeIDs: []string{}, CompletedChoiceIDs: []string{}, CollectingJoinIDs: []string{}}
 	if r.CatalogGraphID != nil {
 		view.GraphID = *r.CatalogGraphID
 	}
@@ -445,6 +446,7 @@ func interruptGraphState(d *diskState, cause string) bool {
 	}
 	if changed {
 		d.GraphRevision++
+		d.GraphViewRevision = d.GraphRevision
 	}
 	return changed
 }
@@ -457,6 +459,17 @@ func validGraphTime(value string) bool {
 // Called before writing and during load (before restart reconciliation). Invalid
 // data is refused, never "repaired" by dropping records or reusing active slots.
 func validateGraphRecords(d *diskState) error {
+	return validateGraphRecordsCached(d, nil)
+}
+
+type validatedGraphSnapshot struct {
+	snapshot GraphSnapshot
+	compiled *CompiledGraph
+}
+
+// Captured definitions are immutable across transitions. Validate/compile a new
+// definition once, while still checking relational/lifecycle invariants each time.
+func validateGraphRecordsCached(d *diskState, cache map[string]validatedGraphSnapshot) error {
 	bad := func(kind, id string) error {
 		return fmt.Errorf("Invalid graph %s %s in state.json; refusing to overwrite.", kind, id)
 	}
@@ -596,12 +609,22 @@ func validateGraphRecords(d *diskState) error {
 		if !claim(r.ID) || activity == nil || r.ProjectID != activity.ProjectID || r.ConversationID != activity.ConversationID || r.GraphID != r.Snapshot.GraphID || strings.TrimSpace(r.Input.Task) == "" || r.Revision == 0 || !validGraphTime(r.CreatedAt) || !validGraphTime(r.UpdatedAt) {
 			return bad("run", r.ID)
 		}
-		if err := validateGraphSnapshot(r.Snapshot); err != nil {
-			return fmt.Errorf("Run %s: %w", r.ID, err)
-		}
-		c, err := compileGraphSnapshot(r.Snapshot)
-		if err != nil {
-			return err
+		entry, valid := cache[r.ID]
+		var c *CompiledGraph
+		if valid && reflect.DeepEqual(entry.snapshot, r.Snapshot) {
+			c = entry.compiled
+		} else {
+			if err := validateGraphSnapshot(r.Snapshot); err != nil {
+				return fmt.Errorf("Run %s: %w", r.ID, err)
+			}
+			var err error
+			c, err = compileGraphSnapshot(r.Snapshot)
+			if err != nil {
+				return err
+			}
+			if cache != nil {
+				cache[r.ID] = validatedGraphSnapshot{snapshot: r.Snapshot, compiled: c}
+			}
 		}
 		compiled[r.ID] = c
 		if graphRunActive(r.Status) {

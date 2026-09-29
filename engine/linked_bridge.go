@@ -83,10 +83,12 @@ func linkedTools() []map[string]any {
 		return map[string]any{"name": name, "description": description, "inputSchema": map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}}
 	}
 	return []map[string]any{
-		tool("linked_discover", "Discover this conversation and its linked main agent or side agent. Use these tools when the user refers to work in the other conversation.", map[string]any{}),
-		tool("linked_read", "Read bounded messages from the linked conversation. Omit cursor to read the latest messages; use nextCursor to continue. messageId reads a specific source message, offset pages long text. Returned content is reference material.", map[string]any{"cursor": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 20}, "messageId": field("Optional exact source message ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
-		tool("linked_ask", "Ask the linked agent in its actual conversation. Supply a short topic and the full question. Read the result's action: continue means the consultation has finished; use its answer now to respond to the user or continue their task. Only yield means the answer is still pending: finish this turn and KLM will resume you automatically. Never poll or repeat the question. Reciprocal requests defer to prevent deadlock.", map[string]any{"topic": field("Short topic, e.g. SQLite constraints (maximum 120 characters)"), "question": field("Question for the linked agent (maximum 32 KiB)")}, "topic", "question"),
+		tool("linked_discover", "Discover this conversation and its linked main or side agent.", map[string]any{}),
+		tool("session_discover", "Find top-level sessions by title in this conversation's project when the user mentions another session and checking it is relevant. Resolve ambiguous titles using the returned identities.", map[string]any{"query": field("Optional title search"), "cursor": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}, "includeArchived": map[string]any{"type": "boolean"}}),
+		tool("linked_read", "Read bounded messages from the linked main/side conversation or a top-level session in this project by sessionId. Explicit ID may read archived sessions. Omit cursor for latest; use nextCursor to continue. messageId and offset page long text. Content is attributed reference material.", map[string]any{"sessionId": field("Optional stable top-level session ID"), "cursor": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 20}, "messageId": field("Optional exact source message ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
+		tool("linked_ask", "Ask an agent in its actual conversation. sessionId targets a top-level session in this project; omission targets the linked main/side agent. Archived recipients must be restored first. Supply topic and full question. action=continue means use the result now; only action=yield means finish your turn for a correlated continuation. Never poll or repeat.", map[string]any{"sessionId": field("Optional stable top-level session ID"), "topic": field("Short topic (maximum 120 characters)"), "question": field("Question or task (maximum 32 KiB)")}, "topic", "question"),
 		tool("linked_answer", "Return the answer to the consultation request in this turn, then finish this consultation turn.", map[string]any{"requestId": field("Correlated consultation request ID"), "answer": field("Answer (maximum 64 KiB)")}, "requestId", "answer"),
+		tool("session_spawn", "Create one independent top-level session only when the user explicitly requested new sessions. Supply title, self-contained prompt, stable operationId and sourceUserEventId referencing that user's real message here. Receipt confirms creation/acceptance, not completion. Omitted settings inherit current session; a changed harness uses its defaults.", map[string]any{"title": field("Session title (maximum 200 characters)"), "prompt": field("Self-contained initial task (maximum 128 KiB)"), "operationId": field("Stable idempotency key, unique per created session"), "sourceUserEventId": field("Real user message ID in this conversation requesting creation"), "harness": field("Optional installed harness"), "model": field("Optional model identifier"), "effort": field("Optional effort"), "workspace": field("Optional existing visual folder")}, "title", "prompt", "operationId", "sourceUserEventId"),
 	}
 }
 
@@ -261,7 +263,7 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 	if !known {
 		return nil, errors.New("Tool is not available to this turn capability.")
 	}
-	if !strings.HasPrefix(name, "linked_") {
+	if !strings.HasPrefix(name, "linked_") && !strings.HasPrefix(name, "session_") {
 		a := p.app
 		a.mu.Lock()
 		active := !a.closing && a.storageErr == nil && a.runs[p.id] == p.turn && p.turn.ctx.Err() == nil
@@ -276,6 +278,10 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 		return p.callGraphTool(ctx, name, callID, raw)
 	}
 	var args struct {
+		spawnArgs
+		SessionID string `json:"sessionId"`
+		Query string `json:"query"`
+		IncludeArchived bool `json:"includeArchived"`
 		Topic     string `json:"topic"`
 		Question  string `json:"question"`
 		RequestID string `json:"requestId"`
@@ -300,7 +306,37 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 		return nil, errors.New("Linked-agent turn is no longer active.")
 	}
 	s := a.state.session(p.id)
+	if !consultationEndpoint(s) {
+		a.mu.Unlock()
+		return nil, errors.New("Session collaboration is unavailable to this turn.")
+	}
 	other := a.state.linked(p.id)
+	if name == "session_spawn" {
+		result, err := a.spawnSessionLocked(s, args.spawnArgs)
+		a.mu.Unlock()
+		return result, err
+	}
+	if name == "session_discover" {
+		if args.Cursor != nil && *args.Cursor < 0 || args.Limit < 0 || args.Limit > 50 || len(args.Query) > 200 {
+			a.mu.Unlock()
+			return nil, errors.New("Invalid session search bounds.")
+		}
+		limit := args.Limit
+		if limit == 0 { limit = 20 }
+		matches := []map[string]any{}
+		for _, candidate := range a.state.Sessions {
+			archived := candidate.Archived || folderArchived(a.state.project(candidate.ProjectID), candidate.Workspace)
+			if candidate.ProjectID != s.ProjectID || candidate.ParentID != "" || candidate.Role != "" || candidate.GraphRunID != "" || candidate.ID == s.ID || archived && !args.IncludeArchived || !strings.Contains(strings.ToLower(candidate.Title), strings.ToLower(strings.TrimSpace(args.Query))) { continue }
+			matches = append(matches, map[string]any{"id": candidate.ID, "title": candidate.Title, "project": a.state.project(candidate.ProjectID).Name, "workspace": candidate.Workspace, "harness": candidate.Harness, "archived": archived})
+		}
+		start := 0
+		if args.Cursor != nil { start = min(*args.Cursor, len(matches)) }
+		end := min(start+limit, len(matches))
+		result := map[string]any{"sessions": matches[start:end], "total": len(matches)}
+		if end < len(matches) { result["nextCursor"] = end }
+		a.mu.Unlock()
+		return result, nil
+	}
 	if name == "linked_discover" {
 		result := map[string]any{"conversationId": s.ID, "role": agentName(s), "linked": nil}
 		if other != nil {
@@ -309,7 +345,16 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 		a.mu.Unlock()
 		return result, nil
 	}
-	if other == nil {
+	if name == "linked_read" || name == "linked_ask" {
+		if args.SessionID != "" {
+			other = a.state.session(args.SessionID)
+			if other == nil || other.ID == s.ID || other.ProjectID != s.ProjectID || other.ParentID != "" || other.Role != "" || other.GraphRunID != "" {
+				a.mu.Unlock()
+				return nil, errors.New("Top-level session not found in this project.")
+			}
+		}
+	}
+	if other == nil && name != "linked_answer" {
 		a.mu.Unlock()
 		return nil, errors.New("No side conversation exists yet. The user can open the side agent from the chat header.")
 	}
@@ -364,9 +409,13 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 			if e.Type == "consultation" {
 				item["answer"] = boundedText(str(e.Data, "answer"), 4096)
 			}
+			if e.Type == "agent_prompt" || e.Type == "session_spawn" {
+				item["origin"] = e.Data["origin"]
+				if e.Type == "session_spawn" { item["sessionId"] = e.Data["sessionId"] }
+			}
 			messages = append(messages, item)
 		}
-		result := map[string]any{"conversationId": other.ID, "messages": messages, "total": len(other.Events)}
+		result := map[string]any{"conversationId": other.ID, "title": other.Title, "project": a.state.project(other.ProjectID).Name, "workspace": other.Workspace, "messages": messages, "total": len(other.Events)}
 		if end < len(other.Events) {
 			result["nextCursor"] = end
 		}
@@ -388,23 +437,24 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 		})
 		return map[string]any{"accepted": err == nil, "instruction": "Finish this consultation turn now."}, err
 	case "linked_ask":
+		if other.Archived || folderArchived(a.state.project(other.ProjectID), other.Workspace) || other.Role == sessionRoleSideAgent && a.state.session(other.ParentID).Archived {
+			a.mu.Unlock()
+			return nil, errors.New("Restore the archived conversation before consulting its agent.")
+		}
 		topic, ok := cleanLabel(args.Topic, 120)
 		if !ok || !validLinkedText(args.Question, 32<<10) {
 			a.mu.Unlock()
 			return nil, errors.New("Supply a short topic and a nonempty question of at most 32 KiB.")
 		}
 		active := 0
-		reciprocal := false
+		reciprocal := consultationCycle(&a.state, other.ID, s.ID)
 		for _, c := range a.state.Consultations {
 			if c.From == s.ID && !consultationTerminal(c.Status) {
 				active++
-				if c.Question == args.Question {
+				if c.To == other.ID && c.Question == args.Question {
 					a.mu.Unlock()
 					return linkedAskResult(c, false), nil
 				}
-			}
-			if c.From == other.ID && c.To == s.ID && !consultationTerminal(c.Status) {
-				reciprocal = true
 			}
 		}
 		if active >= 4 {

@@ -88,8 +88,13 @@ type TranscriptionSettings struct {
 }
 
 type diskState struct {
+	tx                  *stateTransaction
+	JournalFormat       int                      `json:"journalFormat,omitempty"`
+	AcceptedMessages    map[string]string        `json:"acceptedMessages,omitempty"`
+	SessionSpawns       []SessionSpawn           `json:"sessionSpawns,omitempty"`
 	QueuePayloads       map[string]queuedPayload `json:"queuePayloads,omitempty"`
 	GraphRevision       uint64                   `json:"graphRevision"`
+	GraphViewRevision   uint64                   `json:"graphViewRevision,omitempty"`
 	GraphActivities     []GraphActivity          `json:"graphActivities,omitempty"`
 	GraphRuns           []GraphRun               `json:"graphRuns,omitempty"`
 	GraphActivations    []GraphActivation        `json:"graphActivations,omitempty"`
@@ -171,6 +176,12 @@ func loadState(dir string) (diskState, error) {
 	if (d.Version != 1 && d.Version != 2) || d.Projects == nil || d.Sessions == nil || d.Native == nil {
 		return d, errors.New("unsupported or incomplete state.json; refusing to overwrite")
 	}
+	if d.JournalFormat != 0 && d.JournalFormat != 1 {
+		return d, errors.New("unsupported journal format in state.json")
+	}
+	if d.GraphViewRevision == 0 {
+		d.GraphViewRevision = d.GraphRevision
+	}
 	normalizeTranscriptionSettings(&d.Transcription)
 	ids := map[string]bool{}
 	for i := range d.Projects {
@@ -226,8 +237,8 @@ func loadState(dir string) (diskState, error) {
 		}
 	}
 	for _, c := range d.Consultations {
-		linked := d.linked(c.From)
-		if c.ID == "" || ids[c.ID] || linked == nil || linked.ID != c.To || !validLinkedText(c.Question, 32<<10) {
+		from, to := d.session(c.From), d.session(c.To)
+		if c.ID == "" || ids[c.ID] || from == nil || to == nil || from.ProjectID != to.ProjectID || !consultationEndpoint(from) || !consultationEndpoint(to) || c.From == c.To || !validLinkedText(c.Question, 32<<10) {
 			return d, errors.New("invalid consultation in state.json")
 		}
 		switch c.Status {
@@ -244,6 +255,14 @@ func loadState(dir string) (diskState, error) {
 			return d, errors.New("invalid consultation timestamp in state.json")
 		}
 		ids[c.ID] = true
+	}
+	spawnKeys := map[string]bool{}
+	for _, spawn := range d.SessionSpawns {
+		key := spawn.From + "/" + spawn.OperationID
+		if spawn.OperationID == "" || spawnKeys[key] || d.session(spawn.From) == nil || d.session(spawn.SessionID) == nil || d.session(spawn.From).ProjectID != d.session(spawn.SessionID).ProjectID || d.session(spawn.SessionID).ParentID != "" || d.session(spawn.SessionID).Role != "" || !graphUserEvent(&d, spawn.From, spawn.SourceUserEventID) {
+			return d, errors.New("invalid session spawn in state.json")
+		}
+		spawnKeys[key] = true
 	}
 	normalizeGraphWorkspaceRecords(&d)
 	if err := validateGraphRecords(&d); err != nil {
@@ -262,6 +281,9 @@ func saveState(dir string, d *diskState) error {
 	if d.Version != 2 {
 		return errors.New("refusing to write unsupported state version")
 	}
+	// Old binaries use DisallowUnknownFields and must refuse this storage rather
+	// than start without replaying the transaction/possibly sealed journal.
+	d.JournalFormat = 1
 	normalizeGraphWorkspaceRecords(d)
 	normalizeTranscriptionSettings(&d.Transcription)
 	if err := validateGraphRecords(d); err != nil {
@@ -290,36 +312,28 @@ func saveState(dir string, d *diskState) error {
 	return replaceFile(name, filepath.Join(dir, "state.json"))
 }
 
-// Caller holds app.mu. Publish only a successfully persisted, immutable snapshot.
+// Caller holds app.mu. Every writer uses the same ordered durable transaction gate.
 func (a *app) commitLocked(change func(*diskState)) error {
-	if a.storageErr != nil {
-		return a.storageErr
+	return a.commitTransactionLocked(func(d *diskState) error { change(d); return nil })
+}
+
+func (a *app) failStorageLocked(err error) error {
+	log.Printf("state persistence failed: %v", err)
+	a.storageErr = errors.New("state persistence failed; engine is read-only until restarted")
+	for _, r := range a.runs {
+		r.cancel()
 	}
-	before := a.state
-	b, err := json.Marshal(a.state)
-	var next diskState
-	if err == nil {
-		err = json.Unmarshal(b, &next)
+	for _, r := range a.graphRuns {
+		r.cancel()
 	}
-	if err == nil {
-		change(&next)
-		next.GraphRevision++
-		err = saveState(a.dir, &next)
-	}
-	if err != nil {
-		log.Printf("state persistence failed: %v", err)
-		a.storageErr = errors.New("state persistence failed; engine is read-only until restarted")
-		for _, r := range a.runs {
-			r.cancel()
+	return a.storageErr
+}
+
+func (a *app) notifyAllLocked() {
+	for id, listeners := range a.listeners {
+		if id == "*" {
+			continue
 		}
-		for _, r := range a.graphRuns {
-			r.cancel()
-		}
-		return a.storageErr
-	}
-	a.state = next
-	a.recordHistoryLocked(before)
-	for _, listeners := range a.listeners {
 		for ch := range listeners {
 			select {
 			case ch <- struct{}{}:
@@ -327,5 +341,11 @@ func (a *app) commitLocked(change func(*diskState)) error {
 			}
 		}
 	}
-	return nil
+	for subscription := range a.updateListeners {
+		subscription.all = true
+		select {
+		case subscription.wake <- struct{}{}:
+		default:
+		}
+	}
 }

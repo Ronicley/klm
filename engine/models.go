@@ -50,6 +50,14 @@ type catalogCache struct {
 	expires time.Time
 }
 
+type catalogFlight struct {
+	done    chan struct{}
+	cancel  context.CancelFunc
+	waiters int
+	catalog *ModelCatalog
+	err     error
+}
+
 func (c *ModelCatalog) find(id string) *ModelOption {
 	for i := range c.Models {
 		if c.Models[i].ID == id {
@@ -61,19 +69,67 @@ func (c *ModelCatalog) find(id string) *ModelOption {
 
 func (a *app) catalog(ctx context.Context, s Session, cwd string, refresh bool) (*ModelCatalog, error) {
 	a.catalogMu.Lock()
-	defer a.catalogMu.Unlock()
 	key := s.ProjectID + "/" + s.Harness
 	if entry, ok := a.catalogs[key]; ok && !refresh && time.Now().Before(entry.expires) {
+		a.catalogMu.Unlock()
 		return entry.catalog, nil
 	}
+	flight := a.catalogFlights[key]
+	if flight == nil {
+		background := a.ctx
+		if background == nil {
+			background = context.Background()
+		}
+		flightCtx, cancel := context.WithTimeout(background, 45*time.Second)
+		flight = &catalogFlight{done: make(chan struct{}), cancel: cancel}
+		if a.catalogFlights == nil {
+			a.catalogFlights = map[string]*catalogFlight{}
+		}
+		a.catalogFlights[key] = flight
+		go func() {
+			catalog, err := a.discoverCatalog(flightCtx, s, cwd)
+			a.catalogMu.Lock()
+			flight.catalog, flight.err = catalog, err
+			if err == nil && a.catalogFlights[key] == flight {
+				if a.catalogs == nil {
+					a.catalogs = map[string]catalogCache{}
+				}
+				a.catalogs[key] = catalogCache{catalog, time.Now().Add(2 * time.Minute)}
+			}
+			if a.catalogFlights[key] == flight {
+				delete(a.catalogFlights, key)
+			}
+			close(flight.done)
+			a.catalogMu.Unlock()
+			cancel()
+		}()
+	}
+	flight.waiters++
+	a.catalogMu.Unlock()
+	select {
+	case <-ctx.Done():
+		a.catalogMu.Lock()
+		flight.waiters--
+		if flight.waiters == 0 {
+			if a.catalogFlights[key] == flight {
+				delete(a.catalogFlights, key)
+			}
+			flight.cancel()
+		}
+		a.catalogMu.Unlock()
+		return nil, ctx.Err()
+	case <-flight.done:
+		return flight.catalog, flight.err
+	}
+}
+
+func (a *app) discoverCatalog(ctx context.Context, s Session, cwd string) (*ModelCatalog, error) {
 	a.mu.Lock()
 	b, installed := a.binaries[s.Harness]
 	a.mu.Unlock()
 	if !installed {
 		return nil, errors.New("Harness is not installed.")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
 	var catalog *ModelCatalog
 	var err error
 	switch s.Harness {
@@ -109,22 +165,20 @@ func (a *app) catalog(ctx context.Context, s Session, cwd string, refresh bool) 
 		}
 		return l.Name < r.Name
 	})
-	if a.catalogs == nil {
-		a.catalogs = map[string]catalogCache{}
-	}
-	a.catalogs[key] = catalogCache{catalog, time.Now().Add(2 * time.Minute)}
 	return catalog, nil
 }
 
 func (a *app) sessionForRead(w http.ResponseWriter, r *http.Request) (Session, string, bool) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	s := a.state.session(r.PathValue("id"))
 	if s == nil {
+		a.mu.Unlock()
 		fail(w, 404, "Session not found.")
 		return Session{}, "", false
 	}
-	return *s, a.state.project(s.ProjectID).Folder, true
+	view, folder := *s, a.state.project(s.ProjectID).Folder
+	a.mu.Unlock()
+	return view, folder, true
 }
 
 func (a *app) getModels(w http.ResponseWriter, r *http.Request) {
@@ -546,13 +600,14 @@ func (a *app) updateModelSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	current := a.state.session(s.ID)
 	if current == nil {
+		a.mu.Unlock()
 		fail(w, 404, "Session not found.")
 		return
 	}
 	if a.runs[s.ID] != nil {
+		a.mu.Unlock()
 		fail(w, 409, "Wait for the current turn before changing models.")
 		return
 	}
@@ -570,8 +625,11 @@ func (a *app) updateModelSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.UpdatedAt = now()
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
-	respond(w, 200, a.currentSessionUpdateLocked(s.ID))
+	response := a.currentSessionUpdateLocked(s.ID)
+	a.mu.Unlock()
+	respond(w, 200, response)
 }

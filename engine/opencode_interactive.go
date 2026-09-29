@@ -1238,57 +1238,75 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 					return err
 				}
 				terminalAssistant, incomplete := false, false
+				// Drain live deltas first. Reconcile final native parts in one
+				// durable batch, eliding unchanged upserts in streamChanges.
+				if p.stream != nil {
+					if err := p.stream.flush(nil); err != nil {
+						return err
+					}
+				}
 				latestCreated, latestID := float64(-1), ""
 				latestParentID := ""
-				for i := len(history) - 1; i >= 0; i-- {
-					message := history[i]
-					info := object(message["info"])
-					id := str(info, "id")
-					if id == "" || baseline[id] || str(info, "role") != "assistant" {
-						continue
-					}
-					if str(info, "sessionID") != sessionID {
-						return errors.New("OpenCode history contained a different native session.")
-					}
-					infos[id] = info
-					usage.message(info)
-					if info["error"] != nil && !(choiceInterrupted && str(object(info["error"]), "name") == "MessageAbortedError") {
-						return p.failure(map[string]any{"type": "message.updated", "error": info["error"]})
-					}
-					completed := object(info["time"])["completed"] != nil
-					if !completed {
-						incomplete = true
-					}
-					created, _ := object(info["time"])["created"].(float64)
-					if created > latestCreated || (created == latestCreated && id > latestID) {
-						latestCreated, latestID = created, id
-						latestParentID = str(info, "parentID")
-						finish := str(info, "finish")
-						terminalAssistant = completed && finish != "" && finish != "tool-calls" && finish != "unknown"
-						if choiceInterrupted && completed && str(object(info["error"]), "name") == "MessageAbortedError" {
-							terminalAssistant = true
+				nativeFailure := false
+				err := p.withFinalBatch(func() error {
+					for i := len(history) - 1; i >= 0; i-- {
+						message := history[i]
+						info := object(message["info"])
+						id := str(info, "id")
+						if id == "" || baseline[id] || str(info, "role") != "assistant" {
+							continue
 						}
-					}
-					completeParts, ok := message["parts"].([]any)
-					if !ok {
-						return errors.New("OpenCode history did not contain message parts.")
-					}
-					for _, value := range completeParts {
-						part := object(value)
-						if str(part, "messageID") != id {
-							return errors.New("OpenCode history contained an invalid message part.")
+						if str(info, "sessionID") != sessionID {
+							return errors.New("OpenCode history contained a different native session.")
 						}
-						usage.part(part)
-						if str(part, "type") == "tool" {
-							state := str(object(part["state"]), "status")
-							if state != "completed" && state != "error" {
-								incomplete = true
-							}
-						}
-						if err := putPart(p, sessionID, baseline, infos, part, true); err != nil {
+						infos[id] = info
+						usage.message(info)
+						if failed, err := p.openCodeFinalError(info, choiceInterrupted); failed || err != nil {
+							nativeFailure = failed
 							return err
 						}
+						completed := object(info["time"])["completed"] != nil
+						if !completed {
+							incomplete = true
+						}
+						created, _ := object(info["time"])["created"].(float64)
+						if created > latestCreated || (created == latestCreated && id > latestID) {
+							latestCreated, latestID = created, id
+							latestParentID = str(info, "parentID")
+							finish := str(info, "finish")
+							terminalAssistant = completed && finish != "" && finish != "tool-calls" && finish != "unknown"
+							if choiceInterrupted && completed && str(object(info["error"]), "name") == "MessageAbortedError" {
+								terminalAssistant = true
+							}
+						}
+						completeParts, ok := message["parts"].([]any)
+						if !ok {
+							return errors.New("OpenCode history did not contain message parts.")
+						}
+						for _, value := range completeParts {
+							part := object(value)
+							if str(part, "messageID") != id {
+								return errors.New("OpenCode history contained an invalid message part.")
+							}
+							usage.part(part)
+							if str(part, "type") == "tool" {
+								state := str(object(part["state"]), "status")
+								if state != "completed" && state != "error" {
+									incomplete = true
+								}
+							}
+							if err := putPart(p, sessionID, baseline, infos, part, true); err != nil {
+								return err
+							}
+						}
 					}
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+				if nativeFailure {
+					return nil
 				}
 				if err := p.setUsage(usage.snapshot()); err != nil {
 					return err
@@ -1319,6 +1337,13 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 			}
 		}
 	}
+}
+
+func (p *adapter) openCodeFinalError(info map[string]any, choiceInterrupted bool) (bool, error) {
+	if info["error"] == nil || (choiceInterrupted && str(object(info["error"]), "name") == "MessageAbortedError") {
+		return false, nil
+	}
+	return true, p.failure(map[string]any{"type": "message.updated", "error": info["error"]})
 }
 
 // Called only after native request ownership has been verified. Questions from

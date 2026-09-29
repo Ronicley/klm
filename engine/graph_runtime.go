@@ -27,22 +27,12 @@ func (a *app) graphChangeLocked(change func(*diskState) error) error {
 	if a.storageErr != nil {
 		return a.storageErr
 	}
-	data, err := json.Marshal(a.state)
-	if err != nil {
-		return err
-	}
-	var next diskState
-	if err = json.Unmarshal(data, &next); err != nil {
-		return err
-	}
-	if err = change(&next); err != nil {
-		return err
-	}
-	normalizeGraphWorkspaceRecords(&next)
-	if err = validateGraphRecords(&next); err != nil {
-		return err
-	}
-	return a.commitLocked(func(d *diskState) { *d = next })
+	return a.commitTransactionLocked(func(next *diskState) error {
+		if err := change(next); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 func (a *app) signalGraphLocked(runID string) {
 	if g := a.graphRuns[runID]; g != nil {

@@ -81,6 +81,13 @@ func (b *streamBatch) enqueue(update streamUpdate) error {
 // Serialize periodic writes with synchronous boundaries. Swap the pending batch
 // before acquiring app.mu; new text never waits for JSON cloning or fsync.
 func (b *streamBatch) flush(last *streamUpdate) error {
+	if last == nil {
+		return b.flushUpdates(nil)
+	}
+	return b.flushUpdates([]streamUpdate{*last})
+}
+
+func (b *streamBatch) flushUpdates(last []streamUpdate) error {
 	b.writeMu.Lock()
 	defer b.writeMu.Unlock()
 	b.mu.Lock()
@@ -92,9 +99,7 @@ func (b *streamBatch) flush(last *streamUpdate) error {
 	updates := b.pending
 	b.pending, b.indices = nil, nil
 	b.mu.Unlock()
-	if last != nil {
-		updates = append(updates, *last)
-	}
+	updates = append(updates, last...)
 	if len(updates) == 0 {
 		return nil
 	}
@@ -119,38 +124,57 @@ func (b *streamBatch) close() error {
 func (p *adapter) commitStreamUpdates(updates []streamUpdate) error {
 	p.app.mu.Lock()
 	defer p.app.mu.Unlock()
-	return p.app.commitLocked(func(d *diskState) {
-		s := d.session(p.id)
-		for _, update := range updates {
-			var e *Event
-			for i := len(s.Events) - 1; i >= 0; i-- {
-				if s.Events[i].ID == update.event.ID {
-					e = &s.Events[i]
-					break
-				}
-			}
-			if e == nil {
-				s.Events = append(s.Events, update.event)
-				continue
-			}
-			if update.event.Title != "" {
-				e.Title = update.event.Title
-			}
-			if update.event.Status != "" {
-				e.Status = update.event.Status
-			}
-			if update.appendText {
-				e.Text += update.event.Text
-			} else {
-				e.Text = update.event.Text
-			}
-			if e.Data == nil {
-				e.Data = make(map[string]any)
-			}
-			for key, value := range update.event.Data {
-				e.Data[key] = value
-			}
+	a := p.app
+	if a.storageErr != nil {
+		return a.storageErr
+	}
+	s := a.state.session(p.id)
+	if s == nil {
+		return nil
+	}
+	revision := a.state.GraphRevision + 1
+	if a.streamIndexes == nil {
+		a.streamIndexes = map[string]map[string]int{}
+	}
+	indices := a.streamIndexes[p.id]
+	if indices == nil {
+		indices = make(map[string]int, len(s.Events))
+		for i, entry := range s.Events {
+			indices[entry.ID] = i
 		}
-		s.UpdatedAt = now()
-	})
+		a.streamIndexes[p.id] = indices
+	}
+	changes := streamChangesWithIndex(s.Events, updates, revision, indices)
+	if len(changes) == 0 {
+		return nil
+	}
+	updated := now()
+	record := streamRecord{Revision: revision, Session: p.id, Updated: updated}
+	changedIDs := make(map[string]bool, len(changes))
+	for _, change := range changes {
+		changedIDs[change.Event.ID] = true
+	}
+	for _, update := range updates {
+		if changedIDs[update.event.ID] {
+			record.Updates = append(record.Updates, streamOperation{Event: update.event, AppendText: update.appendText})
+		}
+	}
+	if err := appendStreamRecord(a.dir, record); err != nil {
+		return a.failStorageLocked(err)
+	}
+	for _, change := range changes {
+		if a.messageIDs != nil {
+			a.messageIDs[change.Event.ID] = true
+		}
+		if change.Index == len(s.Events) {
+			s.Events = append(s.Events, change.Event)
+		} else {
+			s.Events[change.Index] = change.Event
+		}
+	}
+	s.UpdatedAt = updated
+	a.state.GraphRevision = revision
+	a.appendHistoryChangesLocked(p.id, revision, changes)
+	a.notifySessionLocked(p.id)
+	return nil
 }

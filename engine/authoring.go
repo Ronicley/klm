@@ -144,13 +144,15 @@ func revision(data []byte) string { hash := sha256.Sum256(data); return hex.Enco
 
 func (a *app) authoringProject(w http.ResponseWriter, r *http.Request) (Project, bool) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	p := a.state.project(r.PathValue("id"))
 	if p == nil || p.Removed {
+		a.mu.Unlock()
 		fail(w, 404, "Project not found.")
 		return Project{}, false
 	}
-	return *p, true
+	project := *p
+	a.mu.Unlock()
+	return project, true
 }
 
 // Never follow project configuration directories/files outside the project. Reads

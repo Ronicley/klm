@@ -280,7 +280,18 @@ func graphUserEvent(d *diskState, owner, eventID string) bool {
 	if s == nil || eventID == "" {
 		return false
 	}
-	for _, event := range s.Events {
+	start := 0
+	if d.tx != nil && d.tx.indices[owner] != nil {
+		if i, ok := d.tx.indices[owner][eventID]; ok {
+			e := s.Events[i]
+			if staged, ok := d.tx.events[owner][i]; ok {
+				e = staged
+			}
+			return e.ID == eventID && e.Type == "user"
+		}
+		start = d.tx.baseEvents[owner]
+	}
+	for _, event := range s.Events[start:] {
 		if event.ID == eventID && event.Type == "user" {
 			return true
 		}

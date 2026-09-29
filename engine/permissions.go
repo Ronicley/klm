@@ -236,7 +236,6 @@ func (a *app) permissionDecision(w http.ResponseWriter, r *http.Request) {
 		err = pending.reply(body.Decision != "reject" && body.Decision != "deny_project" && body.Decision != "deny_global")
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if err != nil {
 		rollback := a.commitLocked(func(d *diskState) {
 			d.Grants = slices.DeleteFunc(d.Grants, func(grant permissionGrant) bool { return grant.ID == grantID && grantID != "" })
@@ -249,6 +248,7 @@ func (a *app) permissionDecision(w http.ResponseWriter, r *http.Request) {
 			s.UpdatedAt = now()
 		})
 		pending.busy = false
+		a.mu.Unlock()
 		if rollback != nil {
 			fail(w, 503, rollback.Error())
 			return
@@ -268,8 +268,11 @@ func (a *app) permissionDecision(w http.ResponseWriter, r *http.Request) {
 		entry.Data = map[string]any{"harness": s.Harness, "permission": pending.request.Kind, "patterns": pending.request.Patterns, "decision": body.Decision}
 		s.Events = append(s.Events, entry)
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
-	respond(w, 200, a.currentSessionUpdateLocked(id))
+	response := a.currentSessionUpdateLocked(id)
+	a.mu.Unlock()
+	respond(w, 200, response)
 }

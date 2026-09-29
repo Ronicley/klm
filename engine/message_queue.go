@@ -8,6 +8,7 @@ import (
 
 // Prepared attachments are stored separately from the public queue projection.
 type QueuedMessage struct {
+	Origin   *SpawnOrigin      `json:"origin,omitempty"`
 	ID       string            `json:"id"`
 	Text     string            `json:"text"`
 	Status   string            `json:"status"`
@@ -37,9 +38,16 @@ func removeQueuedMessage(d *diskState, sessionID, messageID string) {
 func appendQueuedUser(d *diskState, sessionID string, q QueuedMessage) {
 	s := d.session(sessionID)
 	payload := d.QueuePayloads[q.ID].Submission
-	e := event("user", q.Text)
+	kind := "user"
+	if q.Origin != nil {
+		kind = "agent_prompt"
+	}
+	e := event(kind, q.Text)
 	e.ID = q.ID
 	e.Data = map[string]any{"delivery": q.Mode}
+	if q.Origin != nil {
+		e.Data["origin"] = q.Origin
+	}
 	if len(q.Sources) > 0 {
 		e.Data["sources"] = q.Sources
 		s.Sources = append(s.Sources, q.Sources...)
@@ -203,9 +211,9 @@ func (a *app) scheduleMessagesLocked() {
 func (a *app) changeQueuedMessage(w http.ResponseWriter, r *http.Request) {
 	id, messageID := r.PathValue("id"), r.PathValue("messageID")
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	s := a.state.session(id)
 	if s == nil {
+		a.mu.Unlock()
 		fail(w, 404, "Session not found.")
 		return
 	}
@@ -218,18 +226,22 @@ func (a *app) changeQueuedMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if queued == nil {
+		a.mu.Unlock()
 		fail(w, 404, "Queued message not found.")
 		return
 	}
 	if queued.Status == "sending" {
+		a.mu.Unlock()
 		fail(w, 409, "Message delivery is in progress.")
 		return
 	}
 	if t := a.runs[id]; t != nil && t.ctx.Err() != nil {
+		a.mu.Unlock()
 		fail(w, 409, "Execution is still stopping.")
 		return
 	}
 	if a.closing {
+		a.mu.Unlock()
 		fail(w, 503, "Engine is shutting down.")
 		return
 	}
@@ -253,6 +265,7 @@ func (a *app) changeQueuedMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		next.UpdatedAt = now()
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
@@ -267,11 +280,14 @@ func (a *app) changeQueuedMessage(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}); err != nil {
+			a.mu.Unlock()
 			fail(w, 503, err.Error())
 			return
 		}
 	}
 	a.wakeSteeringLocked(id)
 	a.scheduleMessagesLocked()
-	respond(w, 200, a.currentSessionUpdateLocked(id))
+	response := a.currentSessionUpdateLocked(id)
+	a.mu.Unlock()
+	respond(w, 200, response)
 }

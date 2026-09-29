@@ -427,14 +427,15 @@ func (a *app) updatePermissionSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	id := r.PathValue("id")
 	s := a.state.session(id)
 	if s == nil {
+		a.mu.Unlock()
 		fail(w, 404, "Session not found.")
 		return
 	}
 	if a.runs[id] != nil {
+		a.mu.Unlock()
 		fail(w, 409, "Stop or finish the current turn before changing YOLO mode.")
 		return
 	}
@@ -442,16 +443,20 @@ func (a *app) updatePermissionSettings(w http.ResponseWriter, r *http.Request) {
 		s := d.session(id)
 		s.YOLO, s.UpdatedAt = *body.YOLO, now()
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
-	respond(w, 200, a.currentSessionUpdateLocked(id))
+	response := a.currentSessionUpdateLocked(id)
+	a.mu.Unlock()
+	respond(w, 200, response)
 }
 
 func (a *app) permissionRules(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	respond(w, 200, slices.Clone(a.state.Grants))
+	response := slices.Clone(a.state.Grants)
+	a.mu.Unlock()
+	respond(w, 200, response)
 }
 
 // Apply new project/global decisions to cards already waiting elsewhere too.
@@ -508,12 +513,13 @@ func (a *app) resolveRememberedPermissions() {
 
 func (a *app) deletePermissionRule(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if err := a.commitLocked(func(d *diskState) {
 		d.Grants = slices.DeleteFunc(d.Grants, func(grant permissionGrant) bool { return grant.ID == r.PathValue("ruleID") })
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
+	a.mu.Unlock()
 	respond(w, 200, map[string]bool{"deleted": true})
 }

@@ -78,6 +78,43 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 Adding the same directory again restores a removed project's identity, folders,
 and session history with the name and icon chosen in the add dialog.
 
+### Session collaboration (private harness bridge)
+
+`session_spawn` accepts `{title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,workspace?}`.
+It creates one top-level session in the calling session's project, persists a
+pending first input and a receipt in the origin atomically, and schedules its
+normal turn independently. The source reference must be an existing human `user`
+event in that conversation; the engine records traceability, while the editable
+prompt instructs the agent to create sessions only when explicitly requested.
+Repeated identical calls with the same operation ID return the original receipt;
+different arguments conflict. The receipt reports acceptance, not execution
+success. Default harness/model/effort and visual folder come from the caller;
+changing harness uses that harness's model defaults. YOLO, local grants, selected
+graphs, native history and active turns are not copied. No automatic completion
+notification is sent to the origin. Pending or uncertain deliveries remain
+recoverable with the ordinary queue controls after interruption.
+
+`session_discover` accepts `{query?,cursor?,limit?,includeArchived?}` and returns
+bounded same-project top-level identities (`id`, title, project, workspace,
+harness and archived flag). `linked_read` and `linked_ask` accept an optional
+`sessionId` for an eligible top-level target; without it they retain their
+main/side target. Reading an archived session requires an explicit ID and is
+allowed; consulting one requires restoration. `linked_answer` uses the active
+correlated request, regardless of whether the two sessions have a side link.
+Consultations retain the four-pending-per-origin limit and ten-minute timeout;
+the same question to different recipients is separate. No graph node or native
+subagent receives these tools. Pi loads the same engine-supplied tool catalog as
+OpenCode and Codex through its managed extension.
+
+Agent behavior is editable in `engine/prompts/session-collaboration.md` during
+development, or `prompts/session-collaboration.md` next to the installed engine.
+`KLM_PROMPTS_DIR` overrides both. The Windows engine packaging copies all
+`engine/prompts/*.md` into the installer's prompts directory. Changes take effect
+on the next turn; missing or empty prompt files surface an error instead of
+silently reverting to hardcoded guidance. Consultations from other agents are
+attributed context, not new user messages or permission grants. Creation and
+consultation still use the private authenticated loopback bridge.
+
 ```typescript
 type Project = {
   id: string
@@ -117,7 +154,7 @@ type Session = {
 type Event = {
   id: string
   consultationId?: string
-  type: 'user' | 'assistant' | 'reasoning' | 'command' | 'mcp' | 'tool' | 'error' | 'status' | 'consultation'
+  type: 'user' | 'agent_prompt' | 'session_spawn' | 'assistant' | 'reasoning' | 'command' | 'mcp' | 'tool' | 'error' | 'status' | 'consultation'
   text: string
   title?: string
   status?: string
@@ -713,9 +750,40 @@ execution, a full suite, or an adversarial review.
 
 ## Persistence And Recovery
 
-- `state.json` holds projects, sessions, events, and the private native-session
-  map. Every published mutation is serialized under a mutex and written to a
-  same-directory temporary file, synced, closed, then atomically replaced.
+- `state.json` is the full checkpoint (v2, `journalFormat: 1`). Commands and stream
+  updates share one ordered `stream.journal`: each frame is a little-endian uint32
+  JSON length, uint32 CRC32, then JSON, capped at 256 MiB. Stream records retain
+  `{revision,session,updated,updates,usage?}`; command records use
+  `{format:1,revision,transaction:[{path,value?|length?|delete?}]}`. Paths are arrays
+  of field names (JSON tag, or Go name when untagged, including embedded containers),
+  slice indexes and map keys. Each command frame includes all
+  affected queue payloads, receipts, consultations, graph records and event edits.
+  A frame is synced before publishing state, SSE notifications or HTTP success.
+  Identical commands/stream updates need no new revision or write.
+- Command callbacks clone mutable metadata in memory, sharing immutable strings
+  and append-only event histories. Existing session events must be replaced through
+  `diskState.setEvent`, which stages indexed changes until persistence succeeds;
+  never mutate existing event payload maps in place. Activation event logs are
+  append-only. SSE changes are ordered by index. No per-command full JSON state
+  clone, global history diff or full-session event copy is performed. Metadata
+  traversal/validation still scales with the number of records; this is not an
+  O(1) database. Captured graph validation/compilation and event identity indexes
+  are reused rather than rereading source text or unrelated event histories.
+- Every five minutes the checkpoint worker serializes with other checkpoints,
+  rotates the active journal to `stream.sealed` under `app.mu`, then releases it.
+  It reconstructs an independent state from the previous checkpoint and sealed
+  segment, writes/syncs/replaces `state.json`, and removes only that sealed segment.
+  Commands and streaming continue into a new active journal during the expensive
+  replay/validation/serialization/write. Shutdown joins this worker before releasing
+  the data-directory lock. Small journal fsyncs remain serialized under `app.mu`.
+- Recovery reads checkpoint, sealed segment, then active segment, ignoring revisions
+  already in the checkpoint and requiring contiguous newer revisions. It truncates
+  and syncs an incomplete last frame; a complete corrupt frame, unsupported format
+  or revision gap is an error. Session reordering preserves histories by identity.
+  Versions 1/2 and the older stream-only journal remain readable. Before serving,
+  startup persists the `journalFormat` marker so older binaries refuse the data
+  instead of ignoring a journal. Downgrade is unsupported; a backup includes all
+  three storage files, not just `state.json`.
 - Windows replacement uses `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`.
   Unix uses rename plus parent-directory sync. Use a local filesystem with normal
   atomic rename/sync semantics, not a network share or cloud-synced data directory.
@@ -744,10 +812,10 @@ execution, a full suite, or an adversarial review.
   at 2 MiB and total stdout at 32 MiB per turn; hitting a limit cancels the turn
   with an explicit error. Stderr is capped at 16 KiB and is never persisted,
   exposed, or logged. Exit failures report a bounded generic diagnostic instead.
-- Session history is durable and unbounded across turns. This first implementation
-  rewrites the full state per event, intentionally favoring simplicity over large
-  histories/high token throughput. There is no retention, deletion, or compaction
-  API yet. Back up the data directory with the engine stopped.
+- Session history is durable and unbounded across turns. Full checkpoint/recovery
+  cost still grows with retained history, but is outside the live application mutex.
+  There is no history retention/deletion API yet. Back up the data directory with
+  the engine stopped. Measurements and recovery checks: [R4 result](../LATENCY_R4_RESULT.md).
 
 ## Network and Private Control Boundaries
 

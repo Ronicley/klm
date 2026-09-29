@@ -1,5 +1,5 @@
 import { Atom, Check, Copy, FileText, Star } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { IconButton } from '../../design-system/Button';
@@ -49,16 +49,16 @@ const inlineMarkdownComponents: Components = {
   img: markdownComponents.img,
 };
 
-export function MarkdownContent({ text, className = '' }: { text: string; className?: string }) {
+export const MarkdownContent = memo(function MarkdownContent({ text, className = '' }: { text: string; className?: string }) {
   const markdown = useMemo(() => normalizeFlowchartMarkdown(text), [text]);
   return <div className={`markdown-body ${className}`.trim()}><Markdown remarkPlugins={markdownPlugins} components={markdownComponents} skipHtml>{markdown}</Markdown></div>;
-}
+});
 
-export function InlineMarkdownContent({ text }: { text: string }) {
+export const InlineMarkdownContent = memo(function InlineMarkdownContent({ text }: { text: string }) {
   return <Markdown remarkPlugins={markdownPlugins} components={inlineMarkdownComponents} skipHtml>{text}</Markdown>;
-}
+});
 
-export function ChatMessage({ message, onFavorite }: { message: Message; onFavorite?: (favorite: boolean) => Promise<void> }) {
+export function ChatMessage({ message, onFavorite, senderLabel }: { message: Message; onFavorite?: (favorite: boolean) => Promise<void>; senderLabel?: string }) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
   const [favoriting, setFavoriting] = useState(false);
@@ -76,7 +76,7 @@ export function ChatMessage({ message, onFavorite }: { message: Message; onFavor
   }
   const streaming = message.role === 'assistant' && message.status === 'running';
   const canFavorite = message.role === 'assistant' && (!message.status || message.status === 'completed') && !!onFavorite;
-  return <article data-message-id={message.id} className={`message message--${message.role}`} aria-label={`${message.role === 'user' ? 'Your' : 'Agent'} message`}>
+  return <article data-message-id={message.id} className={`message message--${message.role}`} aria-label={senderLabel ?? `${message.role === 'user' ? 'Your' : 'Agent'} message`}>
     <div className="message-body">
       {message.context && <div className="context-injections">{message.context.map(file => <div key={file}><FileText /><span>Context injection</span><span aria-hidden="true">·</span><span className="context-file">{file}</span></div>)}</div>}
       {message.thought && <details className="thought"><summary><Atom /><strong>Think</strong><span>·</span><span className="thought-preview">{message.thought}</span></summary><p>{message.thought}</p></details>}

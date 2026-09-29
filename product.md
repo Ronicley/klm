@@ -270,6 +270,26 @@ counts. Quota, skills, and MCP indicators belong only to the main status bar.
 This feature does not imply simultaneous turns inside one native session or
 automatic switching between harnesses during a task.
 
+### Independent sessions and cross-session consultations
+
+On an explicit user request to create sessions, a main or side agent can create
+independent top-level sessions in the same project directory, each with its own
+title, initial agent-authored prompt, native history, harness settings, permission
+and question flow, and Stop control. The initial prompt is attributed to the
+originating session and cannot serve as a human authorization message in the new
+session. A durable operation ID prevents duplicate creation on retries. Creating
+a session does not subscribe the creator to its progress or completion; normal
+session controls and inventory show it to the user.
+
+When the user mentions another session and checking it is relevant, agents can
+discover top-level sessions in the same project, read bounded history by ID, or
+consult their agents in their actual native conversations. Main/side consultation
+without a target ID continues to work. Archived sessions can be read explicitly
+but must be restored before being consulted. Correlated answers and bounded waits
+use the existing consultation mechanism. Graph nodes and native subagents do not
+receive these collaboration tools. The adjustable agent guidance lives in
+`engine/prompts/session-collaboration.md` and applies from the next turn.
+
 ## Agent and Graph Authoring
 
 Project agents and graphs can be authored independently of graph execution. Each
