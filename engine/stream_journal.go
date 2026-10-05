@@ -71,7 +71,7 @@ func replayStreamJournal(dir string, state *diskState) error {
 	return replayJournalFile(streamJournalPath(dir), state)
 }
 
-func replayJournalFile(path string, state *diskState) error {
+func replayJournalFile(path string, state *diskState, transform ...func(*streamRecord) error) error {
 	f, err := os.OpenFile(path, os.O_RDWR, 0600)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -123,6 +123,11 @@ func replayJournalFile(path string, state *diskState) error {
 			if record.Format == 1 {
 				if len(record.Transaction) == 0 || len(record.Updates) != 0 || record.Usage != nil {
 					return errors.New("invalid transaction frame")
+				}
+				for _, clean := range transform {
+					if err := clean(&record); err != nil {
+						return err
+					}
 				}
 				if err := replayTransaction(state, record.Transaction); err != nil {
 					return err

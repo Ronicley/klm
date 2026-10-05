@@ -1047,6 +1047,24 @@ effect; the factory is registered in `init()` and prompts are loaded when needed
 See `GRAPH_ENGINE_PROGRESS_CORE.md` and `GRAPH_ENGINE_PROGRESS_ADAPTER.md` at the
 repository root for integration contracts and actual verification evidence.
 
+## Retired Tasks storage
+
+The abandoned Tasks prototype is not part of the current engine. At startup,
+while holding the data-directory lock, the engine removes its known checkpoint
+fields (`taskSchema`, `tasks`, `taskRuns`, `githubBindings`, `githubReceipts`,
+`engineTime`) and task ownership metadata on sessions and graph records. Ordinary
+chat histories, native session identities, projects and authorized graph records
+remain intact; graph input `task` is unrelated and is preserved.
+
+Cleanup first replays both journal segments into an isolated copy, excluding only
+retired Tasks fields, and validates the result with the current storage rules.
+Unknown fields, corrupt journals and graph records without valid user authorization
+still fail rather than being silently discarded or reauthorized. Before replacing
+the checkpoint, original files are synced to `backup-before-tasks-removal-*` under
+the data directory. Journal segments are retired only after the clean checkpoint
+covers their revisions. Existing `state.pre-tasks-*` backups are never restored or
+deleted. No harness work is started by the cleanup.
+
 ## Queued messages and steering (issue #4)
 
 `POST /api/sessions/{id}/messages` accepts optional `mode: "queue" | "steer"`.

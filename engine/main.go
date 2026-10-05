@@ -83,6 +83,9 @@ func runEngine(dir string) error {
 		return fmt.Errorf("cannot listen on port %s; it may be in use by another program: %w", apiPort, err)
 	}
 	defer listener.Close()
+	if err := removeAbandonedTasks(dir); err != nil {
+		return fmt.Errorf("cannot remove abandoned Tasks storage: %w", err)
+	}
 	state, err := loadState(dir)
 	if err != nil {
 		return err
