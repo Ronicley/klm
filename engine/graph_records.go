@@ -374,7 +374,7 @@ func (d *diskState) sessionView(id string) *Session {
 		return nil
 	}
 	view := *s
-	if s.ParentID == "" && s.GraphRunID == "" {
+	if s.ParentID == "" && s.GraphRunID == "" && s.Role != sessionRoleGeneralAgent {
 		projection := d.graphProjection(id)
 		view.Graph = &projection
 	}
@@ -489,8 +489,16 @@ func validateGraphRecordsCached(d *diskState, cache map[string]validatedGraphSna
 			return bad("project identity", p.ID)
 		}
 	}
+	generalCount := 0
 	for _, s := range d.Sessions {
-		if !claim(s.ID) || d.project(s.ProjectID) == nil || s.Events == nil {
+		engineOwned := s.Role == sessionRoleGeneralAgent || s.Role == sessionRoleSubagent && s.ProjectID == "" && d.session(s.ParentID) != nil && d.session(s.ParentID).Role == sessionRoleGeneralAgent
+		if s.Role == sessionRoleGeneralAgent {
+			generalCount++
+			if generalCount > 1 || s.ProjectID != "" || s.ParentID != "" || s.GraphRunID != "" || s.SelectedGraphID != "" || s.Archived || !filepath.IsAbs(s.ExecutionCWD) {
+				return bad("general conversation", s.ID)
+			}
+		}
+		if !claim(s.ID) || !engineOwned && d.project(s.ProjectID) == nil || s.Events == nil {
 			return bad("session identity", s.ID)
 		}
 	}
@@ -512,7 +520,7 @@ func validateGraphRecordsCached(d *diskState, cache map[string]validatedGraphSna
 		}
 		if grant.SessionID != "" {
 			s := d.session(grant.SessionID)
-			if grant.ProjectID == "" || s == nil || s.ProjectID != grant.ProjectID || grant.Harness != "" && s.Harness != grant.Harness {
+			if s == nil || grant.ProjectID == "" && s.Role != sessionRoleGeneralAgent || s.ProjectID != grant.ProjectID || grant.Harness != "" && s.Harness != grant.Harness {
 				return bad("permission grant owner", grant.ID)
 			}
 		}
@@ -770,7 +778,7 @@ func validateGraphRecordsCached(d *diskState, cache map[string]validatedGraphSna
 			return bad("persisted public projection", s.ID)
 		}
 		if s.GraphRunID == "" {
-			if s.GraphNodeID != "" || s.ExecutionCWD != "" || s.Role == "graph_node" {
+			if s.GraphNodeID != "" || s.ExecutionCWD != "" && s.Role != sessionRoleGeneralAgent || s.Role == "graph_node" {
 				return bad("session ownership", s.ID)
 			}
 			continue

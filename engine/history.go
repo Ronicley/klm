@@ -28,6 +28,7 @@ type SessionSummary struct {
 	Title           string                  `json:"title"`
 	Workspace       string                  `json:"workspace"`
 	Harness         string                  `json:"harness"`
+	HarnessLocked   bool                    `json:"harnessLocked,omitempty"`
 	YOLO            bool                    `json:"yolo,omitempty"`
 	Model           string                  `json:"model,omitempty"`
 	Effort          string                  `json:"effort,omitempty"`
@@ -88,7 +89,7 @@ func sessionSummary(view *Session) SessionSummary {
 		Queue: view.Queue,
 		Role:  view.Role, GraphRunID: view.GraphRunID, GraphNodeID: view.GraphNodeID, ExecutionCWD: view.ExecutionCWD,
 		SelectedGraphID: view.SelectedGraphID, Graph: view.Graph, ParentID: view.ParentID, ID: view.ID, ProjectID: view.ProjectID,
-		Title: view.Title, Workspace: view.Workspace, Harness: view.Harness, YOLO: view.YOLO, Model: view.Model, Effort: view.Effort,
+		Title: view.Title, Workspace: view.Workspace, Harness: view.Harness, HarnessLocked: view.HarnessLocked, YOLO: view.YOLO, Model: view.Model, Effort: view.Effort,
 		ResolvedModel: view.ResolvedModel, ResolvedEffort: view.ResolvedEffort, Status: view.Status, Archived: view.Archived, RuntimeActive: view.RuntimeActive,
 		Permissions: view.Permissions, Questions: view.Questions, Usage: view.Usage, CreatedAt: view.CreatedAt, UpdatedAt: view.UpdatedAt,
 	}

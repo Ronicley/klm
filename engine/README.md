@@ -40,6 +40,12 @@ origin port **17332**, and `%APPDATA%\klm\engine-dev` for data, logs, locks and
 the derived local control channel. Release builds omit the tag and retain
 **7331/7332** and `%APPDATA%\klm\engine`. Both can run concurrently.
 
+For a fresh isolated development runtime, set `KLM_DEV_DATA_DIR` to an absolute
+directory before running the dev binary's `start` or `stop`. This changes only the
+engine's data, workspace, locks and derived control channel; harness account/config
+directories remain unchanged. The override is ignored by release builds. API and
+web ports remain fixed, so only one development engine can listen at a time.
+
 
 All mutation requests, including stop and directory picker, require
 `Content-Type: application/json`. Stop and picker accept an empty body or `{}`.
@@ -58,7 +64,8 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | GET | `/api/projects/{id}/paths?q=...` | `{paths:[{path,kind:"file"\|"directory"}],partial:boolean}`; project-relative paths |
 | POST | `/api/sessions` | `{projectId,title,workspace,harness,model?}` -> 201 Session |
 | POST | `/api/sessions/{id}/side` | `{harness?}` -> existing or newly created side Session; one per main, serialized atomically |
-| PATCH | `/api/sessions/{id}/harness` | `{harness}` -> side Session; only before its first turn |
+| POST | `/api/general-session` | `{}` -> existing or newly created singleton general SessionUpdate; atomic and independent of user projects |
+| PATCH | `/api/sessions/{id}/harness` | `{harness}` -> side/general SessionUpdate; general harness permanently locks at first accepted message |
 | POST | `/api/sessions/{id}/consultations/{requestID}/cancel` | `{}` -> Session; cancels the correlated request/continuation |
 | PATCH | `/api/sessions/{id}` | `{title?,workspace?,archived?}` -> 200 SessionUpdate |
 | GET | `/api/sessions/{id}/models` | Harness model catalog; `?refresh=true` bypasses the two-minute cache |
@@ -77,6 +84,36 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 
 Adding the same directory again restores a removed project's identity, folders,
 and session history with the name and icon chosen in the add dialog.
+
+### General conversation
+
+`POST /api/general-session` serializes get-or-create with the same durable state
+transaction gate as ordinary sessions. It persists a session with role
+`general_agent`, an empty `projectId`, and an absolute `executionCwd` pointing to
+`workspaces/general-agent` under the engine data directory. No synthetic user
+project is created. The general conversation and its native child sessions are
+excluded from `/api/state` project inventory; observing their IDs through
+`/api/updates` uses normal summaries and bounded history deltas.
+
+`harnessLocked` is durable metadata, set atomically with message acceptance and
+projected independently of paginated history. Removing queued input does not
+clear it. Ordinary create, rename, move, reorder, archive, side-agent and graph
+routes cannot repurpose this conversation. Model discovery/settings and queue
+execution resolve its engine-managed directory without requiring a project.
+
+The internal `general-agent.md` prompt is reread on each turn and prepended through
+the shared Pi/OpenCode/Codex execution path. Packaging already copies
+`engine/prompts/` and installs `prompts/*.md`, including this file. The private
+loopback bridge remains available for the existing harness permission handshake
+but exposes no session collaboration or graph tools to this role. Normal tool
+permissions/questions/Stop are retained; remembered permissions are session/global
+only. This slice does not provide Hermes, special coordination tools, background
+monitoring, cross-project orchestration, or automatic subscriptions to other chats.
+
+Manual validation is still needed across all three harnesses: singleton identity
+through simultaneous clients/reloads/restarts, queue acceptance and irreversible
+harness locking, model/effort changes, streaming/errors/Stop/permissions/questions,
+empty-project operation, and unchanged project history/navigation.
 
 ### Session collaboration (private harness bridge)
 

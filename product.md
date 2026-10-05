@@ -36,8 +36,8 @@ work and manages its execution with an agent. It is not just the language model.
 ## Current Definition Boundaries
 
 The first real slice is a separate Go engine with persistent projects and sessions,
-and a React client. A project has a name, directory, and icon. Each session belongs
-to one project and uses Pi, OpenCode, or Codex headlessly. The client presents the
+and a React client. A project has a name, directory, and icon. Ordinary sessions belong
+to one project and use Pi, OpenCode, or Codex headlessly. The client presents the
 messages, exposed reasoning, commands, and MCP/tool events those harnesses emit.
 
 Top-level sessions and their visual grouping folders can be archived and restored.
@@ -50,6 +50,36 @@ Assistant message actions are hidden while that message is streaming. Completed
 assistant messages provide Copy and a durable Favorite toggle; like and dislike are
 not used. Failed or cancelled partial responses remain copyable but cannot be marked
 as favorites.
+
+### General Agent
+
+The KLM logo at the top of Project Rail opens one persistent general-agent
+conversation per engine. Its identity and history are independent of the selected
+project and available even with no projects. Project Rail remains visible; the
+sessions sidebar and responsive Open sessions control are absent in this view.
+Returning to a project retains its normal session selection.
+
+Before the first accepted message, Pi, OpenCode and Codex choices appear immediately
+above the composer, with unavailable harnesses disabled. A draft does not lock the
+harness. Acceptance permanently locks it in both engine and UI, including messages
+accepted into the queue, deleted queued inputs, and failed turns. Model and effort
+remain editable between turns through the ordinary controls.
+
+The general agent uses the same session history, native harness adapters, queue,
+streaming, Stop, permission and question flows as project chats. It is engine-owned,
+excluded from ordinary project session lists and project removal/archive behavior,
+and cannot be created through ordinary session creation, renamed, moved or archived.
+Its stable execution directory is `workspaces/general-agent` below the engine data
+directory, separate from stored engine data and user projects. Development and
+installed engines retain separate conversations and workspaces. Permission choices
+use session/global scopes, with no project-level lifetime.
+
+`engine/prompts/general-agent.md` is loaded through the internal prompt mechanism
+for all three harnesses. This slice is a general chat using ordinary supported
+harnesses, without Hermes, linked side agents, project file mentions or graph tools.
+Special session coordination, automatic monitoring, cross-project orchestration
+and additional status presentation remain deferred. Runtime behavior awaits human
+validation.
 
 ### Windows Delivery and Focus
 
@@ -169,8 +199,11 @@ port uses the frontend default **7332**. A domain without a port gets no added p
 allowing tunnel/proxy URLs. Explicit ports and HTTP(S) schemes are preserved;
 without a scheme, IPs use HTTP and domains use HTTPS.
 
-The KLM logo at the top of the web project rail returns to the native web client
-list. While loaded, the WebView has no additional native toolbar. Flutter knows
+The KLM logo at the top of the web project rail opens the general-agent chat.
+A **Back to hosts** icon button below Settings returns to the native web client
+list through `KlmMobile.postMessage('home')`. It appears only in the Flutter-hosted
+WebView, not on desktop or in ordinary mobile browsers. While loaded, the WebView
+has no additional native toolbar. Flutter knows
 only the web client URL; engine selection and configuration belong to that web
 client. Failed loads offer Retry and a native KLM home action. Mobile does not
 start servers or relocate execution/files to the device. Native screens reuse

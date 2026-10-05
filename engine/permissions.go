@@ -107,6 +107,10 @@ func (p *adapter) requestPermission(req Permission, scope map[string]any, reply 
 		a.mu.Unlock()
 		return errors.New("Permission session no longer exists.")
 	}
+	if s.ProjectID == "" {
+		// An engine-owned conversation has no project-level permission lifetime.
+		req.Decisions = slices.DeleteFunc(slices.Clone(req.Decisions), func(choice string) bool { return choice == "always" || choice == "deny_project" })
+	}
 	decision := ""
 	reason := "saved rule"
 	if p.yolo {

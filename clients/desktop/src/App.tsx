@@ -13,6 +13,7 @@ import { CreateSessionDialog } from './features/workspace/CreateSessionDialog';
 import { RenameSessionDialog } from './features/workspace/RenameSessionDialog';
 import { SessionStatusBar } from './features/chat/SessionStatusBar';
 import { ModelPicker } from './features/chat/ModelPicker';
+import { GeneralHarnessPicker } from './features/chat/GeneralHarnessPicker';
 import { isSessionResponse, mergeSessions, prependHistory } from './features/chat/sessionState';
 import { ConversationHistory } from './features/chat/ConversationHistory';
 import { SubagentView } from './features/chat/SubagentView';
@@ -62,7 +63,7 @@ function orderSessionSnapshot(current: Session[], incoming: EngineSnapshot['sess
   return [...incoming.flatMap(session => byId.get(session.id) ?? []), ...merged.filter(session => !incomingIds.has(session.id))];
 }
 
-type WorkspaceNavigation = { activeProjectId: string; selectedSessions: Record<string, string>; openSideSessions: string[]; collapsedFolders: Record<string, string[]>; collapsedArchivedProjects: string[] };
+type WorkspaceNavigation = { activeProjectId: string; selectedSessions: Record<string, string>; openSideSessions: string[]; collapsedFolders: Record<string, string[]>; collapsedArchivedProjects: string[]; generalOpen?: boolean };
 const navigationStorageKey = `klm.workspace-navigation.v1:${ENGINE_URL}`;
 
 function readWorkspaceNavigation(): WorkspaceNavigation {
@@ -73,6 +74,7 @@ function readWorkspaceNavigation(): WorkspaceNavigation {
     const value = saved as Partial<WorkspaceNavigation>;
     return {
       activeProjectId: typeof value.activeProjectId === 'string' ? value.activeProjectId : '',
+      generalOpen: value.generalOpen === true,
       selectedSessions: value.selectedSessions && typeof value.selectedSessions === 'object' && !Array.isArray(value.selectedSessions)
         ? Object.fromEntries(Object.entries(value.selectedSessions).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : {},
       openSideSessions: Array.isArray(value.openSideSessions) ? [...new Set(value.openSideSessions.filter((id): id is string => typeof id === 'string'))] : [],
@@ -100,6 +102,10 @@ export function App() {
   const [sessionErrors, setSessionErrors] = useState<Record<string, string>>({});
   const [pendingSessions, setPendingSessions] = useState<Record<string, boolean>>({});
   const [localMessages, setLocalMessages] = useState(readPendingSubmissions);
+  // Reserve synchronously before React renders pending submissions. Accepted or
+  // uncertain deliveries keep the reservation; only definite rejection releases it.
+  const generalHarnessBlocks = useRef(new Map(Object.entries(localMessages).flatMap(([sessionId, items]) =>
+    items.filter(item => item.status !== 'failed').map(item => [item.id, sessionId] as const))));
   useEffect(() => savePendingSubmissions(localMessages), [localMessages]);
   const submissionTails = useRef(new Map<string, Promise<void>>());
   const submissionRequests = useRef(new Set<string>());
@@ -113,6 +119,11 @@ export function App() {
   const navigation = useRef(0);
   const stream = useRef<EventSource | null>(null);
   const [workspaceNavigation, setWorkspaceNavigation] = useState(readWorkspaceNavigation);
+  const [view, setView] = useState<'chat' | 'general' | 'design' | 'agents' | 'graphs'>(() => workspaceNavigation.generalOpen ? 'general' : 'chat');
+  const generalView = view === 'general';
+  const chatView = view === 'chat' || generalView;
+  const [generalError, setGeneralError] = useState('');
+  const [generalRetry, setGeneralRetry] = useState(0);
   const { activeProjectId, selectedSessions, openSideSessions, collapsedFolders, collapsedArchivedProjects } = workspaceNavigation;
   const [addingProject, setAddingProject] = useState<string | null>(null);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
@@ -121,7 +132,9 @@ export function App() {
   const project = projects.find(item => item.id === activeProjectId) ?? projects[0];
   const projectSessions = sessions.filter(item => item.projectId === project?.id && !item.parentId && item.role !== 'graph_node');
   const visibleProjectSessions = projectSessions.filter(item => !item.archived && !project?.archivedFolders.includes(item.workspace));
-  const session = visibleProjectSessions.find(item => item.id === selectedSessions[project?.id ?? '']) ?? visibleProjectSessions[0];
+  const projectSession = visibleProjectSessions.find(item => item.id === selectedSessions[project?.id ?? '']) ?? visibleProjectSessions[0];
+  const generalSession = sessions.find(item => item.role === 'general_agent');
+  const session = generalView ? generalSession : projectSession;
   const activeId = session?.id ?? '';
   useEffect(() => {
     setLocalMessages(current => {
@@ -142,8 +155,7 @@ export function App() {
   const awaitingPermission = !!session?.permissions?.length;
   const awaitingQuestion = !!session?.questions?.length;
   const createProject = projects.find(item => item.id === creatingSession?.projectId);
-  const [view, setView] = useState<'chat' | 'design' | 'agents' | 'graphs'>('chat');
-  const { catalog, error: catalogError, loading: catalogLoading, reload: reloadCatalog } = useAuthoringCatalog(project?.id ?? '');
+  const { catalog, error: catalogError, loading: catalogLoading, reload: reloadCatalog } = useAuthoringCatalog(generalView ? '' : project?.id ?? '');
   const catalogGraphs = useMemo(() => catalog?.graphs.map(graphListEntry) ?? [], [catalog]);
   const [graphErrors, setGraphErrors] = useState<Record<string, string>>({});
   const [selectingGraphs, setSelectingGraphs] = useState<Record<string, boolean>>({});
@@ -169,7 +181,7 @@ export function App() {
   const [graphsVisit, setGraphsVisit] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const sideOpen = openSideSessions.includes(activeId);
-  const sideVisible = sideOpen && view === 'chat' && !sidebarOpen && !creatingSession && !editingProject && addingProject === null;
+  const sideVisible = sideOpen && !generalView && view === 'chat' && !sidebarOpen && !creatingSession && !editingProject && addingProject === null;
   const sideSession = sessions.find(item => item.parentId === activeId && item.role === 'side_agent');
   const [sideSources, setSideSources] = useState<Record<string, SourceReference[]>>({});
   const [sideErrors, setSideErrors] = useState<Record<string, string>>({});
@@ -185,11 +197,21 @@ export function App() {
     try {
       localStorage.setItem(navigationStorageKey, JSON.stringify({
         ...workspaceNavigation,
+        generalOpen: generalView,
         activeProjectId: project?.id ?? '',
-        selectedSessions: project && activeId ? { ...selectedSessions, [project.id]: activeId } : selectedSessions,
+        selectedSessions: project && projectSession ? { ...selectedSessions, [project.id]: projectSession.id } : selectedSessions,
       }));
     } catch { /* Navigation still works when browser storage is unavailable. */ }
-  }, [loaded, workspaceNavigation, project?.id, activeId, selectedSessions]);
+  }, [loaded, workspaceNavigation, project?.id, projectSession?.id, generalView, selectedSessions]);
+  useEffect(() => {
+    if (!generalView || generalSession) return;
+    const controller = new AbortController();
+    setGeneralError('');
+    void request<SessionResponse>('/api/general-session', 'POST', {}, 15000, AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]))
+      .then(next => { if (!controller.signal.aborted) receiveSession(next); })
+      .catch(error => { if (!controller.signal.aborted) setGeneralError(errorMessage(error)); });
+    return () => controller.abort();
+  }, [generalView, generalSession?.id, generalRetry]);
   function setSideOpen(open: boolean) {
     if (!activeId) return;
     setWorkspaceNavigation(current => ({ ...current, openSideSessions: open
@@ -212,7 +234,7 @@ export function App() {
           const visibleIds = new Set(visibleProjects.map(project => project.id));
           return {
             projects: visibleProjects,
-            sessions: orderSessionSnapshot(current.sessions, next.sessions).filter(session => visibleIds.has(session.projectId)),
+            sessions: orderSessionSnapshot(current.sessions, next.sessions).filter(session => visibleIds.has(session.projectId) || session.role === 'general_agent' || session.projectId === '' && session.role === 'subagent'),
             harnesses: next.harnesses,
           };
         });
@@ -260,7 +282,7 @@ export function App() {
   }, []);
   // Hydrate/reconcile selection after CRUD, and poll even while the chat is idle.
   useEffect(() => {
-    if (!activeId) return;
+    if (!activeId || generalView) return;
     let active = true;
     let pending = false;
     async function refreshGraph() {
@@ -276,7 +298,7 @@ export function App() {
     void refreshGraph();
     const timer = window.setInterval(() => { if (stream.current?.readyState !== EventSource.OPEN) void refreshGraph(); }, 30000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [activeId, catalog, refreshVersion, applyGraph]);
+  }, [activeId, generalView, catalog, refreshVersion, applyGraph]);
   useEffect(() => {
     if (!selectedGraphId) setSessionTabs(current => current[activeId] === 'graph' ? { ...current, [activeId]: 'chat' } : current);
   }, [activeId, selectedGraphId]);
@@ -365,8 +387,15 @@ export function App() {
     setCreatingSession({ projectId: project.id, workspace: folder });
     setSidebarOpen(false);
   }
+  function generalHarnessBlocked(target: Session) {
+    const current = sessionsRef.current.find(item => item.id === target.id) ?? target;
+    return !!current.harnessLocked || current.status === 'running' ||
+      [...generalHarnessBlocks.current.values()].includes(target.id) ||
+      !!localMessages[target.id]?.some(item => item.status === 'sending' || item.status === 'accepted' || item.status === 'uncertain');
+  }
   async function updateSession(target: Session, action: 'messages' | 'stop' | 'harness', body: (ComposerDraft & { sources?: SourceReference[]; mode?: SendMode }) | { harness: Harness['id'] } | Record<string, never>) {
     const id = target.id;
+    if (action === 'harness' && target.role === 'general_agent' && generalHarnessBlocked(target)) return false;
     if (action === 'stop') {
       stopVersions.current.set(id, (stopVersions.current.get(id) ?? 0) + 1);
       for (const item of submissionControllers.current.values()) if (item.sessionId === id) item.controller.abort();
@@ -425,6 +454,7 @@ export function App() {
     const { id, draft, sources, mode } = message;
     if (submissionRequests.current.has(id)) return;
     submissionRequests.current.add(id);
+    if (target.role === 'general_agent') generalHarnessBlocks.current.set(id, target.id);
     setLocalMessages(current => ({ ...current, [target.id]: (current[target.id] ?? []).map(item => item.id === id ? { ...item, status: 'sending' } : item) }));
     // Keep user sends FIFO even if earlier attachment preparation is slower.
     // Only transport waits; each editor remains available for the next draft.
@@ -443,6 +473,7 @@ export function App() {
         setSessionErrors(current => ({ ...current, [target.id]: '' }));
       }).catch(error => {
         const status = error instanceof EngineRequestError && error.status >= 400 && error.status < 500 && error.status !== 408 ? 'failed' : 'uncertain';
+        if (status === 'failed') generalHarnessBlocks.current.delete(id);
         setLocalMessages(current => ({ ...current, [target.id]: (current[target.id] ?? []).map(item => item.id === id ? { ...item, status } : item) }));
         setSessionErrors(current => ({ ...current, [target.id]: errorMessage(error) }));
       }).finally(() => {
@@ -453,6 +484,7 @@ export function App() {
     submissionTails.current.set(target.id, task);
   }
   function sendMessage(target: Session, draft: ComposerDraft, sources: SourceReference[], mode: SendMode = 'queue') {
+    if (target.role === 'general_agent' && pending.current.has(target.id)) return false;
     const message: LocalSubmission = { id: clientMessageId(), draft, sources, mode, status: 'sending' };
     setLocalMessages(current => ({ ...current, [target.id]: [...(current[target.id] ?? []), message] }));
     submitLocal(target, message);
@@ -465,6 +497,7 @@ export function App() {
     }
     setDrafts(current => ({ ...current, [key]: message.draft }));
     if (message.sources.length && key.startsWith('side:')) setSideSources(current => ({ ...current, [key.slice(5)]: [...message.sources, ...(current[key.slice(5)] ?? [])] }));
+    generalHarnessBlocks.current.delete(message.id);
     setLocalMessages(current => ({ ...current, [target.id]: (current[target.id] ?? []).filter(item => item.id !== message.id) }));
   }
   function send(draft: ComposerDraft, mode?: SendMode) {
@@ -675,28 +708,29 @@ export function App() {
     onLostPointerCapture={() => { drag.current = null; if (shell.current) delete shell.current.dataset.dragging; }}
     onPointerCancel={() => { drag.current = null; if (shell.current) delete shell.current.dataset.dragging; }}
   >
-    <ProjectRail projects={projects} sessions={sessions} activeId={project?.id ?? ''} onSelect={selectProject} onEdit={openProjectEditor} onRemove={target => removeProject(target.id)} onReorder={reorderProject} onAdd={() => void openProjectPicker()} onSettings={() => { setSidebarOpen(false); setSettingsOpen(true); }} />
-    {sidebarOpen && <button className="panel-backdrop" aria-label="Close side panel" onClick={() => setSidebarOpen(false)} />}
-    {project && <WorkspaceSidebar key={`sidebar:${project.id}`} project={project} sessions={projectSessions} activeId={view === 'chat' ? activeId : ''} activeSection={view} collapsed={collapsedFolders[project.id] ?? []} archivedCollapsed={collapsedArchivedProjects.includes(project.id)} onCollapsedChange={folders => setWorkspaceNavigation(current => ({ ...current, collapsedFolders: { ...current.collapsedFolders, [project.id]: folders } }))} onArchivedCollapsedChange={collapsed => setWorkspaceNavigation(current => ({ ...current, collapsedArchivedProjects: collapsed ? [...new Set([...current.collapsedArchivedProjects, project.id])] : current.collapsedArchivedProjects.filter(id => id !== project.id) }))} onNew={newSession} onCreateFolder={createFolder} onRename={setRenamingSession} onPosition={async (target, workspace, beforeId) => (await patchSession(target, { position: { workspace, beforeId } })) === null} onReorderFolder={reorderFolder} onArchiveSession={async (target, archived) => (await patchSession(target, { archived })) === null} onArchiveFolder={archiveFolder} onSelect={id => { navigation.current += 1; setWorkspaceNavigation(current => ({ ...current, selectedSessions: { ...current.selectedSessions, [project.id]: id } })); setView('chat'); setSidebarOpen(false); }} onClose={() => setSidebarOpen(false)} onAgents={() => { navigation.current += 1; setAgentsVisit(current => current + 1); setView('agents'); setSidebarOpen(false); }} onGraphs={() => { navigation.current += 1; setGraphsVisit(current => current + 1); setView('graphs'); setSidebarOpen(false); }} onEditProject={openProjectEditor} onRemoveProject={target => removeProject(target.id)} />}
+    <ProjectRail projects={projects} sessions={sessions} activeId={generalView ? '' : project?.id ?? ''} generalActive={generalView} onGeneralAgent={() => { navigation.current += 1; setSidebarOpen(false); setView('general'); }} onSelect={selectProject} onEdit={openProjectEditor} onRemove={target => removeProject(target.id)} onReorder={reorderProject} onAdd={() => void openProjectPicker()} onSettings={() => { setSidebarOpen(false); setSettingsOpen(true); }} />
+    {!generalView && sidebarOpen && <button className="panel-backdrop" aria-label="Close side panel" onClick={() => setSidebarOpen(false)} />}
+    {!generalView && project && <WorkspaceSidebar key={`sidebar:${project.id}`} project={project} sessions={projectSessions} activeId={view === 'chat' ? activeId : ''} activeSection={view} collapsed={collapsedFolders[project.id] ?? []} archivedCollapsed={collapsedArchivedProjects.includes(project.id)} onCollapsedChange={folders => setWorkspaceNavigation(current => ({ ...current, collapsedFolders: { ...current.collapsedFolders, [project.id]: folders } }))} onArchivedCollapsedChange={collapsed => setWorkspaceNavigation(current => ({ ...current, collapsedArchivedProjects: collapsed ? [...new Set([...current.collapsedArchivedProjects, project.id])] : current.collapsedArchivedProjects.filter(id => id !== project.id) }))} onNew={newSession} onCreateFolder={createFolder} onRename={setRenamingSession} onPosition={async (target, workspace, beforeId) => (await patchSession(target, { position: { workspace, beforeId } })) === null} onReorderFolder={reorderFolder} onArchiveSession={async (target, archived) => (await patchSession(target, { archived })) === null} onArchiveFolder={archiveFolder} onSelect={id => { navigation.current += 1; setWorkspaceNavigation(current => ({ ...current, selectedSessions: { ...current.selectedSessions, [project.id]: id } })); setView('chat'); setSidebarOpen(false); }} onClose={() => setSidebarOpen(false)} onAgents={() => { navigation.current += 1; setAgentsVisit(current => current + 1); setView('agents'); setSidebarOpen(false); }} onGraphs={() => { navigation.current += 1; setGraphsVisit(current => current + 1); setView('graphs'); setSidebarOpen(false); }} onEditProject={openProjectEditor} onRemoveProject={target => removeProject(target.id)} />}
     <main className="main-panel">
-      <header className="session-header"><div id="workspace-header-leading" className="header-leading">{project && <IconButton label="Open sessions" className="mobile-nav" onClick={() => setSidebarOpen(true)}><PanelLeft /></IconButton>}<h1>{view === 'chat' && session ? <button className="session-title-button" title="Rename session" onClick={() => setRenamingSession(session)}>{session.title}</button> : view === 'design' ? 'Design system' : view === 'agents' ? 'Agents' : view === 'graphs' ? 'Graphs' : project?.name ?? 'KLM'}</h1>{view === 'chat' && session && gitBranch && <span className="mode-label session-header-branch" title={gitBranch}><GitBranch aria-hidden="true" /><span>{gitBranch}</span></span>}</div><div id="workspace-header-actions" className="header-actions">
-        {session && view === 'chat' && <Button size="sm" className="export-button" onClick={exportSession}>Session log<Download /></Button>}
+      <header className="session-header"><div id="workspace-header-leading" className="header-leading">{!generalView && project && <IconButton label="Open sessions" className="mobile-nav" onClick={() => setSidebarOpen(true)}><PanelLeft /></IconButton>}<h1>{generalView ? 'General agent' : view === 'chat' && session ? <button className="session-title-button" title="Rename session" onClick={() => setRenamingSession(session)}>{session.title}</button> : view === 'design' ? 'Design system' : view === 'agents' ? 'Agents' : view === 'graphs' ? 'Graphs' : project?.name ?? 'KLM'}</h1>{view === 'chat' && session && gitBranch && <span className="mode-label session-header-branch" title={gitBranch}><GitBranch aria-hidden="true" /><span>{gitBranch}</span></span>}</div><div id="workspace-header-actions" className="header-actions">
+        {session && chatView && <Button size="sm" className="export-button" onClick={exportSession}>Session log<Download /></Button>}
         {IS_DESKTOP && <IconButton label="Focus" onClick={() => void focus()}><Focus /></IconButton>}
         {session && view === 'chat' && <IconButton label={sideOpen ? 'Close side agent' : 'Open side agent'} aria-expanded={sideOpen} onClick={() => { setSideOpen(!sideOpen); setSidebarOpen(false); }}><PanelRight /></IconButton>}
       </div></header>
       {focusError && <div role="alert" className="storage-error">{focusError} <Button size="sm" onClick={() => void focus()}>Retry</Button></div>}
       {connectionError && <div role="alert" className="storage-error">{connectionError} <Button size="sm" onClick={() => setRefreshVersion(current => current + 1)}>Retry</Button></div>}
       {(view === 'chat' || view === 'design') && <div className="session-navigation"><TabNav<SessionTab> value={view === 'design' ? 'chat' : activeTab} onChange={tab => { setView('chat'); setSessionTabs(current => ({ ...current, [activeId]: tab })); }} items={view === 'chat' ? tabItems : [{ value: 'chat', label: 'Chat' }]} />{view === 'chat' && project && session && <Select label="Move session to folder" value={session.workspace} disabled={pendingSessions[session.id] || !!connectionError} onChange={event => void patchSession(session, { workspace: event.target.value })}>{[...project.folders.filter(folder => !project.archivedFolders.includes(folder)), 'Ungrouped'].map(folder => <option key={folder} value={folder}>{folder}</option>)}</Select>}</div>}
-      {view === 'design' ? <DesignSystem /> : (view === 'agents' || view === 'graphs') && project ? <ProjectAuthoring key={`${project.id}:${view}:${agentsVisit}:${graphsVisit}`} projectId={project.id} area={view} /> : !loaded ? <div className="empty-chat"><h2>{connectionError ? 'Engine disconnected' : 'Connecting to engine...'}</h2></div> : !project ? <div className="empty-chat"><h2>Add a project</h2><Button onClick={() => void openProjectPicker()}>Add project</Button></div> : !session ? <div className="empty-chat"><h2>Create a session</h2><Button onClick={() => newSession()} disabled={!!connectionError}>Create session</Button></div> : <>
-        {activeTab === 'chat' && <ConversationHistory session={session} subagents={sessions.filter(item => item.parentId === activeId && item.role === 'subagent')} working={working} label="Conversation" onSnapshot={receiveSession} onHistory={receiveHistory} onEventChange={receiveEvent} onAskSide={askSide} onOpenSubagent={openSubagent} empty={<div className="empty-chat"><div className="empty-chat-brand" role="img" aria-label="KLM Harness"><img className="empty-chat-brand-icon" src={paperBoatIcon} alt="" /><span className="empty-chat-wordmark" aria-hidden="true"><span>K</span><span>L</span><span>M</span></span><Badge>Harness</Badge></div><h2>What would you like to work on?</h2></div>} />}
+      {generalView && openSubagentIds.length > 0 && <div className="session-navigation"><TabNav<SessionTab> value={activeTab} onChange={tab => setSessionTabs(current => ({ ...current, [activeId]: tab }))} items={tabItems} /></div>}
+      {view === 'design' ? <DesignSystem /> : (view === 'agents' || view === 'graphs') && project ? <ProjectAuthoring key={`${project.id}:${view}:${agentsVisit}:${graphsVisit}`} projectId={project.id} area={view} /> : !loaded ? <div className="empty-chat"><h2>{connectionError ? 'Engine disconnected' : 'Connecting to engine...'}</h2></div> : generalView && !session ? <div className="empty-chat"><h2>{generalError || 'Opening general agent...'}</h2>{generalError && <Button onClick={() => setGeneralRetry(current => current + 1)}>Retry</Button>}</div> : !generalView && !project ? <div className="empty-chat"><h2>Add a project</h2><Button onClick={() => void openProjectPicker()}>Add project</Button></div> : !session ? <div className="empty-chat"><h2>Create a session</h2><Button onClick={() => newSession()} disabled={!!connectionError}>Create session</Button></div> : <>
+        {activeTab === 'chat' && <ConversationHistory session={session} subagents={sessions.filter(item => item.parentId === activeId && item.role === 'subagent')} working={working} label={generalView ? 'General conversation' : 'Conversation'} onSnapshot={receiveSession} onHistory={receiveHistory} onEventChange={receiveEvent} onAskSide={generalView ? undefined : askSide} onOpenSubagent={openSubagent} empty={<div className="empty-chat"><div className="empty-chat-brand" role="img" aria-label="KLM Harness"><img className="empty-chat-brand-icon" src={paperBoatIcon} alt="" /><span className="empty-chat-wordmark" aria-hidden="true"><span>K</span><span>L</span><span>M</span></span><Badge>Harness</Badge></div><h2>What would you like to work on?</h2></div>} />}
         {activeTab.startsWith('subagent:') && <SubagentView session={activeSubagent} onSnapshot={receiveSession} onHistory={receiveHistory} />}
-        {(catalogError || !!catalog?.errors.length) && <div role="alert" className="storage-error">{catalogError || catalog?.errors.join(' ')} <Button size="sm" disabled={catalogLoading} onClick={() => void reloadCatalog().catch(() => {})}>Retry</Button></div>}
+        {!generalView && (catalogError || !!catalog?.errors.length) && <div role="alert" className="storage-error">{catalogError || catalog?.errors.join(' ')} <Button size="sm" disabled={catalogLoading} onClick={() => void reloadCatalog().catch(() => {})}>Retry</Button></div>}
         {graphErrors[session.id] && <div role="alert" className="storage-error">{graphErrors[session.id]} <Button size="sm" onClick={() => setRefreshVersion(current => current + 1)}>Retry</Button></div>}
         {selectedGraph ? <Suspense fallback={activeTab === 'graph' ? <section className="graph-view-loading" aria-label="Loading graph canvas" aria-busy="true" /> : null}><GraphView key={`${session.id}:${selectedGraphId}`} sessionId={session.id} graph={selectedGraph} agents={catalog?.agents ?? []} visible={activeTab === 'graph'} run={graphRunInProgress ? graphRun : undefined} /></Suspense> : activeTab === 'graph' && <section className="graph-view-loading" role="status">{catalogLoading ? 'Loading graph...' : 'Selected graph is unavailable.'} <Button size="sm" disabled={catalogLoading} onClick={() => void reloadCatalog().catch(() => {})}>Reload</Button></section>}
         {sessionErrors[session.id] && <div role="alert" className="storage-error">{sessionErrors[session.id]}</div>}
         <div className="composer-area" hidden={activeTab !== 'chat'}>
           {(awaitingPermission || awaitingQuestion || graphRequests.length > 0) && <div className="permission-queue">
-            {session.permissions?.map(permission => <PermissionCard key={permission.id} permission={permission} sessionId={session.id} projectName={project.name} onResolved={snapshot => setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [snapshot]) }))} />)}
+            {session.permissions?.map(permission => <PermissionCard key={permission.id} permission={permission} sessionId={session.id} projectName={generalView ? '' : project?.name ?? ''} onResolved={snapshot => setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [snapshot]) }))} />)}
             {session.questions?.map(question => <QuestionCard key={question.id} question={question} sessionId={session.id} onResolved={snapshot => setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [snapshot]) }))} />)}
             {graphRequests.map(item => {
               const graphName = graphRun?.id === item.runId ? graphRun.snapshot.definition.name : catalog?.graphs.find(graph => graph.id === item.graphId)?.definition.name ?? item.graphId;
@@ -705,18 +739,20 @@ export function App() {
               const origin = `${graphName || 'Graph'} · ${nodeName}`;
               const key = `${item.sessionId}:${item.kind}:${item.requestId}`;
               return item.kind === 'permission' && item.permission
-                ? <PermissionCard key={key} permission={{ ...item.permission, id: item.requestId }} sessionId={item.sessionId} projectName={project.name} origin={origin} onResolved={() => graphRequestResolved(session.id)} />
+                ? <PermissionCard key={key} permission={{ ...item.permission, id: item.requestId }} sessionId={item.sessionId} projectName={project?.name ?? ''} origin={origin} onResolved={() => graphRequestResolved(session.id)} />
                 : item.kind === 'question' && item.question
                   ? <QuestionCard key={key} question={{ ...item.question, id: item.requestId }} sessionId={item.sessionId} origin={origin} onResolved={() => graphRequestResolved(session.id)} /> : null;
             })}
           </div>}
           <PendingSubmission items={localMessages[session.id] ?? []} onRestore={item => restoreLocal(session, item)} onRetry={item => submitLocal(session, item)} />
           <MessageQueue key={`queue/${session.id}`} session={session} disabled={!!pendingSessions[session.id]} onSnapshot={receiveSession} />
+          {generalView && <GeneralHarnessPicker session={session} harnesses={harnesses} disabled={!!pendingSessions[session.id] || generalHarnessBlocked(session) || !!connectionError} onChange={harness => void updateSession(session, 'harness', { harness })} />}
+          {generalView && !harnesses.some(harness => harness.id === session.harness && harness.available) && <p role="status" className="form-error">The selected harness is not installed.</p>}
           <MessageComposer key={session.id} projectId={session.projectId} draft={drafts[session.id] ?? { text: '', mentions: [] }} onDraftChange={draft => setDrafts(current => ({ ...current, [session.id]: draft }))} onSend={send} onTranscription={text => setDrafts(current => {
             const draft = current[session.id] ?? { text: '', mentions: [] };
             const separator = !draft.text || draft.text.endsWith('\n\n') ? '' : draft.text.endsWith('\n') ? '\n' : '\n\n';
             return { ...current, [session.id]: { ...draft, text: `${draft.text}${separator}${text.trim()}` } };
-          })} disabled={!!pendingSessions[session.id]} running={session.status === 'running'} onStop={() => void updateSession(session, 'stop', {})} graphControl={<GraphPicker key={session.id} graphs={catalogGraphs} value={selectedGraphId} selectedName={catalogSelectedGraph?.definition.name ?? selectedGraph?.definition.name} running={graphRunInProgress} disabled={!!selectingGraphs[session.id] || !session.graph} loading={catalogLoading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reloadCatalog().catch(() => {})} onChange={graphId => void chooseGraph(session.id, graphId)} />} modelControl={<ModelPicker key={session.id} session={session} disabled={!!pendingSessions[session.id] || working} onSave={(model, effort) => applyModelSettings(session, model, effort)} onSnapshot={receiveSession} />} />
+          })} disabled={!!pendingSessions[session.id] || generalView && !harnesses.some(harness => harness.id === session.harness && harness.available)} running={session.status === 'running'} onStop={() => void updateSession(session, 'stop', {})} graphControl={generalView ? undefined : <GraphPicker key={session.id} graphs={catalogGraphs} value={selectedGraphId} selectedName={catalogSelectedGraph?.definition.name ?? selectedGraph?.definition.name} running={graphRunInProgress} disabled={!!selectingGraphs[session.id] || !session.graph} loading={catalogLoading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reloadCatalog().catch(() => {})} onChange={graphId => void chooseGraph(session.id, graphId)} />} modelControl={<ModelPicker key={`${session.id}/${session.harness}`} session={session} disabled={!!pendingSessions[session.id] || working} onSave={(model, effort) => applyModelSettings(session, model, effort)} onSnapshot={receiveSession} />} />
           <SessionStatusBar session={session} />
         </div>
       </>}

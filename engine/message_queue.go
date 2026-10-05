@@ -179,16 +179,16 @@ func (a *app) scheduleMessagesLocked() {
 		if q.Status != "queued" && q.Status != "steering" {
 			continue
 		}
-		project := a.state.project(s.ProjectID)
+		folder, available := a.state.conversationDirectory(&s)
 		payload, found := a.state.QueuePayloads[q.ID]
 		b, installed := a.binaries[s.Harness]
-		if project == nil || project.Removed || !found || !installed || payload.Harness != s.Harness || payload.Directory != project.Folder {
+		if !available || !found || !installed || payload.Harness != s.Harness || payload.Directory != folder {
 			_ = a.commitLocked(func(d *diskState) {
 				pauseMessageQueue(d.session(s.ID), "Project or harness changed. Remove this message and send it again.")
 			})
 			continue
 		}
-		cwd, err := existingDirectory(project.Folder)
+		cwd, err := existingDirectory(folder)
 		if err != nil {
 			_ = a.commitLocked(func(d *diskState) { pauseMessageQueue(d.session(s.ID), err.Error()) })
 			continue

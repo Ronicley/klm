@@ -253,7 +253,7 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 	if p.graph == nil && s.Role == "graph_node" {
 		err = errors.New("Private graph node requires its activation adapter binding.")
 	}
-	if p.graph == nil && s.Role != "graph_node" && graphConversationHooks != nil {
+	if p.graph == nil && s.Role != "graph_node" && s.Role != sessionRoleGeneralAgent && graphConversationHooks != nil {
 		var hooks *GraphAdapterHooks
 		hooks, err = graphConversationHooks(a, t, s)
 		if hooks != nil {
@@ -266,7 +266,7 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 	}
 	if err == nil && s.Role != "graph_node" && s.Role != sessionRoleSubagent {
 		var guidance string
-		guidance, err = sessionCollaborationPrompt()
+		guidance, err = conversationGuidance(&s)
 		if err == nil {
 			payload.Text = guidance + "\n\n" + payload.Text
 		}

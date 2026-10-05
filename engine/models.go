@@ -176,7 +176,13 @@ func (a *app) sessionForRead(w http.ResponseWriter, r *http.Request) (Session, s
 		fail(w, 404, "Session not found.")
 		return Session{}, "", false
 	}
-	view, folder := *s, a.state.project(s.ProjectID).Folder
+	view := *s
+	folder, available := a.state.conversationDirectory(s)
+	if !available {
+		a.mu.Unlock()
+		fail(w, 404, "Conversation directory unavailable.")
+		return Session{}, "", false
+	}
 	a.mu.Unlock()
 	return view, folder, true
 }
@@ -609,6 +615,11 @@ func (a *app) updateModelSettings(w http.ResponseWriter, r *http.Request) {
 	if a.runs[s.ID] != nil {
 		a.mu.Unlock()
 		fail(w, 409, "Wait for the current turn before changing models.")
+		return
+	}
+	if current.Harness != s.Harness {
+		a.mu.Unlock()
+		fail(w, 409, "Harness changed. Retry the model selection.")
 		return
 	}
 	if err := a.commitLocked(func(d *diskState) {

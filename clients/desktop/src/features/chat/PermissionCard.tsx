@@ -38,9 +38,9 @@ export function PermissionCard({ permission, sessionId, projectName, origin, onR
       {permission.decisions.includes('once') && <Button size="sm" variant="primary" disabled={busy} onClick={() => void decide('once')}>{permission.allowLabel || 'Allow'}</Button>}
       {permission.decisions.includes('session') && <Button size="sm" disabled={busy} onClick={() => void decide('session')}>Allow session</Button>}
       {permission.decisions.includes('reject') && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void decide('reject')}>Deny</Button>}
-      {permission.decisions.includes('always') && <Menu label="Permission options" role="menu" open={menuOpen} onOpenChange={setMenuOpen} trigger={props => <IconButton {...props} label="Permission options" size="sm" disabled={busy}><EllipsisVertical /></IconButton>}>
+      {(permission.decisions.includes('always') || permission.decisions.includes('allow_global') || permission.decisions.includes('deny_global')) && <Menu label="Permission options" role="menu" open={menuOpen} onOpenChange={setMenuOpen} trigger={props => <IconButton {...props} label="Permission options" size="sm" disabled={busy}><EllipsisVertical /></IconButton>}>
         <div className="permission-menu-scope">{permission.scopeLabel || 'This exact request'}</div>
-        <MenuItem role="menuitem" disabled={busy} title={projectName} onClick={() => void decide('always')}>Allow in this project</MenuItem>
+        {permission.decisions.includes('always') && <MenuItem role="menuitem" disabled={busy} title={projectName} onClick={() => void decide('always')}>Allow in this project</MenuItem>}
         {permission.decisions.includes('deny_project') && <MenuItem role="menuitem" disabled={busy} title={projectName} onClick={() => void decide('deny_project')}>Deny in this project</MenuItem>}
         {permission.decisions.includes('allow_global') && <MenuItem role="menuitem" disabled={busy} onClick={() => void decide('allow_global')}>Allow globally</MenuItem>}
         {permission.decisions.includes('deny_global') && <MenuItem role="menuitem" disabled={busy} onClick={() => void decide('deny_global')}>Deny globally</MenuItem>}

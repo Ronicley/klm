@@ -75,7 +75,9 @@ the user requests a redesign.
 
 Mobile host URLs use port 7332 by default only for literal IP addresses. Never add
 that port to a domain; preserve explicit ports and HTTP(S). The mobile WebView's
-`KlmMobile.postMessage('home')` bridge is only for returning via the KLM rail logo.
+`KlmMobile.postMessage('home')` bridge is only for returning via the Back to hosts
+footer button below Settings. Show it only with `IS_MOBILE_HOST`, never by viewport
+size. The rail logo opens the engine's singleton general-agent chat on every client.
 Flutter visual primitives live in `clients/mobile/lib/design_system` and follow
 the existing web tokens; host behavior belongs in feature modules.
 
@@ -90,6 +92,12 @@ the existing web tokens; host behavior belongs in feature modules.
   still follow the operating system's language.
 
 ## Collaboration
+
+The engine-owned general conversation has no user ProjectID and uses a dedicated
+`workspaces/general-agent` directory below the engine data directory. Reuse normal
+chat execution, history and request controls; do not expose project-bound side-agent,
+graph or session-collaboration tools there. Its harness locks durably at first
+message acceptance, including queued input; model/effort remain normal turn settings.
 
 Implement directly when the request is clear. Ask only when a missing decision
 materially blocks the work. Keep progress updates and final explanations concise.

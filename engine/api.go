@@ -88,6 +88,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/projects/{id}/graphs/{item}", a.deleteGraph)
 	mux.HandleFunc("POST /api/projects/{id}/graphs/{item}/layout", a.saveGraphLayout)
 	mux.HandleFunc("POST /api/sessions", a.createSession)
+	mux.HandleFunc("POST /api/general-session", a.generalConversation)
 	mux.HandleFunc("GET /api/sessions/{id}/graph", a.getConversationGraph)
 	mux.HandleFunc("GET /api/sessions/{id}/graph/runs/{runId}/nodes/{nodeId}/activity", a.getGraphNodeActivity)
 	mux.HandleFunc("PATCH /api/sessions/{id}/graph", a.selectConversationGraph)
@@ -696,6 +697,11 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Only top-level sessions can be archived.")
 		return
 	}
+	if s.Role == sessionRoleGeneralAgent {
+		a.mu.Unlock()
+		fail(w, 400, "The general conversation cannot be renamed, moved, reordered or archived.")
+		return
+	}
 	if body.Position != nil && (s.ParentID != "" || s.Role == "graph_node" || s.Archived) {
 		a.mu.Unlock()
 		fail(w, 400, "Only active top-level sessions can be reordered.")
@@ -868,7 +874,7 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "Message identity is already in use.")
 		return
 	}
-	if p := a.state.project(s.ProjectID); p == nil || p.Removed {
+	if _, available := a.state.conversationDirectory(s); !available {
 		a.mu.Unlock()
 		fail(w, 404, "Project not found.")
 		return
@@ -887,7 +893,12 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	}
 	id, projectID, harness := s.ID, s.ProjectID, s.Harness
 	stopVersion := a.stopVersions[id]
-	folder := a.state.project(projectID).Folder
+	folder, _ := a.state.conversationDirectory(s)
+	if s.Role == sessionRoleGeneralAgent && len(body.Mentions) > 0 {
+		a.mu.Unlock()
+		fail(w, 400, "Project file references are unavailable in the general conversation.")
+		return
+	}
 	a.mu.Unlock()
 	// Filesystem I/O never holds the application mutex. Recheck ownership and
 	// turn state after preparation, before accepting a durable user message.
@@ -924,8 +935,8 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "Message preparation interrupted by Stop. Send it again when ready.")
 		return
 	}
-	p := a.state.project(projectID)
-	if s == nil || p == nil || p.Removed || s.ProjectID != projectID || p.Folder != folder || s.Harness != harness {
+	currentFolder, available := a.state.conversationDirectory(s)
+	if s == nil || !available || s.ProjectID != projectID || currentFolder != folder || s.Harness != harness {
 		a.mu.Unlock()
 		fail(w, 409, "Conversation or project changed. Retry the message.")
 		return
@@ -942,7 +953,7 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err.Error())
 		return
 	}
-	guidance, err := sessionCollaborationPrompt()
+	guidance, err := conversationGuidance(s)
 	if err != nil {
 		a.mu.Unlock()
 		fail(w, 503, err.Error())
@@ -974,6 +985,9 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		}
 		d.AcceptedMessages[id+"/"+identity] = fingerprint
 		next := d.session(id)
+		if next.Role == sessionRoleGeneralAgent {
+			next.HarnessLocked = true
+		}
 		next.Queue = append(next.Queue, q)
 		next.UpdatedAt = now()
 		if d.QueuePayloads == nil {
@@ -1140,7 +1154,7 @@ func (a *app) chatSessionHandler(handler http.HandlerFunc) http.HandlerFunc {
 func (a *app) getConversationGraph(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	s := a.state.session(r.PathValue("id"))
-	if s == nil || s.ParentID != "" || s.GraphRunID != "" {
+	if s == nil || s.Role == sessionRoleGeneralAgent || s.ParentID != "" || s.GraphRunID != "" {
 		a.mu.Unlock()
 		fail(w, 404, "Main conversation not found.")
 		return
@@ -1171,7 +1185,7 @@ func (a *app) selectConversationGraph(w http.ResponseWriter, r *http.Request) {
 	defer a.authoringMu.Unlock()
 	a.mu.Lock()
 	s := a.state.session(r.PathValue("id"))
-	if s == nil || s.ParentID != "" || s.GraphRunID != "" {
+	if s == nil || s.Role == sessionRoleGeneralAgent || s.ParentID != "" || s.GraphRunID != "" {
 		a.mu.Unlock()
 		fail(w, 404, "Main conversation not found.")
 		return

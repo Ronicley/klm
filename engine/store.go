@@ -52,6 +52,7 @@ type Session struct {
 	Title           string                  `json:"title"`
 	Workspace       string                  `json:"workspace"`
 	Harness         string                  `json:"harness"`
+	HarnessLocked   bool                    `json:"harnessLocked,omitempty"`
 	YOLO            bool                    `json:"yolo,omitempty"`
 	Model           string                  `json:"model,omitempty"`
 	Effort          string                  `json:"effort,omitempty"`
@@ -209,8 +210,28 @@ func loadState(dir string) (diskState, error) {
 		}
 		ids[p.ID] = true
 	}
-	for _, s := range d.Sessions {
-		if s.ID == "" || ids[s.ID] || d.project(s.ProjectID) == nil || s.Events == nil ||
+	generalCount := 0
+	for i := range d.Sessions {
+		s := &d.Sessions[i]
+		engineOwned := s.Role == sessionRoleGeneralAgent || s.Role == sessionRoleSubagent && s.ProjectID == "" && d.session(s.ParentID) != nil && d.session(s.ParentID).Role == sessionRoleGeneralAgent
+		if s.Role == sessionRoleGeneralAgent {
+			generalCount++
+			if generalCount > 1 || s.ProjectID != "" || s.ParentID != "" || s.GraphRunID != "" || s.Archived || !filepath.IsAbs(s.ExecutionCWD) {
+				return d, errors.New("invalid general conversation in state.json")
+			}
+			// Conservatively retain the lock for any accepted input, including an
+			// input removed from the queue before execution or failed native turns.
+			if len(s.Events) > 0 || len(s.Queue) > 0 {
+				s.HarnessLocked = true
+			}
+			for key := range d.AcceptedMessages {
+				if strings.HasPrefix(key, s.ID+"/") {
+					s.HarnessLocked = true
+					break
+				}
+			}
+		}
+		if s.ID == "" || ids[s.ID] || !engineOwned && d.project(s.ProjectID) == nil || s.Events == nil ||
 			(s.Status != "idle" && s.Status != "running" && s.Status != "error") {
 			return d, errors.New("invalid session in state.json")
 		}

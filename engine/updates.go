@@ -91,7 +91,7 @@ func (a *app) updates(w http.ResponseWriter, r *http.Request) {
 		changedIDs := map[string]bool{}
 		ids := []string{}
 		for _, s := range a.state.Sessions {
-			if !visible[s.ProjectID] || s.GraphRunID != "" {
+			if (!visible[s.ProjectID] && !(s.ProjectID == "" && observed[s.ID])) || s.GraphRunID != "" {
 				continue
 			}
 			ids = append(ids, s.ID)

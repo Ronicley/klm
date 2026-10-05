@@ -28,7 +28,7 @@ export function SessionStatusBar({ session, side = false }: { session: Session; 
 
   // Skills and MCPs remain reference values.
   return <div className="session-status-bar" role="group" aria-label="Session Status Bar">
-    {!side && <><span>3 skills · 2 MCPs</span>
+    {!side && <>{session.role !== 'general_agent' && <span>3 skills · 2 MCPs</span>}
     <QuotaIndicator key={`${session.id}/${session.model ?? ''}/${session.resolvedModel ?? ''}`} session={session} /></>}
     {contextTokens != null && <span title={contextDetails} aria-label={contextDetails}>
       {tokens(contextTokens)}{hasContextWindow ? ` / ${tokens(contextWindow)}` : ''}{contextPercent !== null ? ` · ${percent.format(contextPercent)}%` : ''}

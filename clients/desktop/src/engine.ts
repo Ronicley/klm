@@ -41,7 +41,7 @@ export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer";
 
 export type Session = {
   queue?: QueuedMessage[] | null;
-  role?: 'side_agent' | 'subagent' | 'graph_node';
+  role?: 'side_agent' | 'subagent' | 'graph_node' | 'general_agent';
   selectedGraphId?: string;
   graph?: ConversationGraphState;
   parentId?: string;
@@ -51,6 +51,7 @@ export type Session = {
   title: string;
   workspace: string;
   harness: Harness['id'];
+  harnessLocked?: boolean;
   model?: string;
   yolo?: boolean;
   effort?: string;
