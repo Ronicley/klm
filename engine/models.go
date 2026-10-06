@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+const modelCatalogTimeout = 45 * time.Second
+
 type ModelOption struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
@@ -80,7 +82,7 @@ func (a *app) catalog(ctx context.Context, s Session, cwd string, refresh bool) 
 		if background == nil {
 			background = context.Background()
 		}
-		flightCtx, cancel := context.WithTimeout(background, 45*time.Second)
+		flightCtx, cancel := context.WithTimeout(background, modelCatalogTimeout)
 		flight = &catalogFlight{done: make(chan struct{}), cancel: cancel}
 		if a.catalogFlights == nil {
 			a.catalogFlights = map[string]*catalogFlight{}
@@ -576,71 +578,13 @@ func (a *app) updateModelSettings(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Provide model and effort.")
 		return
 	}
-	s, cwd, ok := a.sessionForRead(w, r)
-	if !ok {
-		return
-	}
-	if s.Status == "running" {
-		fail(w, 409, "Wait for the current turn before changing models.")
-		return
-	}
-	catalog, err := a.catalog(r.Context(), s, cwd, false)
-	if err != nil {
-		fail(w, 502, "Could not verify available models. Retry loading the model list.")
-		return
-	}
-	id := *body.Model
-	if id == "" {
-		id = catalog.DefaultModel
-		if id == "" {
-			id = s.ResolvedModel
-		}
-	}
-	option := catalog.find(id)
-	if *body.Model != "" && option == nil {
-		fail(w, 400, "Model is not available from a connected provider.")
-		return
-	}
-	if *body.Effort != "" && (option == nil || !slices.Contains(option.Efforts, *body.Effort)) {
-		fail(w, 400, "This model does not support the selected effort or variant.")
+	id := r.PathValue("id")
+	if err := a.changeSessionSettings(r.Context(), id, body.Model, body.Effort, nil); err != nil {
+		failSessionControl(w, err)
 		return
 	}
 	a.mu.Lock()
-	current := a.state.session(s.ID)
-	if current == nil {
-		a.mu.Unlock()
-		fail(w, 404, "Session not found.")
-		return
-	}
-	if a.runs[s.ID] != nil {
-		a.mu.Unlock()
-		fail(w, 409, "Wait for the current turn before changing models.")
-		return
-	}
-	if current.Harness != s.Harness {
-		a.mu.Unlock()
-		fail(w, 409, "Harness changed. Retry the model selection.")
-		return
-	}
-	if err := a.commitLocked(func(d *diskState) {
-		s := d.session(s.ID)
-		modelChanged := s.Model != *body.Model
-		s.Model = *body.Model
-		s.Effort = *body.Effort
-		s.ResolvedEffort = ""
-		if modelChanged {
-			s.ResolvedModel = ""
-			if s.Usage != nil {
-				s.Usage.Context = nil
-			}
-		}
-		s.UpdatedAt = now()
-	}); err != nil {
-		a.mu.Unlock()
-		fail(w, 503, err.Error())
-		return
-	}
-	response := a.currentSessionUpdateLocked(s.ID)
+	response := a.currentSessionUpdateLocked(id)
 	a.mu.Unlock()
 	respond(w, 200, response)
 }

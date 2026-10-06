@@ -27,9 +27,11 @@ it('shows YOLO immediately and rolls back only after the pending request fails',
   expect(screen.getByRole('alert')).toHaveTextContent('Selection rejected');
 });
 
-it('keeps execution-time restrictions while still allowing the local menu to open', () => {
+it('allows changing YOLO while the session is running', async () => {
+	vi.mocked(request).mockResolvedValue({} as Awaited<ReturnType<typeof request>>);
   render(<SessionOptions session={{ ...session, status: 'running' }} disabled={false} onSnapshot={vi.fn()} />);
   fireEvent.click(screen.getByRole('button', { name: 'Session options' }));
-  expect(screen.getByRole('switch', { name: 'YOLO mode' })).toBeDisabled();
-  expect(request).not.toHaveBeenCalled();
+  expect(screen.getByRole('switch', { name: 'YOLO mode' })).toBeEnabled();
+  await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'YOLO mode' })); });
+  expect(request).toHaveBeenCalledWith('/api/sessions/s/permissions', 'PATCH', { yolo: true });
 });

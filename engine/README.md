@@ -104,11 +104,61 @@ execution resolve its engine-managed directory without requiring a project.
 The internal `general-agent.md` prompt is reread on each turn and prepended through
 the shared Pi/OpenCode/Codex execution path. Packaging already copies
 `engine/prompts/` and installs `prompts/*.md`, including this file. The private
-loopback bridge remains available for the existing harness permission handshake
-but exposes no session collaboration or graph tools to this role. Normal tool
+loopback bridge exposes a dedicated general-agent catalog, authenticated by the
+owned adapter/turn, without assigning a synthetic project. Normal tool
 permissions/questions/Stop are retained; remembered permissions are session/global
-only. This slice does not provide Hermes, special coordination tools, background
-monitoring, cross-project orchestration, or automatic subscriptions to other chats.
+only. This role does not receive implicit-project `linked_*`, `session_spawn` or
+graph-execution tools. Normal main/side scope is not widened.
+
+### General-agent discovery and control (private harness bridge)
+
+| Tool | Scope and behavior |
+| --- | --- |
+| `project_list` | Paginated nonremoved projects, registered directories and visual/archived folders. |
+| `session_list` | Top-level chats by default; project/folder/title/state filters; explicit `parentId` lists side chats. |
+| `session_get` | Identity, visual folder vs effective cwd, configured/resolved harness settings, raw/working/runtime state, queue counts, usage, full pending questions/permissions and projected graph requests. |
+| `session_messages_list` / `session_messages_search` | Chronological bounded messages or literal case-insensitive excerpts; exact `messageId`/rune `offset` reads long content. Agent origins are retained. |
+| `session_events_read` | Chronological harness activity, including partial events, or changes after `sinceRevision`. No subscription. |
+| `session_models_list` / `project_graphs_list` | Real destination catalog/defaults, or selectable graph IDs with enabled/available flags and catalog errors. |
+| `session_send` | Visible normal execution through the shared persistent FIFO queue; explicit destination, self-contained instruction and sender-scoped idempotency key. |
+| `session_ask` | Information/clarification in the destination's actual conversation, using existing correlated answer/continuation semantics. |
+| `session_rename` / `session_move` | Existing title and active visual-folder validation; no filesystem move or cwd change. |
+| `session_settings_update` | Optional fields, preserved when omitted; model/effort validate atomically between turns. YOLO alone can change during work and resolves pending permissions on enable. Native Codex full-access turns cannot downgrade until they end. |
+| `session_graph_select` | Available main-chat graph or empty ID for None; does not invoke a graph. |
+| `session_question_answer` | Exact active native request, including graph requests routed through their owning chat; existing choices, cancellation, custom/multiple answers, resolving conflicts and private-answer masking. |
+
+All destinations resolve by stable ID in nonremoved projects. Archived sessions
+are readable; orders/consultations require restoration through existing controls.
+Graph nodes and native subagents are not independent control/command destinations.
+Global reads/controls are exclusive to the general role; an argument cannot grant
+it. Replies to general consultations use its own execution directory and prompt.
+Only the general agent can initiate cross-project consultations, including after
+checkpoint/journal replay; ordinary conversations still require the same project.
+
+List pages contain up to 50 items; message/event pages up to 20. Serialized tool
+content is capped at 64 KiB. Oversized records return UTF-8 JSON fragments with
+`encoding`, `fragment`, rune `offset` and `nextCursor`; concatenate fragments for
+that record before decoding. Use only returned cursors with unchanged filters.
+Changed inventories/snapshots require restarting pagination. Activity in unrelated
+chats does not invalidate normal history pages, which bind to the destination's
+event version. Event delta cursors
+retain the upper observed revision, delivering repeated updates to the same ID
+without mixing later versions. Advance `consumedRevision` only after all delta
+pages/fragments arrive. Expired revisions and reset records return `resetRequired`
+with a bounded resynchronization page, not an empty success. Completed reset pages
+can resume deltas from the returned `revision`. Large consultation results include
+bounded answer/question excerpts plus source session/message IDs for full reading.
+Usage input/output totals remain separate from context tokens/window; percentages
+require both known values and a positive window. `observedAt` is the observation
+time, not an invented harness measurement timestamp.
+
+A compact timestamped/revisioned project snapshot accompanies each general turn,
+including working/waiting and separate graph activity counts, with truncation after
+30 projects. There are no background subscriptions, unsolicited completion/idle
+notifications or polling loops. Correlated replies to an explicit ask remain.
+Global session creation/Stop/archive/restore/queue/permission tools and Hermes are
+outside this slice. Three-harness runtime and shared desktop/web/mobile behavior
+remain human validation steps; automated fixtures never execute project agents.
 
 Manual validation is still needed across all three harnesses: singleton identity
 through simultaneous clients/reloads/restarts, queue acceptance and irreversible
@@ -117,7 +167,7 @@ empty-project operation, and unchanged project history/navigation.
 
 ### Session collaboration (private harness bridge)
 
-`session_spawn` accepts `{title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,workspace?}`.
+`session_spawn` accepts `{title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,workspace?,yolo?}`.
 It creates one top-level session in the calling session's project, persists a
 pending first input and a receipt in the origin atomically, and schedules its
 normal turn independently. The source reference must be an existing human `user`
@@ -126,10 +176,52 @@ prompt instructs the agent to create sessions only when explicitly requested.
 Repeated identical calls with the same operation ID return the original receipt;
 different arguments conflict. The receipt reports acceptance, not execution
 success. Default harness/model/effort and visual folder come from the caller;
-changing harness uses that harness's model defaults. YOLO, local grants, selected
-graphs, native history and active turns are not copied. No automatic completion
+changing harness uses that harness's model defaults. Omitted `yolo` inherits the
+sender's current mode at creation; `yolo:false` starts the requested non-YOLO child
+with permissions enabled. Override only at the user's request. The receipt records
+the resolved creation mode, which does not change on retry or later sender updates.
+Local grants, selected graphs, native history and active turns are not copied. No automatic completion
 notification is sent to the origin. Pending or uncertain deliveries remain
 recoverable with the ordinary queue controls after interruption.
+
+`session_spawn_options` is available to normal main/side agents in their own
+project. It lists installed harnesses, paginated exact model IDs and efforts,
+active visual folders, required spawn fields and five bounded recent real user
+message IDs. OpenCode requires full `provider/model` IDs such as
+`openai/gpt-6-luna`, not display labels or bare model names. `workspace` is a visual
+folder name, not a path; `sourceUserEventId` is a message ID in the sender, not its
+session ID. The agent guidance directs recoverable validation errors back into
+corrected tool calls rather than ending the user's task.
+
+Spawn syntax and real model/effort availability are validated before acceptance.
+Catalog discovery occurs outside the state mutex, with sender/turn/project
+revalidation before atomic creation. Rejection creates no child, queue item or
+receipt and does not reserve the operation ID. Tool errors are JSON with
+`accepted:false`, `code`, `field`, `message`, `hint` and optional `validValues`.
+An invalid OpenCode model therefore returns to the requesting agent before a
+child can fail with a Harness error. Correct rejected arguments and reuse the
+operation ID; changing an already accepted request still conflicts.
+
+`session_send` accepts `{sessionId,instruction,operationId,sourceUserEventId?}` in both catalogs.
+Ordinary callers can address their linked main/side or same-project top-level chat;
+the general agent can address admitted project main/side conversations globally.
+`SessionCommand` receipts and the queue payload/origin are persisted atomically.
+Identical retries return `{accepted,sessionId,messageId,operationId,delivery}`;
+different content/destinations with the same sender operation ID conflict. Receipts
+outlive queue consumption and no receipt is reused as session ownership or creation.
+The optional source reference must identify a real human message in the sender;
+it is traceability, not permission, and can be omitted for agent-assigned work.
+Busy recipients queue FIFO, paused/uncertain queues are preserved, and interrupted
+unconfirmed native delivery is not automatically replayed. Orders do not carry a
+`consultationId`; UI/log/export distinguish `Instruction from …` from initial
+prompts. `agent_prompt` is not a human `user` authorization event. Sending does not
+wait, yield, subscribe or resume the sender. `linked_ask`/`session_ask` are for
+information/clarification; use `session_send` for implementation/execution.
+
+Storage adds optional `sessionCommands` and optional origin `kind` fields through
+the ordinary transaction/journal/checkpoint path. Older data remains loadable;
+downgrade to binaries rejecting new fields is not promised. Strict decoding and
+receipt/consultation identity/scope validation remain enabled.
 
 `session_discover` accepts `{query?,cursor?,limit?,includeArchived?}` and returns
 bounded same-project top-level identities (`id`, title, project, workspace,

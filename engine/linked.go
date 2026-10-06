@@ -58,6 +58,9 @@ func (d *diskState) linked(id string) *Session {
 }
 
 func agentName(s *Session) string {
+	if s.Role == sessionRoleGeneralAgent {
+		return "general agent"
+	}
 	if s.Role == sessionRoleSideAgent {
 		return "side agent"
 	}
@@ -303,11 +306,12 @@ func (a *app) scheduleLinkedLocked() {
 			continue
 		}
 		s := a.state.session(id)
-		if s == nil || a.state.project(s.ProjectID).Removed || !delivery && (s.Archived || folderArchived(a.state.project(s.ProjectID), s.Workspace) || s.Role == sessionRoleSideAgent && a.state.session(s.ParentID).Archived) {
+		folder, available := a.state.conversationDirectory(s)
+		if !available || !delivery && a.state.conversationArchived(s) {
 			continue
 		}
 		b, ok := a.binaries[s.Harness]
-		cwd, err := existingDirectory(a.state.project(s.ProjectID).Folder)
+		cwd, err := existingDirectory(folder)
 		if !ok || err != nil {
 			_ = a.commitLocked(func(d *diskState) {
 				c := d.consultation(request.ID)

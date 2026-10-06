@@ -503,9 +503,12 @@ func validateGraphRecordsCached(d *diskState, cache map[string]validatedGraphSna
 		}
 	}
 	for _, c := range d.Consultations {
-		if !claim(c.ID) {
+		if !claim(c.ID) || !consultationPair(d.session(c.From), d.session(c.To)) || !validLinkedText(c.Question, 32<<10) {
 			return bad("consultation identity", c.ID)
 		}
+	}
+	if err := validateSessionCommands(d); err != nil {
+		return err
 	}
 	for key := range d.Native {
 		if d.session(key) == nil {

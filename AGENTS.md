@@ -95,9 +95,14 @@ the existing web tokens; host behavior belongs in feature modules.
 
 The engine-owned general conversation has no user ProjectID and uses a dedicated
 `workspaces/general-agent` directory below the engine data directory. Reuse normal
-chat execution, history and request controls; do not expose project-bound side-agent,
-graph or session-collaboration tools there. Its harness locks durably at first
-message acceptance, including queued input; model/effort remain normal turn settings.
+chat execution, history and request controls. Its dedicated private tool catalog
+can discover/read project conversations, send visible instructions, ask correlated
+questions and apply the documented session controls across nonremoved projects.
+Do not expose implicit-project linked/side-agent, spawn or graph execution tools
+there, or give normal sessions its global scope. No automatic monitoring or
+completion notifications. Agent-authored instructions never become human graph
+or spawn authorization. Its harness locks durably at first message acceptance,
+including queued input; model/effort remain normal turn settings.
 
 Implement directly when the request is clear. Ask only when a missing decision
 materially blocks the work. Keep progress updates and final explanations concise.

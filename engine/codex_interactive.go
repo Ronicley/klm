@@ -51,7 +51,7 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			"-c", "mcp_servers.klm_linked.http_headers={Authorization=" + strconv.Quote("Bearer "+p.bridge.token) + "}",
 			"-c", "mcp_servers.klm_linked.enabled=true",
 			"-c", "mcp_servers.klm_linked.startup_timeout_sec=15",
-			"-c", "mcp_servers.klm_linked.tool_timeout_sec=12",
+			"-c", "mcp_servers.klm_linked.tool_timeout_sec=" + strconv.FormatInt(int64(linkedToolClientTimeout/time.Second), 10),
 			"app-server", "--listen", "stdio://",
 		}, cwd, p.runtime)
 		if err != nil {
@@ -164,7 +164,7 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 	steering := p.steeringChannel()
 	steeringRequests := map[string]bool{}
 	approvalPolicy, sandbox, sandboxType := "on-request", "read-only", "readOnly"
-	if p.yolo {
+	if p.captureNativeYOLO() {
 		approvalPolicy, sandbox, sandboxType = "never", "danger-full-access", "dangerFullAccess"
 	}
 	sendThread := func() error {

@@ -26,7 +26,7 @@ export function SessionOptions({ session, disabled, onSnapshot }: {
     return () => { set.delete(listener); if (!set.size) listeners.delete(key); };
   }, [key]);
   const { value: preview, saving, error } = useSyncExternalStore(subscribe, () => intents.get(key) ?? idleIntent);
-  const locked = disabled || saving || session.status === 'running';
+  const locked = disabled || saving;
   async function save(yolo: boolean) {
     if (intents.get(key)?.saving || locked) return;
     publishIntent(key, { value: yolo, saving: true, error: '' });
@@ -40,7 +40,7 @@ export function SessionOptions({ session, disabled, onSnapshot }: {
   return <div className="session-options">
     {(preview ?? session.yolo) && <span className="yolo-indicator" title="YOLO mode is active for this session">YOLO</span>}
     <Menu label="Session options" className="session-options-menu" open={open} onOpenChange={setOpen} trigger={props => <IconButton {...props} label="Session options" size="sm"><EllipsisVertical /></IconButton>}>
-      <Toggle label="YOLO mode" checked={preview ?? !!session.yolo} disabled={locked} onCheckedChange={value => void save(value)} title={session.status === 'running' ? 'Stop or finish the current turn to change YOLO mode' : 'Skip permission approvals and saved restrictions for this session'} />
+      <Toggle label="YOLO mode" checked={preview ?? !!session.yolo} disabled={locked} onCheckedChange={value => void save(value)} title="Skip permission approvals and saved restrictions for this session" />
       {error && <p className="form-error menu-feedback" role="alert">{error}</p>}
     </Menu>
   </div>;

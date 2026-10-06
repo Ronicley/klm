@@ -93,6 +93,7 @@ type diskState struct {
 	JournalFormat       int                      `json:"journalFormat,omitempty"`
 	AcceptedMessages    map[string]string        `json:"acceptedMessages,omitempty"`
 	SessionSpawns       []SessionSpawn           `json:"sessionSpawns,omitempty"`
+	SessionCommands     []SessionCommand         `json:"sessionCommands,omitempty"`
 	QueuePayloads       map[string]queuedPayload `json:"queuePayloads,omitempty"`
 	GraphRevision       uint64                   `json:"graphRevision"`
 	GraphViewRevision   uint64                   `json:"graphViewRevision,omitempty"`
@@ -259,7 +260,7 @@ func loadState(dir string) (diskState, error) {
 	}
 	for _, c := range d.Consultations {
 		from, to := d.session(c.From), d.session(c.To)
-		if c.ID == "" || ids[c.ID] || from == nil || to == nil || from.ProjectID != to.ProjectID || !consultationEndpoint(from) || !consultationEndpoint(to) || c.From == c.To || !validLinkedText(c.Question, 32<<10) {
+		if c.ID == "" || ids[c.ID] || !consultationPair(from, to) || !validLinkedText(c.Question, 32<<10) {
 			return d, errors.New("invalid consultation in state.json")
 		}
 		switch c.Status {

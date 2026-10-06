@@ -707,24 +707,13 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Only active top-level sessions can be reordered.")
 		return
 	}
-	title, group := s.Title, s.Workspace
+	title, group, err := sessionLabels(&a.state, s, body.Title, body.Workspace)
+	if err != nil {
+		a.mu.Unlock()
+		failSessionControl(w, err)
+		return
+	}
 	var ok bool
-	if body.Title != nil {
-		title, ok = cleanLabel(*body.Title, 200)
-		if !ok {
-			a.mu.Unlock()
-			fail(w, 400, "Session title must contain 1 to 200 characters.")
-			return
-		}
-	}
-	if body.Workspace != nil {
-		group, ok = workspace(a.state.project(s.ProjectID), *body.Workspace)
-		if !ok {
-			a.mu.Unlock()
-			fail(w, 400, "Workspace must be Ungrouped or an existing project folder name.")
-			return
-		}
-	}
 	if body.Position != nil {
 		group, ok = workspace(a.state.project(s.ProjectID), body.Position.Workspace)
 		if !ok {
@@ -1175,74 +1164,13 @@ func (a *app) selectConversationGraph(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Provide selectedGraphId; use an empty string for None.")
 		return
 	}
-	graphID := *body.SelectedGraphID
-	if graphID != "" && !validAuthoringID(graphID) {
-		fail(w, 400, "Invalid graph identifier.")
+	id := r.PathValue("id")
+	if err := a.changeConversationGraph(r.Context(), id, *body.SelectedGraphID); err != nil {
+		failSessionControl(w, err)
 		return
-	}
-	// Same lock ordering as authoring mutations and snapshot capture.
-	a.authoringMu.Lock()
-	defer a.authoringMu.Unlock()
-	a.mu.Lock()
-	s := a.state.session(r.PathValue("id"))
-	if s == nil || s.Role == sessionRoleGeneralAgent || s.ParentID != "" || s.GraphRunID != "" {
-		a.mu.Unlock()
-		fail(w, 404, "Main conversation not found.")
-		return
-	}
-	p := a.state.project(s.ProjectID)
-	if p == nil || p.Removed {
-		a.mu.Unlock()
-		fail(w, 404, "Project not found.")
-		return
-	}
-	project, sessionID := *p, s.ID
-	a.mu.Unlock()
-	if graphID != "" {
-		catalog, err := loadAuthoring(project)
-		if err != nil {
-			fail(w, 500, "Cannot read graph catalog: "+err.Error())
-			return
-		}
-		found := false
-		for _, graph := range catalog.Graphs {
-			if graph.ID == graphID {
-				if !graph.Definition.Enabled {
-					fail(w, 409, "Graph is disabled.")
-					return
-				}
-				found = true
-				break
-			}
-		}
-		if !found {
-			if len(catalog.Errors) > 0 {
-				fail(w, 409, "Graph is unavailable; resolve catalog errors: "+strings.Join(catalog.Errors, "; "))
-				return
-			}
-			fail(w, 404, "Graph not found.")
-			return
-		}
 	}
 	a.mu.Lock()
-	s = a.state.session(sessionID)
-	p = a.state.project(project.ID)
-	if a.closing || a.storageErr != nil || s == nil || p == nil || p.Removed || p.Folder != project.Folder {
-		a.mu.Unlock()
-		fail(w, 409, "Conversation or project changed; retry selection.")
-		return
-	}
-	if s.SelectedGraphID != graphID {
-		if err := a.commitLocked(func(d *diskState) {
-			session := d.session(sessionID)
-			session.SelectedGraphID, session.UpdatedAt = graphID, now()
-		}); err != nil {
-			a.mu.Unlock()
-			fail(w, 503, err.Error())
-			return
-		}
-	}
-	projection := a.state.graphProjection(sessionID)
+	projection := a.state.graphProjection(id)
 	a.mu.Unlock()
 	respond(w, 200, projection)
 }

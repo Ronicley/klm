@@ -269,6 +269,9 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 		guidance, err = conversationGuidance(&s)
 		if err == nil {
 			payload.Text = guidance + "\n\n" + payload.Text
+			if s.Role == sessionRoleGeneralAgent {
+				payload.Text = a.generalTurnSnapshot() + "\n\n" + payload.Text
+			}
 		}
 	}
 	// Resolve defaults from the harness catalog, not a previous native turn's override.

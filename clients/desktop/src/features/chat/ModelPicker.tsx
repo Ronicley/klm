@@ -17,8 +17,8 @@ function effortLabel(value: string) {
   return value === 'xhigh' ? 'Extra high' : value ? value[0].toUpperCase() + value.slice(1) : 'Default';
 }
 
-export function ModelPicker({ session, disabled, onSave, onSnapshot }: {
-  session: Session; disabled: boolean; onSave: (model: string, effort: string) => Promise<boolean>;
+export function ModelPicker({ session, disabled, optionsDisabled = disabled, onSave, onSnapshot }: {
+  session: Session; disabled: boolean; optionsDisabled?: boolean; onSave: (model: string, effort: string) => Promise<boolean>;
   onSnapshot?: (snapshot: SessionResponse) => void;
 }) {
   const { catalog, loading, error, refresh, revalidate } = useModelCatalog(session.projectId, session.harness, session.id);
@@ -89,7 +89,7 @@ export function ModelPicker({ session, disabled, onSave, onSnapshot }: {
   }
 
   return <div className="model-picker-controls">
-    {onSnapshot && <SessionOptions session={session} disabled={locked} onSnapshot={onSnapshot} />}
+    {onSnapshot && <SessionOptions session={session} disabled={optionsDisabled || saving} onSnapshot={onSnapshot} />}
     <Menu label="Models" className="model-menu" open={menu === 'model'} onOpenChange={open => openMenu('model', open)} trigger={props => <Button {...props} variant="ghost" size="sm" className="model-picker-trigger" disabled={locked} aria-label="Choose model">
       <HarnessIcon harness={session.harness} /><span className="model-picker-name">{current?.name || currentModelId || (loading ? 'Loading model...' : 'Model unavailable')}</span><ChevronDown />
     </Button>}>

@@ -170,7 +170,10 @@ func (p *adapter) graphSealed() bool {
 
 func (p *adapter) bridgeTools() []map[string]any {
 	tools := []map[string]any{}
-	if !p.graphNode() && p.role != sessionRoleSubagent && p.role != sessionRoleGeneralAgent {
+	if !p.graphNode() && p.role == sessionRoleGeneralAgent {
+		tools = append(tools, generalAgentTools()...)
+	}
+	if !p.graphNode() && p.role != "graph_node" && p.role != sessionRoleSubagent && p.role != sessionRoleGeneralAgent {
 		tools = append(tools, linkedTools()...)
 	}
 	if p.graph != nil {

@@ -16,17 +16,19 @@ import (
 )
 
 type turn struct {
-	steerWake           chan struct{} // protected by app.mu
-	graphNotificationID string
-	prompt              string // complete submission; graphConversationHooks prepends internal instructions
-	consultationID      string
-	delivery            bool
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	done                chan struct{}
-	stopErr             error // Written before done closes; read only after done.
-	approvals           map[string]*pendingApproval
-	questions           map[string]*pendingQuestion
+	steerWake            chan struct{} // protected by app.mu
+	graphNotificationID  string
+	prompt               string // complete submission; graphConversationHooks prepends internal instructions
+	consultationID       string
+	delivery             bool
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	done                 chan struct{}
+	stopErr              error // Written before done closes; read only after done.
+	approvals            map[string]*pendingApproval
+	questions            map[string]*pendingQuestion
+	nativeYOLO           bool // Captured native policy; protected by app.mu.
+	nativeYOLOConfigured bool
 }
 
 type app struct {

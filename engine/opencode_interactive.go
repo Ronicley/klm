@@ -489,7 +489,7 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 		}
 	}
 	var bridgeStatus map[string]any
-	if err := h.json(ctx, http.MethodPost, "/mcp", map[string]any{"name": "klm_linked", "config": map[string]any{"type": "remote", "url": p.bridge.url, "headers": map[string]string{"Authorization": "Bearer " + p.bridge.token}, "oauth": false, "enabled": true, "timeout": 10000}}, &bridgeStatus); err != nil {
+	if err := h.json(ctx, http.MethodPost, "/mcp", map[string]any{"name": "klm_linked", "config": map[string]any{"type": "remote", "url": p.bridge.url, "headers": map[string]string{"Authorization": "Bearer " + p.bridge.token}, "oauth": false, "enabled": true, "timeout": linkedToolClientTimeout.Milliseconds()}}, &bridgeStatus); err != nil {
 		return failed(errors.New("Could not configure the OpenCode linked-agent bridge."))
 	}
 	if str(object(bridgeStatus["klm_linked"]), "status") != "connected" {

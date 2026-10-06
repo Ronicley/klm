@@ -37,7 +37,7 @@ export type SessionUsage = {
   context: { tokens: number | null; window: number | null } | null;
 };
 
-export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer"; status: "queued" | "steering" | "sending" | "paused" | "uncertain"; error?: string; origin?: { sessionId: string; title: string } };
+export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer"; status: "queued" | "steering" | "sending" | "paused" | "uncertain"; error?: string; origin?: { sessionId: string; title: string; kind?: 'instruction' | 'question_answer' } };
 
 export type Session = {
   queue?: QueuedMessage[] | null;

@@ -75,11 +75,27 @@ installed engines retain separate conversations and workspaces. Permission choic
 use session/global scopes, with no project-level lifetime.
 
 `engine/prompts/general-agent.md` is loaded through the internal prompt mechanism
-for all three harnesses. This slice is a general chat using ordinary supported
-harnesses, without Hermes, linked side agents, project file mentions or graph tools.
-Special session coordination, automatic monitoring, cross-project orchestration
-and additional status presentation remain deferred. Runtime behavior awaits human
-validation.
+for all three harnesses. The general agent has a dedicated private tool catalog for
+projects and top-level conversations across nonremoved projects in this engine.
+It can inspect side chats through their main relationship, read/search bounded
+messages and activity updates, inspect context usage and pending questions, and
+list destination models and project graphs. A compact observed project/activity
+snapshot accompanies each general turn; changing it does not start another turn.
+Retained runtimes are distinguished from working turns; unknown context usage
+remains unknown.
+
+The general agent can send visible, self-contained instructions to project chats
+and ask questions with correlated replies. It can rename/move visual grouping,
+atomically update model/effort/YOLO between turns, select a graph without executing
+it, and answer the exact pending native question through its owning conversation.
+Moving a chat does not change its directory. Archived history is readable; sending
+and consulting require restoration through existing user controls. Engine-owned
+identity is not a synthetic project or a grant of harness permissions.
+
+No Hermes, linked side agent for the general conversation, project file mentions,
+general graph invocation, global session creation/Stop/archive/queue administration,
+permission-reply tool, automatic monitoring, completion notifications or new global
+dashboard is included. Runtime behavior awaits human validation.
 
 ### Windows Delivery and Focus
 
@@ -166,12 +182,16 @@ Explicit saved denies still apply. Questions and MCP forms requiring user input
 are not answered by this automatic tool approval.
 
 The composer's vertical-ellipsis menu, immediately left of the harness/model
-selector, initially contains only **YOLO mode**. YOLO is persisted per conversation,
-can be changed between turns, and bypasses saved permission rules while active.
-Pi's engine replies are automatic; OpenCode's owned runtime gets permissive merged
-permissions; Codex uses `never` approvals and `danger-full-access`. Disabling YOLO
-restores normal policy on the next turn without deleting saved rules. User questions
-and graph authorization/lifecycle controls are independent of tool permissions.
+selector, initially contains only **YOLO mode**. YOLO is persisted per conversation
+and can be enabled during work without stopping the turn. Enabling resolves pending
+permissions and automatically handles future requests; disabling restores normal
+engine policy for future requests without deleting rules or undoing approved work.
+Pi and OpenCode gate new tool dispatch using the live engine setting. Native startup
+configuration refreshes on the next turn. Codex uses `never` approvals and
+`danger-full-access` when a turn starts in YOLO; that native full-access turn cannot
+be safely downgraded, so disabling is rejected until it ends. A Codex turn started
+normally can enable automatic engine approvals, with its native sandbox retained
+until the next turn. Questions and graph authorization/lifecycle remain separate.
 The normal workspace policy, precise matching rules, API recovery controls and
 adapter coverage are documented in `PERMISSIONS.md`. Runtime behavior awaits human
 validation; command classification is not filesystem or network isolation.
@@ -314,6 +334,14 @@ session. A durable operation ID prevents duplicate creation on retries. Creating
 a session does not subscribe the creator to its progress or completion; normal
 session controls and inventory show it to the user.
 
+Spawned sessions inherit the sender's current YOLO mode by default. An explicit
+`yolo:false` implements the user's request for a non-YOLO child before its first
+turn; overrides are only made at the user's request. Later sender-mode changes do
+not change an existing child. Spawn options expose exact model IDs/efforts, visual
+folders and recent user message IDs. Validation rejects malformed or unavailable
+settings before creating a child and returns an actionable error to the agent for
+correction. OpenCode model IDs require `provider/model` format.
+
 When the user mentions another session and checking it is relevant, agents can
 discover top-level sessions in the same project, read bounded history by ID, or
 consult their agents in their actual native conversations. Main/side consultation
@@ -322,6 +350,18 @@ but must be restored before being consulted. Correlated answers and bounded wait
 use the existing consultation mechanism. Graph nodes and native subagents do not
 receive these collaboration tools. The adjustable agent guidance lives in
 `engine/prompts/session-collaboration.md` and applies from the next turn.
+
+`session_send` is shared by normal conversations and the general agent, with
+different authenticated scopes. Normal main/side agents can send instructions to
+their existing linked agent or same-project top-level conversations within the
+user's authorized work. An instruction uses the normal persistent FIFO queue and
+appears as an attributed agent prompt, with normal visible tool activity and
+output rather than consultation grouping. A durable sender-scoped operation ID
+prevents duplicate acceptance even after queue consumption or reload. Acceptance
+does not imply started or completed execution; sending creates no completion
+subscription or automatic continuation. `ask` remains for information/clarification
+and retains correlated replies. Agent-authored instructions and question responses
+are not human authorization for graph execution or session creation.
 
 ## Agent and Graph Authoring
 
