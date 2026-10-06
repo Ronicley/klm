@@ -52,6 +52,7 @@ type Session struct {
 	Title           string                  `json:"title"`
 	Workspace       string                  `json:"workspace"`
 	Harness         string                  `json:"harness"`
+	HarnessLocked   bool                    `json:"harnessLocked,omitempty"`
 	YOLO            bool                    `json:"yolo,omitempty"`
 	Model           string                  `json:"model,omitempty"`
 	Effort          string                  `json:"effort,omitempty"`
@@ -88,8 +89,14 @@ type TranscriptionSettings struct {
 }
 
 type diskState struct {
+	tx                  *stateTransaction
+	JournalFormat       int                      `json:"journalFormat,omitempty"`
+	AcceptedMessages    map[string]string        `json:"acceptedMessages,omitempty"`
+	SessionSpawns       []SessionSpawn           `json:"sessionSpawns,omitempty"`
+	SessionCommands     []SessionCommand         `json:"sessionCommands,omitempty"`
 	QueuePayloads       map[string]queuedPayload `json:"queuePayloads,omitempty"`
 	GraphRevision       uint64                   `json:"graphRevision"`
+	GraphViewRevision   uint64                   `json:"graphViewRevision,omitempty"`
 	GraphActivities     []GraphActivity          `json:"graphActivities,omitempty"`
 	GraphRuns           []GraphRun               `json:"graphRuns,omitempty"`
 	GraphActivations    []GraphActivation        `json:"graphActivations,omitempty"`
@@ -171,6 +178,12 @@ func loadState(dir string) (diskState, error) {
 	if (d.Version != 1 && d.Version != 2) || d.Projects == nil || d.Sessions == nil || d.Native == nil {
 		return d, errors.New("unsupported or incomplete state.json; refusing to overwrite")
 	}
+	if d.JournalFormat != 0 && d.JournalFormat != 1 {
+		return d, errors.New("unsupported journal format in state.json")
+	}
+	if d.GraphViewRevision == 0 {
+		d.GraphViewRevision = d.GraphRevision
+	}
 	normalizeTranscriptionSettings(&d.Transcription)
 	ids := map[string]bool{}
 	for i := range d.Projects {
@@ -198,8 +211,28 @@ func loadState(dir string) (diskState, error) {
 		}
 		ids[p.ID] = true
 	}
-	for _, s := range d.Sessions {
-		if s.ID == "" || ids[s.ID] || d.project(s.ProjectID) == nil || s.Events == nil ||
+	generalCount := 0
+	for i := range d.Sessions {
+		s := &d.Sessions[i]
+		engineOwned := s.Role == sessionRoleGeneralAgent || s.Role == sessionRoleSubagent && s.ProjectID == "" && d.session(s.ParentID) != nil && d.session(s.ParentID).Role == sessionRoleGeneralAgent
+		if s.Role == sessionRoleGeneralAgent {
+			generalCount++
+			if generalCount > 1 || s.ProjectID != "" || s.ParentID != "" || s.GraphRunID != "" || s.Archived || !filepath.IsAbs(s.ExecutionCWD) {
+				return d, errors.New("invalid general conversation in state.json")
+			}
+			// Conservatively retain the lock for any accepted input, including an
+			// input removed from the queue before execution or failed native turns.
+			if len(s.Events) > 0 || len(s.Queue) > 0 {
+				s.HarnessLocked = true
+			}
+			for key := range d.AcceptedMessages {
+				if strings.HasPrefix(key, s.ID+"/") {
+					s.HarnessLocked = true
+					break
+				}
+			}
+		}
+		if s.ID == "" || ids[s.ID] || !engineOwned && d.project(s.ProjectID) == nil || s.Events == nil ||
 			(s.Status != "idle" && s.Status != "running" && s.Status != "error") {
 			return d, errors.New("invalid session in state.json")
 		}
@@ -226,8 +259,8 @@ func loadState(dir string) (diskState, error) {
 		}
 	}
 	for _, c := range d.Consultations {
-		linked := d.linked(c.From)
-		if c.ID == "" || ids[c.ID] || linked == nil || linked.ID != c.To || !validLinkedText(c.Question, 32<<10) {
+		from, to := d.session(c.From), d.session(c.To)
+		if c.ID == "" || ids[c.ID] || !consultationPair(from, to) || !validLinkedText(c.Question, 32<<10) {
 			return d, errors.New("invalid consultation in state.json")
 		}
 		switch c.Status {
@@ -244,6 +277,9 @@ func loadState(dir string) (diskState, error) {
 			return d, errors.New("invalid consultation timestamp in state.json")
 		}
 		ids[c.ID] = true
+	}
+	if err := validateSessionSpawns(&d); err != nil {
+		return d, err
 	}
 	normalizeGraphWorkspaceRecords(&d)
 	if err := validateGraphRecords(&d); err != nil {
@@ -262,6 +298,9 @@ func saveState(dir string, d *diskState) error {
 	if d.Version != 2 {
 		return errors.New("refusing to write unsupported state version")
 	}
+	// Old binaries use DisallowUnknownFields and must refuse this storage rather
+	// than start without replaying the transaction/possibly sealed journal.
+	d.JournalFormat = 1
 	normalizeGraphWorkspaceRecords(d)
 	normalizeTranscriptionSettings(&d.Transcription)
 	if err := validateGraphRecords(d); err != nil {
@@ -290,36 +329,28 @@ func saveState(dir string, d *diskState) error {
 	return replaceFile(name, filepath.Join(dir, "state.json"))
 }
 
-// Caller holds app.mu. Publish only a successfully persisted, immutable snapshot.
+// Caller holds app.mu. Every writer uses the same ordered durable transaction gate.
 func (a *app) commitLocked(change func(*diskState)) error {
-	if a.storageErr != nil {
-		return a.storageErr
+	return a.commitTransactionLocked(func(d *diskState) error { change(d); return nil })
+}
+
+func (a *app) failStorageLocked(err error) error {
+	log.Printf("state persistence failed: %v", err)
+	a.storageErr = errors.New("state persistence failed; engine is read-only until restarted")
+	for _, r := range a.runs {
+		r.cancel()
 	}
-	before := a.state
-	b, err := json.Marshal(a.state)
-	var next diskState
-	if err == nil {
-		err = json.Unmarshal(b, &next)
+	for _, r := range a.graphRuns {
+		r.cancel()
 	}
-	if err == nil {
-		change(&next)
-		next.GraphRevision++
-		err = saveState(a.dir, &next)
-	}
-	if err != nil {
-		log.Printf("state persistence failed: %v", err)
-		a.storageErr = errors.New("state persistence failed; engine is read-only until restarted")
-		for _, r := range a.runs {
-			r.cancel()
+	return a.storageErr
+}
+
+func (a *app) notifyAllLocked() {
+	for id, listeners := range a.listeners {
+		if id == "*" {
+			continue
 		}
-		for _, r := range a.graphRuns {
-			r.cancel()
-		}
-		return a.storageErr
-	}
-	a.state = next
-	a.recordHistoryLocked(before)
-	for _, listeners := range a.listeners {
 		for ch := range listeners {
 			select {
 			case ch <- struct{}{}:
@@ -327,5 +358,11 @@ func (a *app) commitLocked(change func(*diskState)) error {
 			}
 		}
 	}
-	return nil
+	for subscription := range a.updateListeners {
+		subscription.all = true
+		select {
+		case subscription.wake <- struct{}{}:
+		default:
+		}
+	}
 }

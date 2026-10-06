@@ -51,6 +51,35 @@ describe('session transport', () => {
     expect(afterStream[0].events.map(event => event.id)).toEqual(['one', 'two', 'three']);
   });
 
+  it('reconciles an HTTP append without advancing the live cursor or duplicating the SSE event', () => {
+    const initial = mergeSessions([], [reset([message('one')])], true);
+    const mutation: SessionUpdate = { kind: 'delta', revision: 2, summary, total: 2, changes: [{ index: 1, revision: 2, event: message('two') }] };
+    const optimistic = mergeSessions(initial, [mutation], 'mutation');
+    expect(optimistic[0].events.map(item => item.id)).toEqual(['one', 'two']);
+    expect(optimistic[0].history?.revision).toBe(1);
+    const afterSSE = mergeSessions(optimistic, [mutation], true);
+    expect(afterSSE[0].events.map(item => item.id)).toEqual(['one', 'two']);
+    expect(afterSSE[0].history?.revision).toBe(2);
+  });
+
+  it('discards potentially stale older pages when the server requires a reset', () => {
+    const initial = mergeSessions([], [reset([message('one'), message('two'), message('three')])], true);
+    const newer: SessionUpdate = { ...reset([message('two'), message('three')], 1), revision: 2 };
+    const result = mergeSessions(initial, [newer], true);
+    expect(result[0].events.map(item => item.id)).toEqual(['two', 'three']);
+    expect(result[0].history?.startIndex).toBe(1);
+  });
+
+  it('does not roll back newer HTTP event content while consuming earlier SSE revisions', () => {
+    const initial = mergeSessions([], [reset([message('one')])], true);
+    const mutation: SessionUpdate = { kind: 'delta', revision: 3, summary, total: 1, changes: [{ index: 0, revision: 3, event: message('one', 'new') }] };
+    const second: SessionUpdate = { kind: 'delta', revision: 2, summary, total: 1, changes: [{ index: 0, revision: 2, event: message('one', 'old') }] };
+    const afterHTTP = mergeSessions(initial, [mutation], 'mutation');
+    const afterSSE = mergeSessions(afterHTTP, [second], true);
+    expect(afterSSE[0].events[0].text).toBe('new');
+    expect(afterSSE[0].history?.revision).toBe(2);
+  });
+
   it('prepends older messages without replacing the current streamed window', () => {
     const initial = mergeSessions([], [reset([message('latest')], 2)], true);
     const older = { sessionId: summary.id, revision: 1, startIndex: 0, endIndex: 2, total: 3, events: [message('one'), message('two')], hasMore: false };
@@ -58,5 +87,16 @@ describe('session transport', () => {
     expect(next[0].events.map(event => event.id)).toEqual(['one', 'two', 'latest']);
     expect(next[0].history?.hasMore).toBe(false);
     expect(prependHistory(next, older)[0].events).toEqual(next[0].events);
+  });
+
+  it('keeps older pages on a resumed delta after hydration and pagination', () => {
+    const initial = mergeSessions([], [reset([message('latest')], 2)], true);
+    const page = { sessionId: summary.id, revision: 1, startIndex: 0, endIndex: 2, total: 3, events: [message('one'), message('two')], hasMore: false };
+    const paginated = prependHistory(initial, page);
+    const resumed: SessionUpdate = { kind: 'delta', revision: 2, summary, total: 4, changes: [{ index: 3, revision: 2, event: message('new') }] };
+    const next = mergeSessions(paginated, [resumed], true);
+    expect(next[0].events.map(event => event.id)).toEqual(['one', 'two', 'latest', 'new']);
+    expect(next[0].history?.startIndex).toBe(0);
+    expect(next[0].history?.revision).toBe(2);
   });
 });

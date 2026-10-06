@@ -117,29 +117,52 @@ func (a *app) answerQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, questionID := r.PathValue("id"), r.PathValue("questionID")
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(45 * time.Second))
+	if err := a.replyConversationQuestion(id, questionID, body.Answers, body.Cancelled, nil); err != nil {
+		failSessionControl(w, err)
+		return
+	}
 	a.mu.Lock()
+	response := a.currentSessionUpdateLocked(id)
+	a.mu.Unlock()
+	respond(w, 200, response)
+}
+
+// HTTP and the general agent use the same native pending request, including
+// requests projected from child/graph execution onto the owning chat.
+func (a *app) replyConversationQuestion(id, questionID string, answers [][]string, cancelled bool, origin *SpawnOrigin) error {
+	a.mu.Lock()
+	if origin != nil {
+		// The general tool addresses the owning chat, never an arbitrary node.
+		// Resolve only this exact currently projected request onto its native turn.
+		if t := a.runs[id]; t == nil || t.questions[questionID] == nil {
+			for _, request := range a.state.graphProjection(id).Requests {
+				if request.Kind == "question" && request.RequestID == questionID {
+					id = request.SessionID
+					break
+				}
+			}
+		}
+	}
 	if s := a.state.session(id); s != nil && s.Role == sessionRoleSubagent {
 		a.mu.Unlock()
-		fail(w, 404, "Conversation not found.")
-		return
+		return controlError(404, "Conversation not found.")
 	}
 	t := a.runs[id]
 	if t == nil || t.ctx.Err() != nil || t.questions[questionID] == nil {
 		a.mu.Unlock()
-		fail(w, 409, "This question is no longer waiting for an answer.")
-		return
+		return controlError(409, "This question is no longer waiting for an answer.")
 	}
 	pending := t.questions[questionID]
 	if pending.busy {
 		a.mu.Unlock()
-		fail(w, 409, "This answer is already being sent.")
-		return
+		return controlError(409, "This answer is already being sent.")
 	}
-	valid := body.Cancelled && len(body.Answers) == 0
-	if !body.Cancelled && len(body.Answers) == len(pending.request.Items) {
+	valid := cancelled && len(answers) == 0
+	if !cancelled && len(answers) == len(pending.request.Items) {
 		valid = true
 		for i, q := range pending.request.Items {
-			answers := body.Answers[i]
+			answers := answers[i]
 			if len(answers) == 0 || len(answers) > 65 || (!q.Multiple && len(answers) != 1) {
 				valid = false
 				break
@@ -163,8 +186,7 @@ func (a *app) answerQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 	if !valid {
 		a.mu.Unlock()
-		fail(w, 400, "Answer every question using the offered choices or an allowed custom answer.")
-		return
+		return controlError(400, "Answer every question using the offered choices or an allowed custom answer.")
 	}
 	if err := a.commitLocked(func(d *diskState) {
 		s := d.session(id)
@@ -176,18 +198,15 @@ func (a *app) answerQuestion(w http.ResponseWriter, r *http.Request) {
 		s.UpdatedAt = now()
 	}); err != nil {
 		a.mu.Unlock()
-		fail(w, 503, err.Error())
-		return
+		return err
 	}
 	pending.busy = true
 	a.mu.Unlock()
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(45 * time.Second))
 	err := t.ctx.Err()
 	if err == nil {
-		err = pending.reply(body.Answers, body.Cancelled)
+		err = pending.reply(answers, cancelled)
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if err != nil {
 		pending.busy = false
 		if err := a.commitLocked(func(d *diskState) {
@@ -199,11 +218,11 @@ func (a *app) answerQuestion(w http.ResponseWriter, r *http.Request) {
 			}
 			s.UpdatedAt = now()
 		}); err != nil {
-			fail(w, 503, err.Error())
-			return
+			a.mu.Unlock()
+			return err
 		}
-		fail(w, 409, "Could not deliver the answer. The question may have expired; refresh or stop the turn.")
-		return
+		a.mu.Unlock()
+		return controlError(409, "Could not deliver the answer. The question may have expired; refresh or stop the turn.")
 	}
 	delete(t.questions, questionID)
 	if err := a.commitLocked(func(d *diskState) {
@@ -212,23 +231,28 @@ func (a *app) answerQuestion(w http.ResponseWriter, r *http.Request) {
 		s.UpdatedAt = now()
 		entry := event("status", "Question dismissed.")
 		entry.Status = "cancelled"
-		if !body.Cancelled {
+		if !cancelled {
 			parts := []string{}
 			for i, q := range pending.request.Items {
-				answer := strings.Join(body.Answers[i], ", ")
+				answer := strings.Join(answers[i], ", ")
 				if q.Secret {
 					answer = "[Private answer sent]"
 				}
 				parts = append(parts, q.Text+"\n\n"+answer)
 			}
 			entry = event("user", strings.Join(parts, "\n\n"))
+			if origin != nil {
+				entry.Type = "agent_prompt"
+				entry.Data = map[string]any{"origin": origin}
+			}
 		}
 		entry.Title = "Question response"
 		entry.ConsultationID = t.consultationID
 		s.Events = append(s.Events, entry)
 	}); err != nil {
-		fail(w, 503, err.Error())
-		return
+		a.mu.Unlock()
+		return err
 	}
-	respond(w, 200, a.currentSessionUpdateLocked(id))
+	a.mu.Unlock()
+	return nil
 }

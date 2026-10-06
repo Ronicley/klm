@@ -111,7 +111,7 @@ func (p *adapter) runPi(b binary, cwd, text string) (err error) {
 		}
 		cleanup := func() { _ = os.RemoveAll(extensionDir) }
 		extensionPath := filepath.Join(extensionDir, "pi-permissions.ts")
-		bridgeConfig, _ := json.Marshal(map[string]any{"url": p.bridge.url, "token": p.bridge.token, "graphNode": p.graphNode(), "tools": p.bridgeTools()})
+		bridgeConfig, _ := json.Marshal(map[string]any{"url": p.bridge.url, "token": p.bridge.token, "graphNode": p.graphNode(), "tools": p.bridgeTools(), "toolTimeoutMs": linkedToolClientTimeout.Milliseconds()})
 		extension := strings.Replace(string(piPermissionsExtension), "/*KLM_LINKED_CONFIG*/{}", string(bridgeConfig), 1)
 		if writeErr := os.WriteFile(extensionPath, []byte(extension), 0600); writeErr != nil {
 			cleanup()
@@ -183,9 +183,10 @@ func (p *adapter) runPi(b binary, cwd, text string) (err error) {
 		return err
 	}
 	statsSequence, latestStatsID := 0, ""
+	statsPrefix := "klm-stats-" + newID() + "-"
 	requestStats := func() error {
 		statsSequence++
-		latestStatsID = "klm-stats-" + strconv.Itoa(statsSequence)
+		latestStatsID = statsPrefix + strconv.Itoa(statsSequence)
 		return proc.Send(map[string]any{"id": latestStatsID, "type": "get_session_stats"})
 	}
 	// Optional telemetry gets a bounded final read before releasing the turn.
@@ -504,6 +505,11 @@ reading:
 			}
 			if str(raw, "type") == "agent_settled" {
 				p.nativeSettled = true
+				// Usage is optional. A correlated stats response received before
+				// settlement has already been applied; do not delay idle for it.
+				if p.completed {
+					return nil
+				}
 			}
 			if p.completed {
 				if statsDeadline == nil {

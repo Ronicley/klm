@@ -22,7 +22,7 @@ export type Harness = {
 export type EngineEvent = {
 	consultationId?: string;
   id: string;
-  type: 'user' | 'assistant' | 'reasoning' | 'command' | 'mcp' | 'tool' | 'error' | 'status' | 'consultation' | 'subagent';
+  type: 'user' | 'agent_prompt' | 'session_spawn' | 'assistant' | 'reasoning' | 'command' | 'mcp' | 'tool' | 'error' | 'status' | 'consultation' | 'subagent';
   text: string;
   title?: string;
   status?: string;
@@ -37,11 +37,11 @@ export type SessionUsage = {
   context: { tokens: number | null; window: number | null } | null;
 };
 
-export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer"; status: "queued" | "steering" | "sending" | "paused" | "uncertain"; error?: string };
+export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer"; status: "queued" | "steering" | "sending" | "paused" | "uncertain"; error?: string; origin?: { sessionId: string; title: string; kind?: 'instruction' | 'question_answer' } };
 
 export type Session = {
   queue?: QueuedMessage[] | null;
-  role?: 'side_agent' | 'subagent' | 'graph_node';
+  role?: 'side_agent' | 'subagent' | 'graph_node' | 'general_agent';
   selectedGraphId?: string;
   graph?: ConversationGraphState;
   parentId?: string;
@@ -51,6 +51,7 @@ export type Session = {
   title: string;
   workspace: string;
   harness: Harness['id'];
+  harnessLocked?: boolean;
   model?: string;
   yolo?: boolean;
   effort?: string;
@@ -96,6 +97,16 @@ export type GraphRunProjection = {
   snapshot: GraphFile;
   activeNodeIds: string[]; completedNodeIds: string[];
   completedChoiceIds: string[]; collectingJoinIds: string[];
+};
+export type GraphActivationSummary = { id: string; occurrence: number; status: string };
+export type GraphNodeActivity = {
+  runActive: boolean;
+  activations: GraphActivationSummary[];
+  activation: (GraphActivationSummary & {
+    input: Record<string, string>; events: EngineEvent[]; error?: string;
+    createdAt: string; updatedAt: string;
+    submission?: { choice: { origin: string; id: string }; payload: Record<string, string>; acceptedAt?: string };
+  }) | null;
 };
 export type GraphRequestProjection = {
   runId: string; graphId: string; nodeId: string; nodeName: string;
@@ -180,23 +191,32 @@ export type TranscriptionSettingsUpdate = {
   vocabulary?: TranscriptionVocabularyEntry[];
 };
 
+export class EngineRequestError extends Error {
+  constructor(message: string, public readonly status: number) { super(message); }
+}
+
 export async function request<T>(path: string, method = 'GET', body?: unknown, timeoutMs = 15000, signal?: AbortSignal): Promise<T> {
   let response: Response;
+  const timeout = method === 'GET' ? AbortSignal.timeout(timeoutMs) : undefined;
+  const requestSignal = signal && timeout ? AbortSignal.any([signal, timeout]) : signal ?? timeout;
   try {
     response = await fetch(`${ENGINE_URL}${path}`, {
       method,
       headers: { 'Content-Type': 'application/json' },
       credentials: 'omit',
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: signal ?? (method === 'GET' ? AbortSignal.timeout(timeoutMs) : undefined),
+      signal: requestSignal,
     });
-  } catch {
+  } catch (error) {
+    if (signal?.aborted && signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError') throw new Error('Engine request timed out. Delivery may be unconfirmed.');
+    if (signal?.aborted) throw new DOMException('Request cancelled.', 'AbortError');
+    if (timeout?.aborted || (error instanceof DOMException && error.name === 'TimeoutError')) throw new Error('Engine request timed out. Retry.');
     throw new Error(`Cannot connect to the engine at ${ENGINE_URL}. Start the engine and retry.`);
   }
   const result: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = result && typeof result === 'object' && 'error' in result && typeof result.error === 'string' ? result.error : `Engine request failed (${response.status}).`;
-    throw new Error(detail);
+    throw new EngineRequestError(detail, response.status);
   }
   if (result === null) throw new Error('The engine returned an invalid JSON response. Retry the request.');
   return result as T;

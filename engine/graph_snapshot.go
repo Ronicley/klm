@@ -300,6 +300,7 @@ func recoverGraphCatalogChanges(dir string, d *diskState) error {
 		}
 		applyGraphCatalogChange(d, change)
 		d.GraphRevision++
+		d.GraphViewRevision = d.GraphRevision
 		if err := saveState(dir, d); err != nil {
 			return err
 		}

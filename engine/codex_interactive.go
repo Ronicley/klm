@@ -51,7 +51,7 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			"-c", "mcp_servers.klm_linked.http_headers={Authorization=" + strconv.Quote("Bearer "+p.bridge.token) + "}",
 			"-c", "mcp_servers.klm_linked.enabled=true",
 			"-c", "mcp_servers.klm_linked.startup_timeout_sec=15",
-			"-c", "mcp_servers.klm_linked.tool_timeout_sec=12",
+			"-c", "mcp_servers.klm_linked.tool_timeout_sec=" + strconv.FormatInt(int64(linkedToolClientTimeout/time.Second), 10),
 			"app-server", "--listen", "stdio://",
 		}, cwd, p.runtime)
 		if err != nil {
@@ -164,7 +164,7 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 	steering := p.steeringChannel()
 	steeringRequests := map[string]bool{}
 	approvalPolicy, sandbox, sandboxType := "on-request", "read-only", "readOnly"
-	if p.yolo {
+	if p.captureNativeYOLO() {
 		approvalPolicy, sandbox, sandboxType = "never", "danger-full-access", "dangerFullAccess"
 	}
 	sendThread := func() error {
@@ -193,6 +193,25 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 		}
 		var frame map[string]any
 		var ok bool
+		// Give pending steering a dispatch opportunity even when the frame
+		// channel is continuously nonempty. Native acknowledgement is separate.
+		if inputReady != nil {
+			select {
+			case <-inputReady:
+				q, payload, err := p.takeSteering()
+				if err != nil {
+					return err
+				}
+				if q != nil {
+					steeringRequests["klm-steer-"+q.ID] = true
+					if err := c.send(map[string]any{"id": "klm-steer-" + q.ID, "method": "turn/steer", "params": map[string]any{"threadId": c.threadID, "expectedTurnId": c.turnID, "input": payload.codexInput()}}); err != nil {
+						return err
+					}
+				}
+				continue
+			default:
+			}
+		}
 		// Drain buffered output before interpreting process exit as a missing
 		// terminal turn. A completed turn does not require app-server to exit.
 		select {

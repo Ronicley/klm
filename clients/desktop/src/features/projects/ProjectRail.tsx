@@ -1,4 +1,4 @@
-import { Moon, Plus, Settings, Sun } from 'lucide-react';
+import { LogOut, Moon, Plus, Settings, Sun } from 'lucide-react';
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { IconButton } from '../../design-system/Button';
 import { ProjectActionsMenu } from './ProjectActionsMenu';
@@ -34,11 +34,13 @@ function projectBeforeAt(container: HTMLElement, draggingId: string, clientY: nu
   return '';
 }
 
-export function ProjectRail({ projects, sessions, activeId, onSelect, onEdit, onRemove, onReorder, onAdd, onSettings, adding = false }: {
+export function ProjectRail({ projects, sessions, activeId, onSelect, onEdit, onRemove, onReorder, onAdd, onSettings, onGeneralAgent, generalActive = false, adding = false }: {
   projects: Project[]; sessions: Session[]; activeId: string; onSelect: (project: Project) => void; onEdit: (project: Project) => void; onAdd: () => void; adding?: boolean;
   onRemove: (project: Project) => Promise<string | null>;
   onReorder: (project: Project, beforeId: string) => Promise<boolean>;
   onSettings: () => void;
+  onGeneralAgent?: () => void;
+  generalActive?: boolean;
 }) {
   const [contextMenu, setContextMenu] = useState<{ projectId: string; x: number; y: number } | null>(null);
   const [dragging, setDragging] = useState('');
@@ -56,9 +58,8 @@ export function ProjectRail({ projects, sessions, activeId, onSelect, onEdit, on
     if (projectList.current) animateSortPositions(projectList.current, '[data-project-sort-key]', 'projectSortKey', projectPositions.current);
   }, [dropBefore]);
   return <nav className="project-rail" aria-label="Projects">
-    {IS_MOBILE_HOST
-      ? <IconButton label="Hosts" className="rail-brand" data-klm-host-navigation onClick={returnToHosts}><span className="brand-mark" aria-hidden="true" /></IconButton>
-      : <div className="rail-brand" title="KLM"><img className="rail-brand-icon" src={paperBoatIcon} alt="" /><span className="sr-only">KLM</span></div>}
+    {/* The legacy marker makes installed mobile capture listeners skip this logo; only the footer assigns the home action. */}
+    <IconButton label="General agent" className={`rail-brand ${generalActive ? 'is-active' : ''}`} aria-current={generalActive ? 'page' : undefined} data-klm-general-navigation data-klm-host-navigation onClick={onGeneralAgent}>{IS_MOBILE_HOST ? <span className="brand-mark" aria-hidden="true" /> : <img className="rail-brand-icon" src={paperBoatIcon} alt="" />}</IconButton>
     <div ref={projectList} className="project-icons"
       onDragOver={event => {
         if (!dragging) return;
@@ -112,6 +113,6 @@ export function ProjectRail({ projects, sessions, activeId, onSelect, onEdit, on
     {dragging && dropBefore === '' ? <span className="project-drop-placeholder" aria-hidden="true" /> : null}
     </div>
     <IconButton label={adding ? 'Choosing project directory' : 'Add project'} className="add-project-button" disabled={adding} onClick={onAdd}><Plus /></IconButton>
-    <div className="project-rail-footer"><IconButton label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={() => setTheme(current => current === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun /> : <Moon />}</IconButton><IconButton label="Settings" onClick={onSettings}><Settings /></IconButton></div>
+    <div className="project-rail-footer"><IconButton label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={() => setTheme(current => current === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun /> : <Moon />}</IconButton><IconButton label="Settings" onClick={onSettings}><Settings /></IconButton>{IS_MOBILE_HOST && <IconButton label="Back to hosts" data-klm-host-navigation onClick={returnToHosts}><LogOut /></IconButton>}</div>
   </nav>;
 }

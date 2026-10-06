@@ -152,7 +152,6 @@ func (a *app) updateTranscriptionSettings(w http.ResponseWriter, r *http.Request
 	}
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if err := a.commitLocked(func(d *diskState) {
 		if apiKey != nil {
 			d.Transcription.APIKey = *apiKey
@@ -167,10 +166,13 @@ func (a *app) updateTranscriptionSettings(w http.ResponseWriter, r *http.Request
 			d.Transcription.Vocabulary = vocabulary
 		}
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	respond(w, http.StatusOK, transcriptionView(a.state.Transcription))
+	response := transcriptionView(a.state.Transcription)
+	a.mu.Unlock()
+	respond(w, http.StatusOK, response)
 }
 
 func (a *app) transcribe(w http.ResponseWriter, r *http.Request) {

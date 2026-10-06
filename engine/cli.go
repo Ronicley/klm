@@ -10,6 +10,14 @@ import (
 )
 
 func engineDataDir() (string, error) {
+	if developmentBuild {
+		if dir := os.Getenv("KLM_DEV_DATA_DIR"); dir != "" {
+			if !filepath.IsAbs(dir) {
+				return "", errors.New("KLM_DEV_DATA_DIR must be an absolute directory")
+			}
+			return filepath.Clean(dir), nil
+		}
+	}
 	config, err := os.UserConfigDir()
 	if err != nil {
 		return "", err

@@ -36,8 +36,8 @@ work and manages its execution with an agent. It is not just the language model.
 ## Current Definition Boundaries
 
 The first real slice is a separate Go engine with persistent projects and sessions,
-and a React client. A project has a name, directory, and icon. Each session belongs
-to one project and uses Pi, OpenCode, or Codex headlessly. The client presents the
+and a React client. A project has a name, directory, and icon. Ordinary sessions belong
+to one project and use Pi, OpenCode, or Codex headlessly. The client presents the
 messages, exposed reasoning, commands, and MCP/tool events those harnesses emit.
 
 Top-level sessions and their visual grouping folders can be archived and restored.
@@ -50,6 +50,72 @@ Assistant message actions are hidden while that message is streaming. Completed
 assistant messages provide Copy and a durable Favorite toggle; like and dislike are
 not used. Failed or cancelled partial responses remain copyable but cannot be marked
 as favorites.
+
+### General Agent
+
+The KLM logo at the top of Project Rail opens one persistent general-agent
+conversation per engine. Its identity and history are independent of the selected
+project and available even with no projects. Project Rail remains visible; the
+sessions sidebar and responsive Open sessions control are absent in this view.
+Returning to a project retains its normal session selection.
+
+Before the first accepted message, Pi, OpenCode and Codex choices appear immediately
+above the composer, with unavailable harnesses disabled. A draft does not lock the
+harness. Acceptance permanently locks it in both engine and UI, including messages
+accepted into the queue, deleted queued inputs, and failed turns. Model and effort
+remain editable between turns through the ordinary controls.
+
+The general agent uses the same session history, native harness adapters, queue,
+streaming, Stop, permission and question flows as project chats. It is engine-owned,
+excluded from ordinary project session lists and project removal/archive behavior,
+and cannot be created through ordinary session creation, renamed, moved or archived.
+Its stable execution directory is `workspaces/general-agent` below the engine data
+directory, separate from stored engine data and user projects. Development and
+installed engines retain separate conversations and workspaces. Permission choices
+use session/global scopes, with no project-level lifetime.
+
+`engine/prompts/general-agent.md` is loaded through the internal prompt mechanism
+for all three harnesses. The general agent has a dedicated private tool catalog for
+projects and top-level conversations across nonremoved projects in this engine.
+It can inspect side chats through their main relationship, read/search bounded
+messages and activity updates, inspect context usage and pending questions, and
+list destination models and project graphs. A compact observed project/activity
+snapshot accompanies each general turn; changing it does not start another turn.
+Retained runtimes are distinguished from working turns; unknown context usage
+remains unknown.
+
+The general agent can send visible, self-contained instructions to project chats
+and ask questions with correlated replies. It can rename/move visual grouping,
+atomically update model/effort/YOLO between turns, select a graph without executing
+it, and answer the exact pending native question through its owning conversation.
+Moving a chat does not change its directory. Archived history is readable; sending
+and consulting require effective restoration. Engine-owned
+identity is not a synthetic project or a grant of harness permissions.
+
+Its dedicated tools can create normal top-level sessions in an explicitly chosen
+registered project on the user's explicit creation request, with a self-contained
+prompt and a durable sender-scoped receipt referencing an actual human message in
+the general conversation. The child uses the project's registered directory;
+visual grouping defaults to Ungrouped. Harness/settings and YOLO inherit under the
+existing spawn rules, with explicit requested overrides applied before its first
+turn. Creation acceptance is not work completion and creates no subscription.
+
+The general agent can Stop project main/side chats, remove an exact unsent queue
+item, apply its existing Send now control, archive/restore normal top-level chats,
+and reply to an exact pending permission through its owning conversation, including
+projected graph requests. Stop pauses unsent input and cancels owned chat processes,
+not an independent graph. Uncertain native delivery requires the user's explicit
+retry choice and may duplicate delivery. Archive/restore is metadata and preserves
+runtime state; restoring under an archived folder requires an active destination
+folder or Ungrouped without restoring the whole folder. Send now requires effective
+restoration; Stop, removal and replies to existing requests remain recovery controls.
+Permission decisions use only offered choices, preserve the user's requested scope,
+and retain native-session/project/global grant ownership, rollback and attributed
+agent provenance. None of these replies become human graph/spawn authorization.
+
+No Hermes, linked side agent for the general conversation, project file mentions,
+general graph invocation, automatic monitoring, completion notifications or new global
+dashboard is included. Runtime behavior awaits human validation.
 
 ### Windows Delivery and Focus
 
@@ -136,12 +202,16 @@ Explicit saved denies still apply. Questions and MCP forms requiring user input
 are not answered by this automatic tool approval.
 
 The composer's vertical-ellipsis menu, immediately left of the harness/model
-selector, initially contains only **YOLO mode**. YOLO is persisted per conversation,
-can be changed between turns, and bypasses saved permission rules while active.
-Pi's engine replies are automatic; OpenCode's owned runtime gets permissive merged
-permissions; Codex uses `never` approvals and `danger-full-access`. Disabling YOLO
-restores normal policy on the next turn without deleting saved rules. User questions
-and graph authorization/lifecycle controls are independent of tool permissions.
+selector, initially contains only **YOLO mode**. YOLO is persisted per conversation
+and can be enabled during work without stopping the turn. Enabling resolves pending
+permissions and automatically handles future requests; disabling restores normal
+engine policy for future requests without deleting rules or undoing approved work.
+Pi and OpenCode gate new tool dispatch using the live engine setting. Native startup
+configuration refreshes on the next turn. Codex uses `never` approvals and
+`danger-full-access` when a turn starts in YOLO; that native full-access turn cannot
+be safely downgraded, so disabling is rejected until it ends. A Codex turn started
+normally can enable automatic engine approvals, with its native sandbox retained
+until the next turn. Questions and graph authorization/lifecycle remain separate.
 The normal workspace policy, precise matching rules, API recovery controls and
 adapter coverage are documented in `PERMISSIONS.md`. Runtime behavior awaits human
 validation; command classification is not filesystem or network isolation.
@@ -169,8 +239,11 @@ port uses the frontend default **7332**. A domain without a port gets no added p
 allowing tunnel/proxy URLs. Explicit ports and HTTP(S) schemes are preserved;
 without a scheme, IPs use HTTP and domains use HTTPS.
 
-The KLM logo at the top of the web project rail returns to the native web client
-list. While loaded, the WebView has no additional native toolbar. Flutter knows
+The KLM logo at the top of the web project rail opens the general-agent chat.
+A **Back to hosts** icon button below Settings returns to the native web client
+list through `KlmMobile.postMessage('home')`. It appears only in the Flutter-hosted
+WebView, not on desktop or in ordinary mobile browsers. While loaded, the WebView
+has no additional native toolbar. Flutter knows
 only the web client URL; engine selection and configuration belong to that web
 client. Failed loads offer Retry and a native KLM home action. Mobile does not
 start servers or relocate execution/files to the device. Native screens reuse
@@ -270,6 +343,46 @@ counts. Quota, skills, and MCP indicators belong only to the main status bar.
 This feature does not imply simultaneous turns inside one native session or
 automatic switching between harnesses during a task.
 
+### Independent sessions and cross-session consultations
+
+On an explicit user request to create sessions, a main or side agent can create
+independent top-level sessions in the same project directory, each with its own
+title, initial agent-authored prompt, native history, harness settings, permission
+and question flow, and Stop control. The initial prompt is attributed to the
+originating session and cannot serve as a human authorization message in the new
+session. A durable operation ID prevents duplicate creation on retries. Creating
+a session does not subscribe the creator to its progress or completion; normal
+session controls and inventory show it to the user.
+
+Spawned sessions inherit the sender's current YOLO mode by default. An explicit
+`yolo:false` implements the user's request for a non-YOLO child before its first
+turn; overrides are only made at the user's request. Later sender-mode changes do
+not change an existing child. Spawn options expose exact model IDs/efforts, visual
+folders and recent user message IDs. Validation rejects malformed or unavailable
+settings before creating a child and returns an actionable error to the agent for
+correction. OpenCode model IDs require `provider/model` format.
+
+When the user mentions another session and checking it is relevant, agents can
+discover top-level sessions in the same project, read bounded history by ID, or
+consult their agents in their actual native conversations. Main/side consultation
+without a target ID continues to work. Archived sessions can be read explicitly
+but must be restored before being consulted. Correlated answers and bounded waits
+use the existing consultation mechanism. Graph nodes and native subagents do not
+receive these collaboration tools. The adjustable agent guidance lives in
+`engine/prompts/session-collaboration.md` and applies from the next turn.
+
+`session_send` is shared by normal conversations and the general agent, with
+different authenticated scopes. Normal main/side agents can send instructions to
+their existing linked agent or same-project top-level conversations within the
+user's authorized work. An instruction uses the normal persistent FIFO queue and
+appears as an attributed agent prompt, with normal visible tool activity and
+output rather than consultation grouping. A durable sender-scoped operation ID
+prevents duplicate acceptance even after queue consumption or reload. Acceptance
+does not imply started or completed execution; sending creates no completion
+subscription or automatic continuation. `ask` remains for information/clarification
+and retains correlated replies. Agent-authored instructions and question responses
+are not human authorization for graph execution or session creation.
+
 ## Agent and Graph Authoring
 
 Project agents and graphs can be authored independently of graph execution. Each
@@ -294,7 +407,12 @@ and minimal-monitor decisions take precedence over earlier visual experiments.
 The Go engine implements asynchronous graph invocation, persistent activities and
 runs, and Agent, Choice, Terminal, Fork and Join execution. The main-chat agent
 invokes work with references to the user's express authorization and a self-contained
-task, available as `run.input.task`. Selection alone is not authorization. One run
+task, available as `run.input.task`. The orchestrator catalog exposes each graph's
+initial node ID, type and name, plus the associated agent's name and description
+when available. The orchestrator prepares the task for that entry role (for example,
+planning rather than implementation), while preserving the user's overall goal
+in the objective. This uses existing agent descriptions, not a new input schema
+or the full graph topology. Selection alone is not authorization. One run
 may be active per conversation, independently of the invoking chat turn. The
 orchestrator receives results and assesses whether the objective was satisfied
 before success-dependent activities proceed. Corrective attempts retain the approved
@@ -339,8 +457,10 @@ resumption, while retaining scheduled activities and pending result notification
 
 Windows mechanisms for Pi, OpenCode and Codex are implemented and admitted by the
 capability preflight, but `RuntimeValidated=false`: real model tasks and native
-session continuation still require human validation. OpenCode requires version
-1.18.30 and its owned plugin handshake. Unix graph execution is not enabled.
+session continuation still require human validation. OpenCode requires its owned
+plugin handshake and a healthy server, but graph execution is not blocked by the
+harness version. Protocol incompatibilities surface as runtime failures instead
+of requiring prior version approval. Unix graph execution is not enabled.
 
 External-MCP boundary approved on 2026-09-13 (refinement section 14): permit
 configured MCPs in OpenCode/Codex without a server-name allowlist or disabling
@@ -349,7 +469,10 @@ node and tool-call lifecycle, not shutdown of shared MCP servers or detached
 remote tasks continuing beyond a tool response. A "task started" response finishes
 that call's lifecycle responsibility without proving task success. Error/cancellation
 or a lost callback without evidence of call completion retains uncertain finality;
-local shutdown is not proof of remote cancellation or a normal result. Grants,
+local shutdown is not proof of remote cancellation or a normal result. Once all
+activation workers have returned, a run with uncertain finality terminates as
+`failed`, retaining the diagnostic and notifying the orchestrator. Uncertainty
+does not leave the run in `ending` indefinitely or accept a pending Choice. Grants,
 approval flows and sandbox settings remain unchanged. Implementation and runtime
 validation of this revised boundary are tracked separately.
 
@@ -382,12 +505,19 @@ earlier completion. Join collecting inputs is distinct from its agent running.
 The composer graph icon becomes a blinking LED for that matching active run,
 including startup, shutdown and human waits. The name remains plain text. On run
 completion, activity and LED clear and the view returns to idle configuration;
-unexecuted nodes are never marked completed.
+an already-open node activity panel remains available until closed so its final
+output can be read. Unexecuted nodes are never marked completed.
 
 The active cards retain the pink-to-blue body shimmer and Running indicator.
-Earlier CSV timers and Run/Input/Output panels are historical visual experiments,
-replaced in the production path by the minimal monitor approved in section 12 of
-`GRAPH_AUTHORING_REFINEMENT.md`. Separate run tabs, execution history/detail panels
+The Run/Input/Output panel is connected to real Agent and Join activations during
+a run. Run reuses the chat timeline for the reasoning and tool events exposed by
+the harness, including reads, writes, commands, results and errors. Input shows
+the activation's received task and other incoming fields; Output shows its submitted
+Choice and payload, distinguishing pending acceptance from accepted settlement.
+Repeated activations can be selected independently without mixing their histories.
+Activity is fetched only while its panel is visible, separately from the graph
+progress projection. This supersedes the earlier deferral of this panel in section
+12 of `GRAPH_AUTHORING_REFINEMENT.md`. Separate run tabs, execution history lists
 and a new sidebar request component remain deferred. Final results still reach
 the main-chat orchestrator. Integrated runtime/UI behavior awaits human validation.
 

@@ -28,6 +28,7 @@ type SessionSummary struct {
 	Title           string                  `json:"title"`
 	Workspace       string                  `json:"workspace"`
 	Harness         string                  `json:"harness"`
+	HarnessLocked   bool                    `json:"harnessLocked,omitempty"`
 	YOLO            bool                    `json:"yolo,omitempty"`
 	Model           string                  `json:"model,omitempty"`
 	Effort          string                  `json:"effort,omitempty"`
@@ -88,7 +89,7 @@ func sessionSummary(view *Session) SessionSummary {
 		Queue: view.Queue,
 		Role:  view.Role, GraphRunID: view.GraphRunID, GraphNodeID: view.GraphNodeID, ExecutionCWD: view.ExecutionCWD,
 		SelectedGraphID: view.SelectedGraphID, Graph: view.Graph, ParentID: view.ParentID, ID: view.ID, ProjectID: view.ProjectID,
-		Title: view.Title, Workspace: view.Workspace, Harness: view.Harness, YOLO: view.YOLO, Model: view.Model, Effort: view.Effort,
+		Title: view.Title, Workspace: view.Workspace, Harness: view.Harness, HarnessLocked: view.HarnessLocked, YOLO: view.YOLO, Model: view.Model, Effort: view.Effort,
 		ResolvedModel: view.ResolvedModel, ResolvedEffort: view.ResolvedEffort, Status: view.Status, Archived: view.Archived, RuntimeActive: view.RuntimeActive,
 		Permissions: view.Permissions, Questions: view.Questions, Usage: view.Usage, CreatedAt: view.CreatedAt, UpdatedAt: view.UpdatedAt,
 	}
@@ -210,6 +211,9 @@ func (a *app) history(w http.ResponseWriter, r *http.Request) {
 func (a *app) exportSession(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	view := a.sessionViewLocked(r.PathValue("id"))
+	if view != nil {
+		view.Events = append([]Event{}, view.Events...)
+	}
 	a.mu.Unlock()
 	if view == nil {
 		fail(w, 404, "Session not found.")
@@ -251,30 +255,46 @@ func (a *app) recordHistoryLocked(before diskState) {
 		if !existed {
 			continue
 		}
+		// All event writers bump the owning session timestamp. Do not compare
+		// histories of unrelated sessions for ordinary metadata commits.
+		if previous.UpdatedAt == session.UpdatedAt && len(previous.Events) == len(session.Events) {
+			continue
+		}
 		changes, reset := changedEvents(previous.Events, session.Events, revision)
 		if len(changes) == 0 && !reset {
 			continue
 		}
-		encoded, _ := json.Marshal(changes)
-		if len(changes) > historyJournalChanges || len(encoded) > historyJournalByteLimit {
-			changes, reset = nil, true
-		}
-		journal := a.historyJournal[session.ID]
-		if journal == nil {
-			journal = &sessionJournal{floor: a.journalBase}
-			a.historyJournal[session.ID] = journal
-		}
-		record := journalRecord{revision: revision, changes: changes, forceReset: reset, bytes: len(encoded)}
-		journal.records = append(journal.records, record)
-		journal.changeCount += len(changes)
-		journal.bytes += record.bytes
-		for len(journal.records) > 0 && (journal.changeCount > historyJournalChanges || journal.bytes > historyJournalByteLimit) {
-			removed := journal.records[0]
-			journal.records = journal.records[1:]
-			journal.floor = removed.revision
-			journal.changeCount -= len(removed.changes)
-			journal.bytes -= removed.bytes
-		}
+		a.appendHistoryRecordLocked(session.ID, revision, changes, reset)
+	}
+}
+
+func (a *app) appendHistoryChangesLocked(id string, revision uint64, changes []EventChange) {
+	a.appendHistoryRecordLocked(id, revision, changes, false)
+}
+
+func (a *app) appendHistoryRecordLocked(id string, revision uint64, changes []EventChange, reset bool) {
+	if a.historyJournal == nil {
+		a.historyJournal = map[string]*sessionJournal{}
+	}
+	encoded, _ := json.Marshal(changes)
+	if len(changes) > historyJournalChanges || len(encoded) > historyJournalByteLimit {
+		changes, reset = nil, true
+	}
+	journal := a.historyJournal[id]
+	if journal == nil {
+		journal = &sessionJournal{floor: a.journalBase}
+		a.historyJournal[id] = journal
+	}
+	record := journalRecord{revision: revision, changes: changes, forceReset: reset, bytes: len(encoded)}
+	journal.records = append(journal.records, record)
+	journal.changeCount += len(changes)
+	journal.bytes += record.bytes
+	for len(journal.records) > 0 && (journal.changeCount > historyJournalChanges || journal.bytes > historyJournalByteLimit) {
+		removed := journal.records[0]
+		journal.records = journal.records[1:]
+		journal.floor = removed.revision
+		journal.changeCount -= len(removed.changes)
+		journal.bytes -= removed.bytes
 	}
 }
 

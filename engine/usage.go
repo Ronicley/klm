@@ -76,10 +76,27 @@ func (p *adapter) setUsage(usage *SessionUsage) error {
 	if s == nil || (!p.subagent && p.app.runs[p.id] != p.turn) || reflect.DeepEqual(s.Usage, usage) {
 		return nil
 	}
-	return p.app.commitLocked(func(d *diskState) {
-		s := d.session(p.id)
-		s.Usage, s.UpdatedAt = usage, now()
-	})
+	if p.app.storageErr != nil {
+		return p.app.storageErr
+	}
+	// Token telemetry is also part of the stream hot path. Persist only this
+	// snapshot rather than checkpointing every conversation for each usage tick.
+	encoded, err := json.Marshal(usage)
+	if err != nil {
+		return err
+	}
+	var owned SessionUsage
+	if err := json.Unmarshal(encoded, &owned); err != nil {
+		return err
+	}
+	record := streamRecord{Revision: p.app.state.GraphRevision + 1, Session: p.id, Updated: now(), Usage: &owned}
+	if err := appendStreamRecord(p.app.dir, record); err != nil {
+		return p.app.failStorageLocked(err)
+	}
+	s.Usage, s.UpdatedAt = &owned, record.Updated
+	p.app.state.GraphRevision = record.Revision
+	p.app.notifySessionLocked(p.id)
+	return nil
 }
 
 func (p *adapter) clearContextUsage() error {

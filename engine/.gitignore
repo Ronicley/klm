@@ -2,4 +2,5 @@ klm-engine
 klm-engine*.exe
 engine*.exe
 klm-dev.exe
+klm-*-dev.exe
 *.test

@@ -48,16 +48,21 @@ served frontend and its tunnel/reverse-proxy deployment configuration.
 ## WebView and home navigation
 
 The web page occupies the safe area with no extra native toolbar while loaded.
-Tap the KLM logo (first item of the project rail) to dispose the WebView route and
-return to the native hosts screen. The narrow JS channel accepts only
+The KLM logo (first item of the project rail) opens the engine's general-agent
+chat. Tap **Back to hosts**, below Settings at the rail footer, to dispose the
+WebView route and return to the native hosts screen. This footer button is shown
+only when the frontend detects the Flutter bridge. The narrow JS channel accepts only
 `KlmMobile.postMessage('home')`; it exposes no native file/execution operations.
 The callback checks that the current page belongs to the selected host.
 
 The React rail explicitly supports this bridge. A delegated click/keyboard handler
 also adapts the existing `.rail-brand` in previously installed frontend builds,
 so the mobile app works without immediately reinstalling desktop. This fallback
-only runs in the WebView on the selected host. Normal browser/desktop logos retain
-their existing behavior. Android's system back also allows leaving the route.
+skips `data-klm-general-navigation` so it cannot intercept the new general-agent
+logo, and only runs in the WebView on the selected host. The logo also retains the
+legacy `data-klm-host-navigation` escape marker for already-installed mobile apps;
+the marker does not assign a home action. Only the footer button calls the bridge.
+Android's system back also allows leaving the route.
 
 Main-document loading failures/timeouts offer native Retry and a KLM home button.
 TLS certificate errors are not bypassed. Android permits cleartext HTTP for local

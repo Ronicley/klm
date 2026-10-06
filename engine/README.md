@@ -40,6 +40,12 @@ origin port **17332**, and `%APPDATA%\klm\engine-dev` for data, logs, locks and
 the derived local control channel. Release builds omit the tag and retain
 **7331/7332** and `%APPDATA%\klm\engine`. Both can run concurrently.
 
+For a fresh isolated development runtime, set `KLM_DEV_DATA_DIR` to an absolute
+directory before running the dev binary's `start` or `stop`. This changes only the
+engine's data, workspace, locks and derived control channel; harness account/config
+directories remain unchanged. The override is ignored by release builds. API and
+web ports remain fixed, so only one development engine can listen at a time.
+
 
 All mutation requests, including stop and directory picker, require
 `Content-Type: application/json`. Stop and picker accept an empty body or `{}`.
@@ -58,7 +64,8 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | GET | `/api/projects/{id}/paths?q=...` | `{paths:[{path,kind:"file"\|"directory"}],partial:boolean}`; project-relative paths |
 | POST | `/api/sessions` | `{projectId,title,workspace,harness,model?}` -> 201 Session |
 | POST | `/api/sessions/{id}/side` | `{harness?}` -> existing or newly created side Session; one per main, serialized atomically |
-| PATCH | `/api/sessions/{id}/harness` | `{harness}` -> side Session; only before its first turn |
+| POST | `/api/general-session` | `{}` -> existing or newly created singleton general SessionUpdate; atomic and independent of user projects |
+| PATCH | `/api/sessions/{id}/harness` | `{harness}` -> side/general SessionUpdate; general harness permanently locks at first accepted message |
 | POST | `/api/sessions/{id}/consultations/{requestID}/cancel` | `{}` -> Session; cancels the correlated request/continuation |
 | PATCH | `/api/sessions/{id}` | `{title?,workspace?,archived?}` -> 200 SessionUpdate |
 | GET | `/api/sessions/{id}/models` | Harness model catalog; `?refresh=true` bypasses the two-minute cache |
@@ -77,6 +84,193 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 
 Adding the same directory again restores a removed project's identity, folders,
 and session history with the name and icon chosen in the add dialog.
+
+### General conversation
+
+`POST /api/general-session` serializes get-or-create with the same durable state
+transaction gate as ordinary sessions. It persists a session with role
+`general_agent`, an empty `projectId`, and an absolute `executionCwd` pointing to
+`workspaces/general-agent` under the engine data directory. No synthetic user
+project is created. The general conversation and its native child sessions are
+excluded from `/api/state` project inventory; observing their IDs through
+`/api/updates` uses normal summaries and bounded history deltas.
+
+`harnessLocked` is durable metadata, set atomically with message acceptance and
+projected independently of paginated history. Removing queued input does not
+clear it. Ordinary create, rename, move, reorder, archive, side-agent and graph
+routes cannot repurpose this conversation. Model discovery/settings and queue
+execution resolve its engine-managed directory without requiring a project.
+
+The internal `general-agent.md` prompt is reread on each turn and prepended through
+the shared Pi/OpenCode/Codex execution path. Packaging already copies
+`engine/prompts/` and installs `prompts/*.md`, including this file. The private
+loopback bridge exposes a dedicated general-agent catalog, authenticated by the
+owned adapter/turn, without assigning a synthetic project. Normal tool
+permissions/questions/Stop are retained; remembered permissions are session/global
+only. This role does not receive implicit-project `linked_*`, `session_spawn` or
+graph-execution tools. Normal main/side scope is not widened.
+
+### General-agent discovery and control (private harness bridge)
+
+| Tool | Scope and behavior |
+| --- | --- |
+| `project_list` | Paginated nonremoved projects, registered directories and visual/archived folders. |
+| `session_list` | Top-level chats by default; project/folder/title/state filters; explicit `parentId` lists side chats. |
+| `session_get` | Identity, visual folder vs effective cwd, configured/resolved harness settings, raw/working/runtime state, queue counts, usage, full pending questions/permissions and projected graph requests. |
+| `session_messages_list` / `session_messages_search` | Chronological bounded messages or literal case-insensitive excerpts; exact `messageId`/rune `offset` reads long content. Agent origins are retained. |
+| `session_events_read` | Chronological harness activity, including partial events, or changes after `sinceRevision`. No subscription. |
+| `session_models_list` / `project_graphs_list` | Real destination catalog/defaults, or selectable graph IDs with enabled/available flags and catalog errors. |
+| `session_send` | Visible normal execution through the shared persistent FIFO queue; explicit destination, self-contained instruction and sender-scoped idempotency key. |
+| `session_ask` | Information/clarification in the destination's actual conversation, using existing correlated answer/continuation semantics. |
+| `session_rename` / `session_move` | Existing title and active visual-folder validation; no filesystem move or cwd change. |
+| `session_settings_update` | Optional fields, preserved when omitted; model/effort validate atomically between turns. YOLO alone can change during work and resolves pending permissions on enable. Native Codex full-access turns cannot downgrade until they end. |
+| `session_graph_select` | Available main-chat graph or empty ID for None; does not invoke a graph. |
+| `session_question_answer` | Exact active native request, including graph requests routed through their owning chat; existing choices, cancellation, custom/multiple answers, resolving conflicts and private-answer masking. |
+| `session_create_options` | Explicit `projectId`, optional harness and pagination; installed harnesses, active folders, connected model/effort defaults and recent real general-chat human message IDs. |
+| `session_create` | `{projectId,title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,folder?,yolo?}`; normal independent top-level child in the registered project directory; durable spawn receipt, not completion. |
+| `session_stop` | Chat cancellation, owned native process termination and unsent-queue pause; waits up to 20 seconds, leaves independent `activeGraph` observable. |
+| `session_queue_remove` / `session_queue_send` | Exact `messageId`; existing removal or Send now, with effective item ID and bounded queue state. Sending conflicts. Uncertain Send now requires `retryUncertain:true` after an explicit user recovery decision and can duplicate delivery. |
+| `session_archive` / `session_restore` | Normal top-level metadata only; preserves runtime/requests. Restore accepts optional active `folder` or Ungrouped and requires it when the current folder is archived. |
+| `session_permission_reply` | `{sessionId,permissionId,decision,sourceUserEventId?}`; exact currently pending request through its owner, including projected graph requests; offered decision only, native rollback and related-request resolution. |
+
+All destinations resolve by stable ID in nonremoved projects. Archived sessions
+are readable; orders/consultations/Send now require effective restoration. Stop,
+queue removal and pending-request replies remain available for recovery.
+Graph nodes and native subagents are not independent control/command destinations.
+Global reads/controls are exclusive to the general role; an argument cannot grant
+it. Replies to general consultations use its own execution directory and prompt.
+Only the general agent can initiate cross-project consultations, including after
+checkpoint/journal replay; ordinary conversations still require the same project.
+
+List pages contain up to 50 items; message/event pages up to 20. Serialized tool
+content is capped at 64 KiB. Oversized records return UTF-8 JSON fragments with
+`encoding`, `fragment`, rune `offset` and `nextCursor`; concatenate fragments for
+that record before decoding. Use only returned cursors with unchanged filters.
+Changed inventories/snapshots require restarting pagination. Activity in unrelated
+chats does not invalidate normal history pages, which bind to the destination's
+event version. Event delta cursors
+retain the upper observed revision, delivering repeated updates to the same ID
+without mixing later versions. Advance `consumedRevision` only after all delta
+pages/fragments arrive. Expired revisions and reset records return `resetRequired`
+with a bounded resynchronization page, not an empty success. Completed reset pages
+can resume deltas from the returned `revision`. Large consultation results include
+bounded answer/question excerpts plus source session/message IDs for full reading.
+Usage input/output totals remain separate from context tokens/window; percentages
+require both known values and a positive window. `observedAt` is the observation
+time, not an invented harness measurement timestamp.
+
+A compact timestamped/revisioned project snapshot accompanies each general turn,
+including working/waiting and separate graph activity counts, with truncation after
+30 projects. There are no background subscriptions, unsolicited completion/idle
+notifications or polling loops. Correlated replies to an explicit ask remain.
+Hermes remains outside this slice. Three-harness runtime and shared desktop/web/mobile behavior
+remain human validation steps; automated fixtures never execute project agents.
+
+Creation reuses `SessionSpawn` with an optional request `projectId` restricted to
+the general sender, validated on checkpoint, commit and journal-replayed state.
+Normal main/side spawn still cannot select another project. `sourceUserEventId`
+must refer to a real `user` event in the general conversation, never an agent prompt;
+it records traceability, not semantic proof of consent or harness permissions.
+The child starts with attributed agent input. Same-key identical retries survive
+queue consumption/restart; another project/settings on the key conflict. Catalog
+validation occurs outside the engine lock followed by destination/settings/turn
+revalidation before atomic child, queue payload and receipt acceptance. Rejected
+requests reserve nothing. Folder omission uses Ungrouped. Same-harness settings
+and current YOLO inherit under spawn rules; a changed harness uses its defaults.
+Explicit YOLO overrides apply before the first turn and only at the user's request.
+
+HTTP and these tools share the underlying Stop, queue, archive and permission
+operations. General control events carry attributed origin. Permission results
+identify exact decision and request/session/project/global lifetime; grants belong
+to the native target, including graph nodes resolved only from the owner's current
+projection. They never become human authorization. An uncertain native reply is
+not proof of non-delivery. Creation/options, Stop and permission reply use the
+existing long bridge budget (55s server, 60s clients; catalogs 45s), leaving ask's
+special correlated-wait handling intact.
+
+Manual validation is still needed across all three harnesses: singleton identity
+through simultaneous clients/reloads/restarts, queue acceptance and irreversible
+harness locking, model/effort changes, streaming/errors/Stop/permissions/questions,
+empty-project operation, and unchanged project history/navigation.
+
+### Session collaboration (private harness bridge)
+
+`session_spawn` accepts `{title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,workspace?,yolo?}`.
+It creates one top-level session in the calling session's project, persists a
+pending first input and a receipt in the origin atomically, and schedules its
+normal turn independently. The source reference must be an existing human `user`
+event in that conversation; the engine records traceability, while the editable
+prompt instructs the agent to create sessions only when explicitly requested.
+Repeated identical calls with the same operation ID return the original receipt;
+different arguments conflict. The receipt reports acceptance, not execution
+success. Default harness/model/effort and visual folder come from the caller;
+changing harness uses that harness's model defaults. Omitted `yolo` inherits the
+sender's current mode at creation; `yolo:false` starts the requested non-YOLO child
+with permissions enabled. Override only at the user's request. The receipt records
+the resolved creation mode, which does not change on retry or later sender updates.
+Local grants, selected graphs, native history and active turns are not copied. No automatic completion
+notification is sent to the origin. Pending or uncertain deliveries remain
+recoverable with the ordinary queue controls after interruption.
+
+`session_spawn_options` is available to normal main/side agents in their own
+project. It lists installed harnesses, paginated exact model IDs and efforts,
+active visual folders, required spawn fields and five bounded recent real user
+message IDs. OpenCode requires full `provider/model` IDs such as
+`openai/gpt-6-luna`, not display labels or bare model names. `workspace` is a visual
+folder name, not a path; `sourceUserEventId` is a message ID in the sender, not its
+session ID. The agent guidance directs recoverable validation errors back into
+corrected tool calls rather than ending the user's task.
+
+Spawn syntax and real model/effort availability are validated before acceptance.
+Catalog discovery occurs outside the state mutex, with sender/turn/project
+revalidation before atomic creation. Rejection creates no child, queue item or
+receipt and does not reserve the operation ID. Tool errors are JSON with
+`accepted:false`, `code`, `field`, `message`, `hint` and optional `validValues`.
+An invalid OpenCode model therefore returns to the requesting agent before a
+child can fail with a Harness error. Correct rejected arguments and reuse the
+operation ID; changing an already accepted request still conflicts.
+
+`session_send` accepts `{sessionId,instruction,operationId,sourceUserEventId?}` in both catalogs.
+Ordinary callers can address their linked main/side or same-project top-level chat;
+the general agent can address admitted project main/side conversations globally.
+`SessionCommand` receipts and the queue payload/origin are persisted atomically.
+Identical retries return `{accepted,sessionId,messageId,operationId,delivery}`;
+different content/destinations with the same sender operation ID conflict. Receipts
+outlive queue consumption and no receipt is reused as session ownership or creation.
+The optional source reference must identify a real human message in the sender;
+it is traceability, not permission, and can be omitted for agent-assigned work.
+Busy recipients queue FIFO, paused/uncertain queues are preserved, and interrupted
+unconfirmed native delivery is not automatically replayed. Orders do not carry a
+`consultationId`; UI/log/export distinguish `Instruction from …` from initial
+prompts. `agent_prompt` is not a human `user` authorization event. Sending does not
+wait, yield, subscribe or resume the sender. `linked_ask`/`session_ask` are for
+information/clarification; use `session_send` for implementation/execution.
+
+Storage adds optional `sessionCommands` and optional origin `kind` fields through
+the ordinary transaction/journal/checkpoint path. Older data remains loadable;
+downgrade to binaries rejecting new fields is not promised. Strict decoding and
+receipt/consultation identity/scope validation remain enabled.
+
+`session_discover` accepts `{query?,cursor?,limit?,includeArchived?}` and returns
+bounded same-project top-level identities (`id`, title, project, workspace,
+harness and archived flag). `linked_read` and `linked_ask` accept an optional
+`sessionId` for an eligible top-level target; without it they retain their
+main/side target. Reading an archived session requires an explicit ID and is
+allowed; consulting one requires restoration. `linked_answer` uses the active
+correlated request, regardless of whether the two sessions have a side link.
+Consultations retain the four-pending-per-origin limit and ten-minute timeout;
+the same question to different recipients is separate. No graph node or native
+subagent receives these tools. Pi loads the same engine-supplied tool catalog as
+OpenCode and Codex through its managed extension.
+
+Agent behavior is editable in `engine/prompts/session-collaboration.md` during
+development, or `prompts/session-collaboration.md` next to the installed engine.
+`KLM_PROMPTS_DIR` overrides both. The Windows engine packaging copies all
+`engine/prompts/*.md` into the installer's prompts directory. Changes take effect
+on the next turn; missing or empty prompt files surface an error instead of
+silently reverting to hardcoded guidance. Consultations from other agents are
+attributed context, not new user messages or permission grants. Creation and
+consultation still use the private authenticated loopback bridge.
 
 ```typescript
 type Project = {
@@ -117,7 +311,7 @@ type Session = {
 type Event = {
   id: string
   consultationId?: string
-  type: 'user' | 'assistant' | 'reasoning' | 'command' | 'mcp' | 'tool' | 'error' | 'status' | 'consultation'
+  type: 'user' | 'agent_prompt' | 'session_spawn' | 'assistant' | 'reasoning' | 'command' | 'mcp' | 'tool' | 'error' | 'status' | 'consultation'
   text: string
   title?: string
   status?: string
@@ -713,9 +907,40 @@ execution, a full suite, or an adversarial review.
 
 ## Persistence And Recovery
 
-- `state.json` holds projects, sessions, events, and the private native-session
-  map. Every published mutation is serialized under a mutex and written to a
-  same-directory temporary file, synced, closed, then atomically replaced.
+- `state.json` is the full checkpoint (v2, `journalFormat: 1`). Commands and stream
+  updates share one ordered `stream.journal`: each frame is a little-endian uint32
+  JSON length, uint32 CRC32, then JSON, capped at 256 MiB. Stream records retain
+  `{revision,session,updated,updates,usage?}`; command records use
+  `{format:1,revision,transaction:[{path,value?|length?|delete?}]}`. Paths are arrays
+  of field names (JSON tag, or Go name when untagged, including embedded containers),
+  slice indexes and map keys. Each command frame includes all
+  affected queue payloads, receipts, consultations, graph records and event edits.
+  A frame is synced before publishing state, SSE notifications or HTTP success.
+  Identical commands/stream updates need no new revision or write.
+- Command callbacks clone mutable metadata in memory, sharing immutable strings
+  and append-only event histories. Existing session events must be replaced through
+  `diskState.setEvent`, which stages indexed changes until persistence succeeds;
+  never mutate existing event payload maps in place. Activation event logs are
+  append-only. SSE changes are ordered by index. No per-command full JSON state
+  clone, global history diff or full-session event copy is performed. Metadata
+  traversal/validation still scales with the number of records; this is not an
+  O(1) database. Captured graph validation/compilation and event identity indexes
+  are reused rather than rereading source text or unrelated event histories.
+- Every five minutes the checkpoint worker serializes with other checkpoints,
+  rotates the active journal to `stream.sealed` under `app.mu`, then releases it.
+  It reconstructs an independent state from the previous checkpoint and sealed
+  segment, writes/syncs/replaces `state.json`, and removes only that sealed segment.
+  Commands and streaming continue into a new active journal during the expensive
+  replay/validation/serialization/write. Shutdown joins this worker before releasing
+  the data-directory lock. Small journal fsyncs remain serialized under `app.mu`.
+- Recovery reads checkpoint, sealed segment, then active segment, ignoring revisions
+  already in the checkpoint and requiring contiguous newer revisions. It truncates
+  and syncs an incomplete last frame; a complete corrupt frame, unsupported format
+  or revision gap is an error. Session reordering preserves histories by identity.
+  Versions 1/2 and the older stream-only journal remain readable. Before serving,
+  startup persists the `journalFormat` marker so older binaries refuse the data
+  instead of ignoring a journal. Downgrade is unsupported; a backup includes all
+  three storage files, not just `state.json`.
 - Windows replacement uses `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`.
   Unix uses rename plus parent-directory sync. Use a local filesystem with normal
   atomic rename/sync semantics, not a network share or cloud-synced data directory.
@@ -744,10 +969,10 @@ execution, a full suite, or an adversarial review.
   at 2 MiB and total stdout at 32 MiB per turn; hitting a limit cancels the turn
   with an explicit error. Stderr is capped at 16 KiB and is never persisted,
   exposed, or logged. Exit failures report a bounded generic diagnostic instead.
-- Session history is durable and unbounded across turns. This first implementation
-  rewrites the full state per event, intentionally favoring simplicity over large
-  histories/high token throughput. There is no retention, deletion, or compaction
-  API yet. Back up the data directory with the engine stopped.
+- Session history is durable and unbounded across turns. Full checkpoint/recovery
+  cost still grows with retained history, but is outside the live application mutex.
+  There is no history retention/deletion API yet. Back up the data directory with
+  the engine stopped. Measurements and recovery checks: [R4 result](../LATENCY_R4_RESULT.md).
 
 ## Network and Private Control Boundaries
 
@@ -941,6 +1166,24 @@ before launching the engine. No prompt is read as a package-initialization side
 effect; the factory is registered in `init()` and prompts are loaded when needed.
 See `GRAPH_ENGINE_PROGRESS_CORE.md` and `GRAPH_ENGINE_PROGRESS_ADAPTER.md` at the
 repository root for integration contracts and actual verification evidence.
+
+## Retired Tasks storage
+
+The abandoned Tasks prototype is not part of the current engine. At startup,
+while holding the data-directory lock, the engine removes its known checkpoint
+fields (`taskSchema`, `tasks`, `taskRuns`, `githubBindings`, `githubReceipts`,
+`engineTime`) and task ownership metadata on sessions and graph records. Ordinary
+chat histories, native session identities, projects and authorized graph records
+remain intact; graph input `task` is unrelated and is preserved.
+
+Cleanup first replays both journal segments into an isolated copy, excluding only
+retired Tasks fields, and validates the result with the current storage rules.
+Unknown fields, corrupt journals and graph records without valid user authorization
+still fail rather than being silently discarded or reauthorized. Before replacing
+the checkpoint, original files are synced to `backup-before-tasks-removal-*` under
+the data directory. Journal segments are retired only after the clean checkpoint
+covers their revisions. Existing `state.pre-tasks-*` backups are never restored or
+deleted. No harness work is started by the cleanup.
 
 ## Queued messages and steering (issue #4)
 

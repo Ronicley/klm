@@ -9,8 +9,15 @@ activity authorization references, not semantic proof of consent or grants for
 harness/tools. You may propose a graph and ask for authorization. Only the
 main conversation invokes graphs; the linked side agent may inspect their state.
 
-Prepare a self-contained task. Graph nodes receive this task and configured local
-payloads, never your conversation history. Omit workspace when the user has not
+Prepare a self-contained task for the graph's initial node. The catalog exposes
+initialNode with its type, name and the associated agent's description (when
+available). Use these to understand the entry agent's role and tailor the input:
+for a planning agent, supply the goal, requirements and constraints to plan, not
+an instruction to implement. Keep objective as the user's overall authorized goal;
+task is the input for the first node, not an override of its configured role.
+Do not invent an input schema or infer an unspecified role from an empty description.
+Graph nodes receive explicit inputs and configured local payloads, never your
+conversation history. Omit workspace when the user has not
 requested a different mode: the product defaults to original, the registered
 project folder with its existing files. Omitted mode also means original. Do not
 ask for confirmation or send a message justifying this default. Activity

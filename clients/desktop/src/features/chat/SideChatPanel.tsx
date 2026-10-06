@@ -11,16 +11,18 @@ import { ModelPicker } from './ModelPicker';
 import { PermissionCard } from './PermissionCard';
 import { QuestionCard } from './QuestionCard';
 import { SessionStatusBar } from './SessionStatusBar';
+import { PendingSubmission, type LocalSubmission } from './PendingSubmission';
 
 const minimumSideWidth = 304;
 const minimumMainWidth = 400;
 
-export function SideChatPanel({ session, project, harnesses, draft, sources, error, disconnected, pending, onClose, onRetry, onSnapshot, onHistory, onEventChange, onDraftChange, onRemoveSource, onSend, onStop, onHarness, onModel }: {
+export function SideChatPanel({ session, project, harnesses, draft, sources, submissions, onRestoreSubmission, onRetrySubmission, error, disconnected, pending, onClose, onRetry, onSnapshot, onHistory, onEventChange, onDraftChange, onRemoveSource, onSend, onStop, onHarness, onModel }: {
   session?: Session; project: Project; harnesses: Harness[]; draft: ComposerDraft; sources: SourceReference[];
   error: string; disconnected: boolean; pending: boolean; onClose: () => void; onRetry: () => void;
+  submissions: LocalSubmission[]; onRestoreSubmission: (item: LocalSubmission) => void; onRetrySubmission: (item: LocalSubmission) => void;
   onSnapshot: (session: SessionResponse) => void; onHistory: (page: EventPage) => void; onDraftChange: (draft: ComposerDraft) => void;
   onEventChange: (sessionId: string, event: import('../../engine').EngineEvent) => void;
-  onRemoveSource: (index: number) => void; onSend: (draft: ComposerDraft, mode?: SendMode) => Promise<boolean>; onStop: () => void;
+  onRemoveSource: (index: number) => void; onSend: (draft: ComposerDraft, mode?: SendMode) => boolean; onStop: () => void;
   onHarness: (harness: Harness['id']) => void; onModel: (model: string, effort: string) => Promise<boolean>;
 }) {
   const panel = useRef<HTMLElement>(null);
@@ -111,9 +113,10 @@ export function SideChatPanel({ session, project, harnesses, draft, sources, err
             {!harness.available && <small>Not installed</small>}
           </label>)}
         </fieldset>}
+        <PendingSubmission items={submissions} onRestore={onRestoreSubmission} onRetry={onRetrySubmission} />
         <MessageQueue key={`queue/${session.id}`} session={session} disabled={disconnected || pending} onSnapshot={onSnapshot} />
         <MessageComposer key={session.id} projectId={session.projectId} placeholder="Message the side agent" draft={draft} onDraftChange={onDraftChange} onSend={onSend} onStop={onStop} disabled={disconnected || pending} running={running}
-          modelControl={<ModelPicker key={`${session.id}/${session.harness}`} session={session} disabled={disabled} onSave={onModel} onSnapshot={onSnapshot} />} />
+          modelControl={<ModelPicker key={`${session.id}/${session.harness}`} session={session} disabled={disabled} optionsDisabled={disconnected || pending} onSave={onModel} onSnapshot={onSnapshot} />} />
         <SessionStatusBar session={session} side />
       </div>}
     </aside>

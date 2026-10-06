@@ -8,6 +8,7 @@ import (
 
 // Prepared attachments are stored separately from the public queue projection.
 type QueuedMessage struct {
+	Origin   *SpawnOrigin      `json:"origin,omitempty"`
 	ID       string            `json:"id"`
 	Text     string            `json:"text"`
 	Status   string            `json:"status"`
@@ -37,9 +38,16 @@ func removeQueuedMessage(d *diskState, sessionID, messageID string) {
 func appendQueuedUser(d *diskState, sessionID string, q QueuedMessage) {
 	s := d.session(sessionID)
 	payload := d.QueuePayloads[q.ID].Submission
-	e := event("user", q.Text)
+	kind := "user"
+	if q.Origin != nil {
+		kind = "agent_prompt"
+	}
+	e := event(kind, q.Text)
 	e.ID = q.ID
 	e.Data = map[string]any{"delivery": q.Mode}
+	if q.Origin != nil {
+		e.Data["origin"] = q.Origin
+	}
 	if len(q.Sources) > 0 {
 		e.Data["sources"] = q.Sources
 		s.Sources = append(s.Sources, q.Sources...)
@@ -171,16 +179,16 @@ func (a *app) scheduleMessagesLocked() {
 		if q.Status != "queued" && q.Status != "steering" {
 			continue
 		}
-		project := a.state.project(s.ProjectID)
+		folder, available := a.state.conversationDirectory(&s)
 		payload, found := a.state.QueuePayloads[q.ID]
 		b, installed := a.binaries[s.Harness]
-		if project == nil || project.Removed || !found || !installed || payload.Harness != s.Harness || payload.Directory != project.Folder {
+		if !available || !found || !installed || payload.Harness != s.Harness || payload.Directory != folder {
 			_ = a.commitLocked(func(d *diskState) {
 				pauseMessageQueue(d.session(s.ID), "Project or harness changed. Remove this message and send it again.")
 			})
 			continue
 		}
-		cwd, err := existingDirectory(project.Folder)
+		cwd, err := existingDirectory(folder)
 		if err != nil {
 			_ = a.commitLocked(func(d *diskState) { pauseMessageQueue(d.session(s.ID), err.Error()) })
 			continue
@@ -203,11 +211,23 @@ func (a *app) scheduleMessagesLocked() {
 func (a *app) changeQueuedMessage(w http.ResponseWriter, r *http.Request) {
 	id, messageID := r.PathValue("id"), r.PathValue("messageID")
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	_, err := a.changeQueuedMessageLocked(id, messageID, r.Method == http.MethodDelete, true, nil)
+	response := a.currentSessionUpdateLocked(id)
+	a.mu.Unlock()
+	if err != nil {
+		failSessionControl(w, err)
+		return
+	}
+	respond(w, 200, response)
+}
+
+func (a *app) changeQueuedMessageLocked(id, messageID string, remove, retryUncertain bool, origin *SpawnOrigin) (string, error) {
 	s := a.state.session(id)
 	if s == nil {
-		fail(w, 404, "Session not found.")
-		return
+		return "", controlError(404, "Session not found.")
+	}
+	if !remove && a.state.conversationArchived(s) {
+		return "", controlError(409, "Restore the conversation before sending queued messages.")
 	}
 	var queued *QueuedMessage
 	for _, q := range s.Queue {
@@ -218,24 +238,24 @@ func (a *app) changeQueuedMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if queued == nil {
-		fail(w, 404, "Queued message not found.")
-		return
+		return "", controlError(404, "Queued message not found.")
 	}
 	if queued.Status == "sending" {
-		fail(w, 409, "Message delivery is in progress.")
-		return
+		return "", controlError(409, "Message delivery is in progress.")
+	}
+	if !remove && queued.Status == "uncertain" && !retryUncertain {
+		return "", controlError(409, "Native delivery is uncertain. Obtain the user's explicit retry decision and pass retryUncertain:true; this may duplicate an instruction already received.")
 	}
 	if t := a.runs[id]; t != nil && t.ctx.Err() != nil {
-		fail(w, 409, "Execution is still stopping.")
-		return
+		return "", controlError(409, "Execution is still stopping.")
 	}
 	if a.closing {
-		fail(w, 503, "Engine is shutting down.")
-		return
+		return "", controlError(503, "Engine is shutting down.")
 	}
 	if err := a.commitLocked(func(d *diskState) {
-		if r.Method == http.MethodDelete {
+		if remove {
 			removeQueuedMessage(d, id, messageID)
+			appendSessionControl(d.session(id), "Queued message removed", origin, map[string]any{"messageId": messageID})
 			return
 		}
 		next := d.session(id)
@@ -252,12 +272,12 @@ func (a *app) changeQueuedMessage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		next.UpdatedAt = now()
+		appendSessionControl(next, "Queued message send accepted", origin, map[string]any{"messageId": messageID})
 	}); err != nil {
-		fail(w, 503, err.Error())
-		return
+		return "", err
 	}
 	// Send now may intentionally promote an item ahead of the rest of the queue.
-	if a.runs[id] == nil && r.Method != http.MethodDelete {
+	if a.runs[id] == nil && !remove {
 		if err := a.commitLocked(func(d *diskState) {
 			next := d.session(id)
 			for i, q := range next.Queue {
@@ -267,11 +287,10 @@ func (a *app) changeQueuedMessage(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}); err != nil {
-			fail(w, 503, err.Error())
-			return
+			return "", err
 		}
 	}
 	a.wakeSteeringLocked(id)
 	a.scheduleMessagesLocked()
-	respond(w, 200, a.currentSessionUpdateLocked(id))
+	return messageID, nil
 }

@@ -409,3 +409,26 @@ available and offers **Send now** for steering. The queue above the composer
 supports removing and sending individual items; it is shared through engine SSE
 and survives page reload. Main and side chats use the same controls. Paused and
 unconfirmed items require explicit action after Stop, failure or engine restart.
+
+## General-agent navigation
+
+The Project Rail logo opens a persistent global conversation with the engine's
+general agent, including when no projects exist. The view reuses the main chat
+components without the sessions sidebar or responsive Open sessions control.
+Returning to a project retains its selected session. General-view navigation is
+stored locally; conversation identity/history/harness settings belong to the engine.
+
+Pi, OpenCode and Codex choices appear immediately above the composer until the
+first accepted message. Engine-projected `harnessLocked` controls this visibility;
+loaded event pages do not determine whether the harness may change. Pending sends
+disable switching, and the backend enforces the permanent lock, including queued
+messages. Model and effort use normal chat controls. Project graph selection,
+side-agent actions and file-mention suggestions are absent in the general view.
+
+In the Flutter-hosted WebView only, a **Back to hosts** footer icon below Settings
+performs `returnToHosts()`; the logo opens chat on every client. The Flutter
+compatibility handler recognizes the new `data-klm-general-navigation` logo marker.
+The logo also retains `data-klm-host-navigation` so older installed mobile apps
+skip their capture handler; the actual home action belongs only to the footer.
+Singleton/restart behavior and real turns, requests, Stop and mobile navigation
+remain manual acceptance checks; no installer or deployed runtime was updated here.

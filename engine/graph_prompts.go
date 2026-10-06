@@ -12,6 +12,20 @@ import (
 // Resolve once per send, not once per process. Development changes are immediately
 // visible; packaged binaries may supply KLM_PROMPTS_DIR or sibling prompts/.
 func graphPrompt(name string, data any) (string, error) {
+	body, err := loadInternalPrompt(name)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return body + "\n\n```json\n" + string(encoded) + "\n```\n", nil
+}
+
+func sessionCollaborationPrompt() (string, error) { return loadInternalPrompt("session-collaboration.md") }
+
+func loadInternalPrompt(name string) (string, error) {
 	if filepath.Base(name) != name || !strings.HasSuffix(name, ".md") {
 		return "", errors.New("Invalid internal prompt name.")
 	}
@@ -37,11 +51,7 @@ func graphPrompt(name string, data any) (string, error) {
 		if strings.TrimSpace(string(body)) == "" {
 			return "", errors.New("Internal prompt is empty: " + name)
 		}
-		encoded, err := json.MarshalIndent(data, "", "  ")
-		if err != nil {
-			return "", err
-		}
-		return string(body) + "\n\n```json\n" + string(encoded) + "\n```\n", nil
+		return string(body), nil
 	}
 	return "", errors.New("Cannot load internal prompt " + name + "; configure KLM_PROMPTS_DIR or package engine/prompts.")
 }

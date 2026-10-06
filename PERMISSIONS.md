@@ -5,7 +5,10 @@
 - Card: **Allow** (current request), **Allow session**, **Deny** (current request).
 - Card menu: **Allow in this project**, **Deny in this project**, **Allow globally**,
   **Deny globally**. The scope shown above these choices is what is remembered.
-- Composer menu: **YOLO mode**, per conversation. Changes require an idle turn.
+- Composer menu: **YOLO mode**, per conversation. It can change during work;
+  enabling resolves pending permission cards without stopping the turn. Model and
+  effort still require an idle turn. Codex full-access turns cannot disable YOLO
+  until they end, because their native sandbox cannot be safely downgraded live.
   Main and side conversations have independent settings. Private graph-node
   sessions retain their own normal policy; main-chat YOLO is not graph authorization.
 - Recognized deletion commands and file-deletion patches display a warning icon.
@@ -100,7 +103,14 @@ YOLO precedes saved rules. Pi requests receive automatic replies. OpenCode uses 
 in-memory plugin configuration with permissive tool and agent permissions, without
 editing the user's harness configuration. Codex is resumed/started with `never`
 approval policy and `danger-full-access`, and the returned settings are checked.
-Changing YOLO invalidates retained process configuration before the next turn.
+The engine consults the stored setting for every permission request, so live
+changes apply to pending/future approvals without restarting the active runtime.
+Pi/OpenCode pre-tool gating also observes disabling during the turn. Approved
+operations are not revoked; callbacks already being delivered retain their actual
+outcome. Native startup configuration refreshes before the next turn. Codex retains
+its current native sandbox until then; enabling from normal mode auto-answers its
+exposed approvals, while disabling a turn started with native full access returns
+a conflict rather than claiming protection that has not been applied.
 Native subagents run under their parent's harness configuration. Unsupported native
 forms are declined rather than fabricated or presented as permission cards in YOLO.
 User questions still wait for answers; graph authorization and lifecycle gates remain.
@@ -112,6 +122,18 @@ User questions still wait for answers; graph authorization and lifecycle gates r
 - `DELETE /api/permission-rules/{ruleID}` revokes a remembered rule. Send the usual
   JSON content type. Existing native turn grants cannot be retroactively withdrawn;
   finish/stop that turn before expecting native grants to expire.
+
+The general agent's private `session_permission_reply` addresses an exact pending
+`permissionId` through its owning project chat, including graph requests currently
+projected there. It uses the same operation as the HTTP reply: offered decisions,
+busy/resolving protection, native callback outside the lock, grant rollback on
+failure and related-request resolution. Session grants belong to the actual native
+target; project grants belong to that target's project. Decision lifetime and agent
+origin are recorded without creating a human authorization event. Optional human
+references must be actual user messages in the general conversation. The agent must
+preserve the user's requested scope rather than widening a one-time approval or
+substituting YOLO. Delivery failure may be uncertain; read the owning state before
+retrying. Normal sessions do not receive this global tool.
 
 There is no separate rule-management screen in this slice. Automatic decisions are
 recorded in conversation history with their source and scope. Persisted rules survive

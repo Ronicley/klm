@@ -1,0 +1,19 @@
+name: Generate Installers
+enabled: true
+initial_node: 0bec9811-69de-4b55-973b-94cae881c2aa
+nodes:
+    0bec9811-69de-4b55-973b-94cae881c2aa:
+        type: agent
+        name: Agent
+        agent: release-generator
+        choices:
+            - submit-paths
+choices:
+    submit-paths:
+        name: submit_paths
+        description: full path of installers
+        input:
+            paths:
+                type: string
+                required: true
+        output: {}

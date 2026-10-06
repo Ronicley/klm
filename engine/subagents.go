@@ -67,7 +67,7 @@ func (p *adapter) ensureSubagent(nativeID, title, model, effort string) (*adapte
 	}
 	childID := childSession.ID
 	p.app.mu.Unlock()
-	child := &adapter{app: p.app, turn: p.turn, id: childID, harness: p.harness, subagent: true, yolo: p.yolo, cwd: p.cwd,
+	child := &adapter{app: p.app, turn: p.turn, id: childID, harness: p.harness, role: sessionRoleSubagent, subagent: true, yolo: p.yolo, cwd: p.cwd,
 		keys: map[string]string{}, toolNames: map[string]string{}, commands: map[string]string{}, processesDrained: true, model: model, effort: effort}
 	child.stream = newStreamBatch(child)
 	if p.subagents == nil {
@@ -99,7 +99,9 @@ func (p *adapter) finishSubagent(child *adapter, status string) error {
 		s.Status, s.UpdatedAt = sessionStatus, now()
 		for i := range s.Events {
 			if s.Events[i].Status == "running" || s.Events[i].Status == "pending" {
-				s.Events[i].Status = status
+				e := s.Events[i]
+				e.Status = status
+				d.setEvent(s, i, e)
 			}
 		}
 		syncSubagentParent(d, s, status)
@@ -117,7 +119,9 @@ func syncSubagentParent(d *diskState, child *Session, status string) {
 	for i := range parent.Events {
 		value, _ := parent.Events[i].Data["childSessionId"].(string)
 		if parent.Events[i].Type == "subagent" && value == child.ID {
-			parent.Events[i].Status = status
+			e := parent.Events[i]
+			e.Status = status
+			d.setEvent(parent, i, e)
 			parent.UpdatedAt = now()
 		}
 	}

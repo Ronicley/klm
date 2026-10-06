@@ -6,18 +6,26 @@ import { resolveAgentNode } from './agent-node';
 import { CanvasControls, graphViewNodeTypes, type CanvasNode } from './GraphCanvas';
 import { graphDrawing, graphViewport, type GraphFile } from './files';
 import { NodeConfigurationPanel } from './NodeConfigurationPanel';
+import { GraphRunActivity } from './GraphRunActivity';
 
-export function GraphView({ graph, agents, visible, run }: { graph: GraphFile; agents: Agent[]; visible: boolean; run?: GraphRunProjection | null }) {
+export function GraphView({ sessionId, graph, agents, visible, run }: { sessionId: string; graph: GraphFile; agents: Agent[]; visible: boolean; run?: GraphRunProjection | null }) {
   const root = useRef<HTMLElement>(null);
   const [inspectingId, setInspectingId] = useState<string | null>(null);
+  const [inspectionRun, setInspectionRun] = useState<GraphRunProjection | null>(null);
+  const activityRun = run ?? inspectionRun;
   const [hasOpened, setHasOpened] = useState(visible);
   useEffect(() => { if (visible) setHasOpened(true); }, [visible]);
+  const runId = run?.id;
+  useEffect(() => {
+    if (runId) { setInspectingId(null); setInspectionRun(null); }
+  }, [runId]);
   // SSE may repeat the snapshot on every revision; rebuild only when it changes.
-  const drawingKey = JSON.stringify(graph);
+  const drawingKey = JSON.stringify(!run && inspectionRun ? inspectionRun.snapshot : graph);
   const drawing = useMemo(() => graphDrawing(JSON.parse(drawingKey) as GraphFile), [drawingKey]);
   function closeInspection() {
     root.current?.querySelector<HTMLButtonElement>(`[data-id="${CSS.escape(inspectingId ?? '')}"] .graph-node-inspect-button`)?.focus();
     setInspectingId(null);
+    setInspectionRun(null);
   }
   const running = !!run?.active;
   const nodes = useMemo<CanvasNode[]>(() => {
@@ -33,8 +41,8 @@ export function GraphView({ graph, agents, visible, run }: { graph: GraphFile; a
       return { ...node, draggable: false, selectable: false, connectable: false, deletable: false, focusable: false,
         data: { ...node.data, readOnly: true, agent, settings: agent ? resolveAgentNode(agent, node.data.overrides ?? {}) : undefined,
           running: status === 'running', activityStatus: running ? status : undefined,
-          inspectionMode: 'configuration', configuring: !running && node.id === inspectingId,
-          inspecting: !running && node.id === inspectingId, onInspect: running ? undefined : () => setInspectingId(node.id) },
+          inspectionMode: running ? 'activity' : 'configuration', configuring: !running && node.id === inspectingId,
+          inspecting: node.id === inspectingId, onInspect: running && node.type !== 'aiAgent' && node.type !== 'join' ? undefined : () => { setInspectingId(node.id); setInspectionRun(running ? run ?? null : null); } },
       };
     });
   }, [drawing, agents, run, inspectingId, running]);
@@ -52,7 +60,8 @@ export function GraphView({ graph, agents, visible, run }: { graph: GraphFile; a
       defaultEdgeOptions={{ type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--color-muted)' }, style: { stroke: 'var(--color-muted)' } }}>
       <Background gap={24} size={1} color="var(--color-faint)" />
       <CanvasControls />
-      {inspectedNode && !running && <Panel position="center-right" className="graph-agent-panel-position"><NodeConfigurationPanel key={inspectedNode.id} node={inspectedNode} nodes={nodes} edges={drawing.edges} onClose={closeInspection} /></Panel>}
+      {visible && inspectedNode && (inspectedNode.type === 'aiAgent' || inspectedNode.type === 'join') && activityRun && <GraphRunActivity key={`${activityRun.id}:${inspectedNode.id}`} sessionId={sessionId} runId={activityRun.id} nodeId={inspectedNode.id} nodeName={inspectedNode.data.name || inspectedNode.id} onClose={closeInspection} />}
+      {inspectedNode && !running && !inspectionRun && <Panel position="center-right" className="graph-agent-panel-position"><NodeConfigurationPanel key={inspectedNode.id} node={inspectedNode} nodes={nodes} edges={drawing.edges} onClose={closeInspection} /></Panel>}
     </ReactFlow>}
   </section>;
 }

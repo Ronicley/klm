@@ -426,41 +426,31 @@ func (a *app) updatePermissionSettings(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Provide yolo.")
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	id := r.PathValue("id")
-	s := a.state.session(id)
-	if s == nil {
-		fail(w, 404, "Session not found.")
+	if err := a.changeSessionSettings(r.Context(), id, nil, nil, body.YOLO); err != nil {
+		failSessionControl(w, err)
 		return
 	}
-	if a.runs[id] != nil {
-		fail(w, 409, "Stop or finish the current turn before changing YOLO mode.")
-		return
-	}
-	if err := a.commitLocked(func(d *diskState) {
-		s := d.session(id)
-		s.YOLO, s.UpdatedAt = *body.YOLO, now()
-	}); err != nil {
-		fail(w, 503, err.Error())
-		return
-	}
-	respond(w, 200, a.currentSessionUpdateLocked(id))
+	a.mu.Lock()
+	response := a.currentSessionUpdateLocked(id)
+	a.mu.Unlock()
+	respond(w, 200, response)
 }
 
 func (a *app) permissionRules(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	respond(w, 200, slices.Clone(a.state.Grants))
+	response := slices.Clone(a.state.Grants)
+	a.mu.Unlock()
+	respond(w, 200, response)
 }
 
 // Apply new project/global decisions to cards already waiting elsewhere too.
 // Deliver callbacks outside app.mu; inactive turns and in-flight replies are skipped.
 func (a *app) resolveRememberedPermissions() {
 	type resolution struct {
-		sessionID, requestID, decision string
-		turn                           *turn
-		pending                        *pendingApproval
+		sessionID, requestID, decision, reason string
+		turn                                   *turn
+		pending                                *pendingApproval
 	}
 	var ready []resolution
 	a.mu.Lock()
@@ -473,12 +463,15 @@ func (a *app) resolveRememberedPermissions() {
 			if pending.busy {
 				continue
 			}
-			decision := rememberedPermission(a.state.Grants, s, pending.ruleHarness, pending.ruleKind, pending.ruleKey)
+			decision, reason := rememberedPermission(a.state.Grants, s, pending.ruleHarness, pending.ruleKind, pending.ruleKey), "saved rule"
+			if s.YOLO {
+				decision, reason = "allow", "YOLO mode"
+			}
 			if decision == "" || decision == "allow" && !slices.Contains(pending.request.Decisions, "once") {
 				continue
 			}
 			pending.busy = true
-			ready = append(ready, resolution{sessionID, id, decision, t, pending})
+			ready = append(ready, resolution{sessionID, id, decision, reason, t, pending})
 		}
 	}
 	a.mu.Unlock()
@@ -495,9 +488,9 @@ func (a *app) resolveRememberedPermissions() {
 			_ = a.commitLocked(func(d *diskState) {
 				s := d.session(item.sessionID)
 				s.Permissions = slices.DeleteFunc(s.Permissions, func(req Permission) bool { return req.ID == item.requestID })
-				entry := event("status", "Automatic permission decision: "+item.decision+" (saved rule)")
+				entry := event("status", "Automatic permission decision: "+item.decision+" ("+item.reason+")")
 				entry.Title, entry.Status, entry.ConsultationID = item.pending.request.Title, "completed", item.turn.consultationID
-				entry.Data = map[string]any{"permission": item.pending.request.Kind, "decision": item.decision, "automatic": true, "scope": item.pending.request.ScopeLabel}
+				entry.Data = map[string]any{"permission": item.pending.request.Kind, "decision": item.decision, "automatic": true, "scope": item.pending.request.ScopeLabel, "reason": item.reason}
 				s.Events = append(s.Events, entry)
 				s.UpdatedAt = now()
 			})
@@ -508,12 +501,13 @@ func (a *app) resolveRememberedPermissions() {
 
 func (a *app) deletePermissionRule(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if err := a.commitLocked(func(d *diskState) {
 		d.Grants = slices.DeleteFunc(d.Grants, func(grant permissionGrant) bool { return grant.ID == r.PathValue("ruleID") })
 	}); err != nil {
+		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
+	a.mu.Unlock()
 	respond(w, 200, map[string]bool{"deleted": true})
 }
