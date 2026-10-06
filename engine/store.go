@@ -278,13 +278,8 @@ func loadState(dir string) (diskState, error) {
 		}
 		ids[c.ID] = true
 	}
-	spawnKeys := map[string]bool{}
-	for _, spawn := range d.SessionSpawns {
-		key := spawn.From + "/" + spawn.OperationID
-		if spawn.OperationID == "" || spawnKeys[key] || d.session(spawn.From) == nil || d.session(spawn.SessionID) == nil || d.session(spawn.From).ProjectID != d.session(spawn.SessionID).ProjectID || d.session(spawn.SessionID).ParentID != "" || d.session(spawn.SessionID).Role != "" || !graphUserEvent(&d, spawn.From, spawn.SourceUserEventID) {
-			return d, errors.New("invalid session spawn in state.json")
-		}
-		spawnKeys[key] = true
+	if err := validateSessionSpawns(&d); err != nil {
+		return d, err
 	}
 	normalizeGraphWorkspaceRecords(&d)
 	if err := validateGraphRecords(&d); err != nil {

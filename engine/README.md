@@ -126,9 +126,16 @@ graph-execution tools. Normal main/side scope is not widened.
 | `session_settings_update` | Optional fields, preserved when omitted; model/effort validate atomically between turns. YOLO alone can change during work and resolves pending permissions on enable. Native Codex full-access turns cannot downgrade until they end. |
 | `session_graph_select` | Available main-chat graph or empty ID for None; does not invoke a graph. |
 | `session_question_answer` | Exact active native request, including graph requests routed through their owning chat; existing choices, cancellation, custom/multiple answers, resolving conflicts and private-answer masking. |
+| `session_create_options` | Explicit `projectId`, optional harness and pagination; installed harnesses, active folders, connected model/effort defaults and recent real general-chat human message IDs. |
+| `session_create` | `{projectId,title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,folder?,yolo?}`; normal independent top-level child in the registered project directory; durable spawn receipt, not completion. |
+| `session_stop` | Chat cancellation, owned native process termination and unsent-queue pause; waits up to 20 seconds, leaves independent `activeGraph` observable. |
+| `session_queue_remove` / `session_queue_send` | Exact `messageId`; existing removal or Send now, with effective item ID and bounded queue state. Sending conflicts. Uncertain Send now requires `retryUncertain:true` after an explicit user recovery decision and can duplicate delivery. |
+| `session_archive` / `session_restore` | Normal top-level metadata only; preserves runtime/requests. Restore accepts optional active `folder` or Ungrouped and requires it when the current folder is archived. |
+| `session_permission_reply` | `{sessionId,permissionId,decision,sourceUserEventId?}`; exact currently pending request through its owner, including projected graph requests; offered decision only, native rollback and related-request resolution. |
 
 All destinations resolve by stable ID in nonremoved projects. Archived sessions
-are readable; orders/consultations require restoration through existing controls.
+are readable; orders/consultations/Send now require effective restoration. Stop,
+queue removal and pending-request replies remain available for recovery.
 Graph nodes and native subagents are not independent control/command destinations.
 Global reads/controls are exclusive to the general role; an argument cannot grant
 it. Replies to general consultations use its own execution directory and prompt.
@@ -156,9 +163,30 @@ A compact timestamped/revisioned project snapshot accompanies each general turn,
 including working/waiting and separate graph activity counts, with truncation after
 30 projects. There are no background subscriptions, unsolicited completion/idle
 notifications or polling loops. Correlated replies to an explicit ask remain.
-Global session creation/Stop/archive/restore/queue/permission tools and Hermes are
-outside this slice. Three-harness runtime and shared desktop/web/mobile behavior
+Hermes remains outside this slice. Three-harness runtime and shared desktop/web/mobile behavior
 remain human validation steps; automated fixtures never execute project agents.
+
+Creation reuses `SessionSpawn` with an optional request `projectId` restricted to
+the general sender, validated on checkpoint, commit and journal-replayed state.
+Normal main/side spawn still cannot select another project. `sourceUserEventId`
+must refer to a real `user` event in the general conversation, never an agent prompt;
+it records traceability, not semantic proof of consent or harness permissions.
+The child starts with attributed agent input. Same-key identical retries survive
+queue consumption/restart; another project/settings on the key conflict. Catalog
+validation occurs outside the engine lock followed by destination/settings/turn
+revalidation before atomic child, queue payload and receipt acceptance. Rejected
+requests reserve nothing. Folder omission uses Ungrouped. Same-harness settings
+and current YOLO inherit under spawn rules; a changed harness uses its defaults.
+Explicit YOLO overrides apply before the first turn and only at the user's request.
+
+HTTP and these tools share the underlying Stop, queue, archive and permission
+operations. General control events carry attributed origin. Permission results
+identify exact decision and request/session/project/global lifetime; grants belong
+to the native target, including graph nodes resolved only from the owner's current
+projection. They never become human authorization. An uncertain native reply is
+not proof of non-delivery. Creation/options, Stop and permission reply use the
+existing long bridge budget (55s server, 60s clients; catalogs 45s), leaving ask's
+special correlated-wait handling intact.
 
 Manual validation is still needed across all three harnesses: singleton identity
 through simultaneous clients/reloads/restarts, queue acceptance and irreversible

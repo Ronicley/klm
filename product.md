@@ -89,12 +89,32 @@ and ask questions with correlated replies. It can rename/move visual grouping,
 atomically update model/effort/YOLO between turns, select a graph without executing
 it, and answer the exact pending native question through its owning conversation.
 Moving a chat does not change its directory. Archived history is readable; sending
-and consulting require restoration through existing user controls. Engine-owned
+and consulting require effective restoration. Engine-owned
 identity is not a synthetic project or a grant of harness permissions.
 
+Its dedicated tools can create normal top-level sessions in an explicitly chosen
+registered project on the user's explicit creation request, with a self-contained
+prompt and a durable sender-scoped receipt referencing an actual human message in
+the general conversation. The child uses the project's registered directory;
+visual grouping defaults to Ungrouped. Harness/settings and YOLO inherit under the
+existing spawn rules, with explicit requested overrides applied before its first
+turn. Creation acceptance is not work completion and creates no subscription.
+
+The general agent can Stop project main/side chats, remove an exact unsent queue
+item, apply its existing Send now control, archive/restore normal top-level chats,
+and reply to an exact pending permission through its owning conversation, including
+projected graph requests. Stop pauses unsent input and cancels owned chat processes,
+not an independent graph. Uncertain native delivery requires the user's explicit
+retry choice and may duplicate delivery. Archive/restore is metadata and preserves
+runtime state; restoring under an archived folder requires an active destination
+folder or Ungrouped without restoring the whole folder. Send now requires effective
+restoration; Stop, removal and replies to existing requests remain recovery controls.
+Permission decisions use only offered choices, preserve the user's requested scope,
+and retain native-session/project/global grant ownership, rollback and attributed
+agent provenance. None of these replies become human graph/spawn authorization.
+
 No Hermes, linked side agent for the general conversation, project file mentions,
-general graph invocation, global session creation/Stop/archive/queue administration,
-permission-reply tool, automatic monitoring, completion notifications or new global
+general graph invocation, automatic monitoring, completion notifications or new global
 dashboard is included. Runtime behavior awaits human validation.
 
 ### Windows Delivery and Focus

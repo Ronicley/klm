@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 )
@@ -30,6 +31,7 @@ type SpawnOrigin struct {
 }
 
 type spawnArgs struct {
+	ProjectID         string `json:"projectId,omitempty"`
 	Title             string `json:"title"`
 	Prompt            string `json:"prompt"`
 	OperationID       string `json:"operationId"`
@@ -39,6 +41,32 @@ type spawnArgs struct {
 	Effort            string `json:"effort"`
 	Workspace         string `json:"workspace"`
 	YOLO              *bool  `json:"yolo,omitempty"`
+}
+
+func spawnSender(from *Session, args spawnArgs) bool {
+	return from != nil && (consultationEndpoint(from) && args.ProjectID == "" || from.Role == sessionRoleGeneralAgent && from.ParentID == "" && from.GraphRunID == "" && args.ProjectID != "")
+}
+
+// Also used by checkpoint and journal validation; old same-project receipts keep
+// their original request shape and general receipts explicitly bind the project.
+func validateSessionSpawns(d *diskState) error {
+	keys := map[string]bool{}
+	for _, receipt := range d.SessionSpawns {
+		from, to := d.session(receipt.From), d.session(receipt.SessionID)
+		key := receipt.From + "/" + receipt.OperationID
+		if receipt.OperationID == "" || keys[key] || !spawnSender(from, receipt.Request) || to == nil || to.Role != "" || to.ParentID != "" || to.GraphRunID != "" || !graphUserEvent(d, receipt.From, receipt.SourceUserEventID) {
+			return errors.New("Invalid session spawn in state.json; refusing to overwrite.")
+		}
+		projectID := from.ProjectID
+		if from.Role == sessionRoleGeneralAgent {
+			projectID = receipt.Request.ProjectID
+		}
+		if to.ProjectID != projectID || d.project(projectID) == nil {
+			return errors.New("Invalid session spawn project in state.json; refusing to overwrite.")
+		}
+		keys[key] = true
+	}
+	return nil
 }
 
 func sameSpawnRequest(left, right spawnArgs) bool {
@@ -80,8 +108,13 @@ func (d *diskState) conversationArchived(s *Session) bool {
 }
 
 func (a *app) existingSpawnLocked(from *Session, args spawnArgs) (*SessionSpawn, error) {
-	if !consultationEndpoint(from) || !graphUserEvent(&a.state, from.ID, args.SourceUserEventID) {
+	if !spawnSender(from, args) || !graphUserEvent(&a.state, from.ID, args.SourceUserEventID) {
 		return nil, spawnProblem("sourceUserEventId", "invalid_user_event", "sourceUserEventId must identify a real user message in this conversation.", "Use session_spawn_options to read recent user message IDs. Reference the user's request to create sessions, not a session ID, invented ID or agent-authored prompt.")
+	}
+	if from.Role == sessionRoleGeneralAgent {
+		if project := a.state.project(args.ProjectID); project == nil || project.Removed {
+			return nil, spawnProblem("projectId", "project_unavailable", "Target project is unavailable.", "Choose a registered nonremoved project.")
+		}
 	}
 	for i := range a.state.SessionSpawns {
 		existing := &a.state.SessionSpawns[i]
@@ -106,7 +139,7 @@ func (a *app) spawnSelectionLocked(from *Session, args spawnArgs) (Session, erro
 	if len(missing) > 0 {
 		return Session{}, spawnProblem("arguments", "missing_fields", "Missing required fields: "+strings.Join(missing, ", ")+".", "Supply title, self-contained prompt, stable operationId and the real sourceUserEventId. Call session_spawn_options for available settings and recent user message IDs.")
 	}
-	if !consultationEndpoint(from) || !graphUserEvent(&a.state, from.ID, args.SourceUserEventID) {
+	if !spawnSender(from, args) || !graphUserEvent(&a.state, from.ID, args.SourceUserEventID) {
 		return Session{}, spawnProblem("sourceUserEventId", "invalid_user_event", "sourceUserEventId must identify a real user message in this conversation.", "Call session_spawn_options and choose the actual user request to create sessions.")
 	}
 	title, ok := cleanLabel(args.Title, 200)
@@ -119,13 +152,21 @@ func (a *app) spawnSelectionLocked(from *Session, args spawnArgs) (Session, erro
 	if !validLinkedText(args.OperationID, 200) {
 		return Session{}, spawnProblem("operationId", "invalid_operation_id", "operationId must be nonempty UTF-8 text of at most 200 bytes.", "Use a stable short identifier unique to this requested session.")
 	}
-	project := a.state.project(from.ProjectID)
+	projectID := from.ProjectID
+	if from.Role == sessionRoleGeneralAgent {
+		projectID = args.ProjectID
+	}
+	project := a.state.project(projectID)
 	if project == nil || project.Removed {
 		return Session{}, spawnProblem("project", "project_unavailable", "Project is unavailable.", "Create sessions only in this sender's available project.")
 	}
 	group := args.Workspace
 	if group == "" {
-		group = from.Workspace
+		if from.Role == sessionRoleGeneralAgent {
+			group = "Ungrouped"
+		} else {
+			group = from.Workspace
+		}
 	}
 	group, ok = workspace(project, group)
 	if !ok && args.Workspace == "" {
@@ -166,7 +207,7 @@ func (a *app) spawnSelectionLocked(from *Session, args spawnArgs) (Session, erro
 			return Session{}, spawnProblem("effort", "invalid_effort", "Invalid effort.", "Choose a supported effort/variant from session_spawn_options, or omit it to inherit/default.")
 		}
 	}
-	selection := Session{ProjectID: from.ProjectID, Title: title, Workspace: group, Harness: harness, Model: model, Effort: effort, YOLO: from.YOLO}
+	selection := Session{ProjectID: projectID, Title: title, Workspace: group, Harness: harness, Model: model, Effort: effort, YOLO: from.YOLO}
 	if args.YOLO != nil {
 		selection.YOLO = *args.YOLO
 	}
@@ -174,7 +215,12 @@ func (a *app) spawnSelectionLocked(from *Session, args spawnArgs) (Session, erro
 }
 
 func spawnReceiptResult(receipt SessionSpawn) map[string]any {
-	return map[string]any{"sessionId": receipt.SessionID, "title": receipt.Title, "messageId": receipt.MessageID, "yolo": receipt.YOLO, "accepted": true}
+	result := map[string]any{"sessionId": receipt.SessionID, "title": receipt.Title, "messageId": receipt.MessageID, "yolo": receipt.YOLO, "accepted": true}
+	if receipt.Request.ProjectID != "" {
+		result["projectId"], result["folder"] = receipt.Request.ProjectID, receipt.Workspace
+		result["harness"], result["model"], result["effort"] = receipt.Harness, receipt.Model, receipt.Effort
+	}
+	return result
 }
 
 func (a *app) spawnSessionLocked(from *Session, args spawnArgs) (any, error) {

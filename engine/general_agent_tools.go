@@ -56,7 +56,18 @@ func generalAgentTools() []map[string]any {
 	events["eventId"] = agentString("Optional exact event ID")
 	events["offset"] = agentInteger(1 << 30)
 	events["sinceRevision"] = map[string]any{"type": "integer", "minimum": 0, "description": "Consumed engine revision. Expired revisions return resetRequired; advance consumedRevision only when the page and all fragments are complete."}
+	createOptions := page(50)
+	createOptions["projectId"], createOptions["harness"] = agentString("Explicit registered project ID"), agentString("Optional installed harness; omitted inherits the general agent")
+	create := map[string]any{"projectId": agentString("Explicit registered project ID; execution uses its registered directory"), "title": agentString("Title, 1 to 200 characters"), "prompt": agentString("Self-contained initial task, at most 128 KiB"), "operationId": agentString("Stable sender-scoped idempotency key, at most 200 bytes"), "sourceUserEventId": agentString("Real user message ID in the general conversation requesting creation; traceability, not a permission grant"), "harness": agentString("Optional installed harness; omitted inherits sender"), "model": agentString("Exact model ID from session_create_options; OpenCode requires provider/model. Same harness inherits; changed harness uses defaults"), "effort": agentString("Supported effort/variant; inherits when compatible, otherwise defaults"), "folder": agentString("Active visual folder name or Ungrouped; omission uses Ungrouped, never a filesystem path"), "yolo": map[string]any{"type": "boolean", "description": "Omitted inherits sender's current YOLO; override only at the user's request"}}
 	return []map[string]any{
+		agentTool("session_create_options", "Read installed harnesses, active visual folders, real connected models/efforts/defaults and recent human message IDs for creation in an explicitly chosen project. No creation or authorization.", createOptions, "projectId"),
+		agentTool("session_create", "Create one independent normal top-level conversation only on the user's explicit request. Required project, title, self-contained prompt, stable operationId and actual user message ID. Identical retries return the durable receipt; changed destination/settings conflict. Rejected arguments create nothing. Receipt is acceptance, not started/completed work or a monitoring subscription.", create, "projectId", "title", "prompt", "operationId", "sourceUserEventId"),
+		agentTool("session_stop", "Stop the chat turn and owned native processes, pause unsent queued inputs and cancel related consultations. Does not stop an independently running graph; activeGraph remains observable. Cancellation can take 20 seconds; on uncertainty read state before retrying.", map[string]any{"sessionId": agentString("Explicit main/side project conversation ID")}, "sessionId"),
+		agentTool("session_queue_remove", "Remove exactly one unsent queue item and payload. Does not remove accepted history or cancel execution. Sending items conflict. session_get lists the existing queue.", map[string]any{"sessionId": agentString("Explicit project conversation ID"), "messageId": agentString("Exact queued item ID")}, "sessionId", "messageId"),
+		agentTool("session_queue_send", "Apply existing Send now to one queue item: active-turn steering or promotion/start while idle. Restore archived chats first. Does not stop work or change settings. Acceptance is not execution/completion. Uncertain native delivery requires the user's explicit retry decision and retryUncertain:true and returns a replacement ID; retry may duplicate delivery.", map[string]any{"sessionId": agentString("Explicit project conversation ID"), "messageId": agentString("Exact queued item ID"), "retryUncertain": map[string]any{"type": "boolean", "default": false}}, "sessionId", "messageId"),
+		agentTool("session_archive", "Archive a normal top-level conversation as visual metadata. Preserves execution, requests, history, queue and independent graph state.", map[string]any{"sessionId": agentString("Explicit top-level project conversation ID")}, "sessionId"),
+		agentTool("session_restore", "Restore a normal top-level conversation. If its folder is archived, supply an active folder or Ungrouped to move and restore atomically. Does not restore an entire folder or move files.", map[string]any{"sessionId": agentString("Explicit top-level project conversation ID"), "folder": agentString("Optional active folder name or Ungrouped in the same project")}, "sessionId"),
+		agentTool("session_permission_reply", "Reply to exactly one pending permission through its owning conversation, including projected graph requests. Use only decisions offered by session_get and preserve the user's requested scope; never widen once to project/global. Expired/duplicate/busy requests conflict. Agent response is attributed, not a human authorization event.", map[string]any{"sessionId": agentString("Owning project conversation ID"), "permissionId": agentString("Exact pending request ID"), "decision": map[string]any{"type": "string", "enum": []string{"once", "session", "always", "reject", "deny_project", "allow_global", "deny_global"}}, "sourceUserEventId": agentString("Optional actual human message ID in the general conversation; never fabricate")}, "sessionId", "permissionId", "decision"),
 		agentTool("project_list", "List registered nonremoved projects and visual folders, including archived folders. Bounded paginated observation, not a connectivity check.", projects),
 		agentTool("session_list", "List top-level conversations across nonremoved projects. Filter by identity, name, visual folder or observed state. Explicit parentId lists side chats. Resolve ambiguous titles by stable ID; retained runtime is not a working turn.", sessions),
 		agentTool("session_get", "Read conversation identity, effective directory, configured/resolved settings, usage and full pending questions/permissions. Unknown usage is null. Oversized results return UTF-8 JSON fragments with nextCursor; reuse it to finish reading. Changed snapshots require restarting the read.", map[string]any{"sessionId": agentString("Stable conversation ID"), "cursor": agentString("Returned nextCursor for a large snapshot; omit initially")}, "sessionId"),
@@ -100,6 +111,11 @@ type generalToolArgs struct {
 	Instruction       string     `json:"instruction"`
 	OperationID       string     `json:"operationId"`
 	SourceUserEventID string     `json:"sourceUserEventId"`
+	Harness           string     `json:"harness"`
+	Prompt            string     `json:"prompt"`
+	PermissionID      string     `json:"permissionId"`
+	Decision          string     `json:"decision"`
+	RetryUncertain    bool       `json:"retryUncertain"`
 }
 
 func (p *adapter) activeToolLocked() bool {
@@ -134,7 +150,7 @@ func (p *adapter) callGeneralTool(ctx context.Context, name string, raw json.Raw
 	}
 	a := p.app
 	a.mu.Lock()
-	if !p.activeToolLocked() {
+	if ctx.Err() != nil || !p.activeToolLocked() {
 		a.mu.Unlock()
 		return nil, errors.New("Tool turn is no longer active.")
 	}
@@ -147,6 +163,41 @@ func (p *adapter) callGeneralTool(ctx context.Context, name string, raw json.Raw
 	if from == nil || from.Role != sessionRoleGeneralAgent {
 		a.mu.Unlock()
 		return nil, errors.New("General-agent capability is required.")
+	}
+	// Copy identity before releasing the lock or committing a new sessions slice.
+	origin := &SpawnOrigin{SessionID: from.ID, Title: from.Title, Kind: name}
+	if name == "session_create_options" || name == "session_create" {
+		a.mu.Unlock()
+		if args.ProjectID == "" {
+			return nil, errors.New("Supply the explicit projectId.")
+		}
+		var result any
+		var err error
+		if name == "session_create_options" {
+			result, err = p.spawnOptionsForProject(ctx, args.ProjectID, args.Harness, args.Cursor, args.Limit)
+		} else {
+			title, model, effort := "", "", ""
+			if args.Title != nil {
+				title = *args.Title
+			}
+			if args.Model != nil {
+				model = *args.Model
+			}
+			if args.Effort != nil {
+				effort = *args.Effort
+			}
+			result, err = p.spawnSession(ctx, spawnArgs{ProjectID: args.ProjectID, Title: title, Prompt: args.Prompt, OperationID: args.OperationID, SourceUserEventID: args.SourceUserEventID, Harness: args.Harness, Model: model, Effort: effort, Workspace: args.Folder, YOLO: args.YOLO})
+		}
+		if problem, ok := err.(*spawnError); ok {
+			copy := *problem
+			copy.Hint = strings.ReplaceAll(copy.Hint, "session_spawn_options", "session_create_options")
+			copy.Hint = strings.ReplaceAll(copy.Hint, "workspace", "folder")
+			if copy.Field == "workspace" {
+				copy.Field = "folder"
+			}
+			err = &copy
+		}
+		return result, err
 	}
 	if name == "project_list" || name == "session_list" {
 		defer a.mu.Unlock()
@@ -176,6 +227,58 @@ func (p *adapter) callGeneralTool(ctx context.Context, name string, raw json.Raw
 		return nil, err
 	}
 	switch name {
+	case "session_stop":
+		t, err := a.stopSessionLocked(s.ID, origin)
+		a.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if err := waitSessionStop(ctx, t); err != nil {
+			return nil, err
+		}
+	case "session_queue_remove", "session_queue_send":
+		defer a.mu.Unlock()
+		id := s.ID
+		messageID, err := a.changeQueuedMessageLocked(id, args.MessageID, name == "session_queue_remove", args.RetryUncertain, origin)
+		if err != nil {
+			return nil, err
+		}
+		result := a.generalSummaryLocked(a.state.session(id), false)
+		result["accepted"], result["messageId"] = true, messageID
+		queue := []any{}
+		for _, q := range a.state.session(id).Queue {
+			queue = append(queue, map[string]any{"id": q.ID, "status": q.Status, "mode": q.Mode, "error": q.Error})
+		}
+		result["queue"] = queue
+		return agentMutationResult(result)
+	case "session_archive", "session_restore":
+		defer a.mu.Unlock()
+		id := s.ID
+		var folder *string
+		if name == "session_restore" && args.Folder != "" {
+			folder = &args.Folder
+		}
+		if err := a.archiveSessionLocked(id, name == "session_archive", folder, origin); err != nil {
+			return nil, err
+		}
+		return agentMutationResult(a.generalSummaryLocked(a.state.session(id), false))
+	case "session_permission_reply":
+		origin.SourceUserEventID = args.SourceUserEventID
+		a.mu.Unlock()
+		if err := a.replyConversationPermission(args.SessionID, args.PermissionID, args.Decision, origin, func() error {
+			if ctx.Err() != nil || !p.activeToolLocked() {
+				return errors.New("Tool turn is no longer active.")
+			}
+			if _, err := a.state.generalTarget(args.SessionID); err != nil {
+				return err
+			}
+			if args.SourceUserEventID != "" && !graphUserEvent(&a.state, p.id, args.SourceUserEventID) {
+				return errors.New("sourceUserEventId must identify a real user message in the general conversation.")
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
 	case "session_get":
 		result := a.generalSummaryLocked(s, true)
 		delete(result, "observedAt") // observation belongs to each fragment's envelope
@@ -226,8 +329,9 @@ func (p *adapter) callGeneralTool(ctx context.Context, name string, raw json.Raw
 			return nil, err
 		}
 	case "session_question_answer":
+		origin.Kind = "question_answer"
 		a.mu.Unlock()
-		if err := a.replyConversationQuestion(args.SessionID, args.QuestionID, args.Answers, args.Cancelled, &SpawnOrigin{SessionID: from.ID, Title: from.Title, Kind: "question_answer"}); err != nil {
+		if err := a.replyConversationQuestion(args.SessionID, args.QuestionID, args.Answers, args.Cancelled, origin); err != nil {
 			return nil, err
 		}
 	default:
@@ -236,11 +340,21 @@ func (p *adapter) callGeneralTool(ctx context.Context, name string, raw json.Raw
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Native settlement can close t.done even when final-state persistence fails.
+	// Check and build the Stop response under the same lock, as the HTTP path does.
+	if name == "session_stop" && a.storageErr != nil {
+		return nil, a.storageErr
+	}
 	s, err = a.state.generalTarget(args.SessionID)
 	if err != nil {
 		return nil, err
 	}
-	return agentMutationResult(a.generalSummaryLocked(s, false))
+	result := a.generalSummaryLocked(s, false)
+	if name == "session_permission_reply" {
+		result["permissionId"], result["decision"], result["origin"] = args.PermissionID, args.Decision, origin
+		result["decisionScope"] = permissionDecisionScope(args.Decision)
+	}
+	return agentMutationResult(result)
 }
 
 func (a *app) generalSummaryLocked(s *Session, detailed bool) map[string]any {
@@ -266,7 +380,7 @@ func (a *app) generalSummaryLocked(s *Session, detailed bool) map[string]any {
 		state = "archived"
 	}
 	result := map[string]any{"id": s.ID, "title": s.Title, "projectId": s.ProjectID, "project": a.state.project(s.ProjectID).Name, "folder": s.Workspace, "workspace": s.Workspace, "executionCwd": cwd, "role": role, "parentId": s.ParentID,
-		"archived": s.Archived, "folderArchived": folderArchived(a.state.project(s.ProjectID), s.Workspace), "state": state, "status": s.Status, "working": working, "runtimeActive": a.runtimes[s.ID] != nil && a.runtimes[s.ID].active(),
+		"archived": s.Archived, "effectiveArchived": a.state.conversationArchived(s), "folderArchived": folderArchived(a.state.project(s.ProjectID), s.Workspace), "state": state, "status": s.Status, "working": working, "runtimeActive": a.runtimes[s.ID] != nil && a.runtimes[s.ID].active(),
 		"harness": s.Harness, "model": s.Model, "effort": s.Effort, "resolvedModel": s.ResolvedModel, "resolvedEffort": s.ResolvedEffort, "yolo": s.YOLO, "selectedGraphId": s.SelectedGraphID, "usage": s.Usage,
 		"queueCount": len(s.Queue), "questionCount": len(s.Questions), "permissionCount": len(s.Permissions), "graphRequestCount": len(projection.Requests), "createdAt": s.CreatedAt, "updatedAt": s.UpdatedAt, "observedAt": now(), "revision": a.state.GraphRevision}
 	if s.Usage != nil && s.Usage.Context != nil && s.Usage.Context.Tokens != nil && s.Usage.Context.Window != nil && *s.Usage.Context.Window > 0 {

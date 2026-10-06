@@ -123,6 +123,18 @@ User questions still wait for answers; graph authorization and lifecycle gates r
   JSON content type. Existing native turn grants cannot be retroactively withdrawn;
   finish/stop that turn before expecting native grants to expire.
 
+The general agent's private `session_permission_reply` addresses an exact pending
+`permissionId` through its owning project chat, including graph requests currently
+projected there. It uses the same operation as the HTTP reply: offered decisions,
+busy/resolving protection, native callback outside the lock, grant rollback on
+failure and related-request resolution. Session grants belong to the actual native
+target; project grants belong to that target's project. Decision lifetime and agent
+origin are recorded without creating a human authorization event. Optional human
+references must be actual user messages in the general conversation. The agent must
+preserve the user's requested scope rather than widening a one-time approval or
+substituting YOLO. Delivery failure may be uncertain; read the owning state before
+retrying. Normal sessions do not receive this global tool.
+
 There is no separate rule-management screen in this slice. Automatic decisions are
 recorded in conversation history with their source and scope. Persisted rules survive
 engine restart; pending tool calls do not resume automatically.

@@ -692,9 +692,13 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "Session not found.")
 		return
 	}
-	if body.Archived != nil && s.ParentID != "" {
+	archiveFolder := body.Workspace
+	if archiveFolder == nil && body.Position != nil {
+		archiveFolder = &body.Position.Workspace
+	}
+	if err := sessionArchiveLabels(&a.state, s, body.Archived, archiveFolder); err != nil {
 		a.mu.Unlock()
-		fail(w, 400, "Only top-level sessions can be archived.")
+		failSessionControl(w, err)
 		return
 	}
 	if s.Role == sessionRoleGeneralAgent {
@@ -737,11 +741,7 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	id := s.ID
 	if err := a.commitLocked(func(d *diskState) {
-		s := d.session(id)
-		s.Title, s.Workspace, s.UpdatedAt = title, group, now()
-		if body.Archived != nil {
-			s.Archived = *body.Archived
-		}
+		applySessionLabels(d, id, title, group, body.Archived, nil)
 		if body.Position != nil {
 			d.Sessions = moveSessionBefore(d.Sessions, id, body.Position.BeforeID)
 		}
@@ -998,10 +998,30 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 func (a *app) stop(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	a.mu.Lock()
-	if a.state.session(id) == nil {
-		a.mu.Unlock()
-		fail(w, 404, "Session not found.")
+	t, err := a.stopSessionLocked(id, nil)
+	a.mu.Unlock()
+	if err == nil {
+		err = waitSessionStop(r.Context(), t)
+	}
+	if err != nil {
+		failSessionControl(w, err)
 		return
+	}
+	a.mu.Lock()
+	s := a.currentSessionUpdateLocked(id)
+	err = a.storageErr
+	a.mu.Unlock()
+	if err != nil {
+		failSessionControl(w, err)
+		return
+	}
+	respond(w, 200, s)
+}
+
+// Caller holds app.mu. Cancellation precedes persistence, even on write failure.
+func (a *app) stopSessionLocked(id string, origin *SpawnOrigin) (*turn, error) {
+	if a.state.session(id) == nil {
+		return nil, controlError(404, "Session not found.")
 	}
 	if a.stopVersions == nil {
 		a.stopVersions = map[string]uint64{}
@@ -1019,40 +1039,30 @@ func (a *app) stop(w http.ResponseWriter, r *http.Request) {
 				s.Queue[i].Status, s.Queue[i].Error = "paused", "Execution stopped. Send queued messages when ready."
 			}
 		}
+		appendSessionControl(s, "Session stop requested", origin, nil)
 	}); err != nil {
-		a.mu.Unlock()
-		fail(w, 503, err.Error())
-		return
+		return t, err
 	}
 	if err := a.cancelLinkedLocked(id); err != nil {
-		a.mu.Unlock()
-		fail(w, 503, err.Error())
-		return
+		return t, err
 	}
-	a.mu.Unlock()
+	return t, nil
+}
+
+func waitSessionStop(ctx context.Context, t *turn) error {
 	if t != nil {
 		select {
 		case <-t.done:
-		case <-r.Context().Done():
-			return
+		case <-ctx.Done():
+			return controlError(504, "Cancellation was requested; its final state is uncertain. Read session state before retrying.")
 		case <-time.After(20 * time.Second):
-			fail(w, 504, "Cancellation is still in progress.")
-			return
+			return controlError(504, "Cancellation is still in progress. Read session state before retrying.")
 		}
 		if t.stopErr != nil {
-			fail(w, 503, "Could not confirm all session processes stopped: "+t.stopErr.Error())
-			return
+			return controlError(503, "Could not confirm all session processes stopped: "+t.stopErr.Error())
 		}
 	}
-	a.mu.Lock()
-	s := a.currentSessionUpdateLocked(id)
-	err := a.storageErr
-	a.mu.Unlock()
-	if err != nil {
-		fail(w, 503, err.Error())
-		return
-	}
-	respond(w, 200, s)
+	return nil
 }
 
 func (a *app) events(w http.ResponseWriter, r *http.Request) {

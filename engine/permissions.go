@@ -171,51 +171,88 @@ func (p *adapter) dismissPermission(sourceID string) error {
 }
 
 func (a *app) permissionDecision(w http.ResponseWriter, r *http.Request) {
-	resolveRelated := false
-	defer func() {
-		if resolveRelated {
-			a.resolveRememberedPermissions()
-		}
-	}()
 	var body struct {
 		Decision string `json:"decision"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
-	id, requestID := r.PathValue("id"), r.PathValue("permissionID")
+	id := r.PathValue("id")
+	if err := a.replyConversationPermission(id, r.PathValue("permissionID"), body.Decision, nil, nil); err != nil {
+		failSessionControl(w, err)
+		return
+	}
 	a.mu.Lock()
+	response := a.currentSessionUpdateLocked(id)
+	a.mu.Unlock()
+	respond(w, 200, response)
+}
+
+func permissionDecisionScope(decision string) string {
+	switch decision {
+	case "session":
+		return "session"
+	case "always", "deny_project":
+		return "project"
+	case "allow_global", "deny_global":
+		return "global"
+	default:
+		return "request"
+	}
+}
+
+func (a *app) replyConversationPermission(id, requestID, decision string, origin *SpawnOrigin, validateLocked func() error) error {
+	resolveRelated := false
+	defer func() {
+		if resolveRelated {
+			a.resolveRememberedPermissions()
+		}
+	}()
+	a.mu.Lock()
+	if validateLocked != nil {
+		if err := validateLocked(); err != nil {
+			a.mu.Unlock()
+			return err
+		}
+	}
+	if origin != nil {
+		if t := a.runs[id]; t == nil || t.approvals[requestID] == nil {
+			for _, request := range a.state.graphProjection(id).Requests {
+				if request.Kind == "permission" && request.RequestID == requestID {
+					id = request.SessionID
+					break
+				}
+			}
+		}
+	}
 	if s := a.state.session(id); s != nil && s.Role == sessionRoleSubagent {
 		a.mu.Unlock()
-		fail(w, 404, "Conversation not found.")
-		return
+		return controlError(404, "Conversation not found.")
 	}
 	t := a.runs[id]
 	if t == nil || t.ctx.Err() != nil || t.approvals[requestID] == nil {
 		a.mu.Unlock()
-		fail(w, 409, "This permission request is no longer pending.")
-		return
+		return controlError(409, "This permission request is no longer pending.")
 	}
 	pending := t.approvals[requestID]
-	if pending.busy || !slices.Contains(pending.request.Decisions, body.Decision) ||
-		!slices.Contains([]string{"once", "session", "always", "reject", "deny_project", "allow_global", "deny_global"}, body.Decision) {
+	if pending.busy || !slices.Contains(pending.request.Decisions, decision) ||
+		!slices.Contains([]string{"once", "session", "always", "reject", "deny_project", "allow_global", "deny_global"}, decision) {
 		a.mu.Unlock()
-		fail(w, 409, "This permission decision is unavailable or already being processed.")
-		return
+		return controlError(409, "This permission decision is unavailable or already being processed.")
 	}
 	grantID := ""
 	err := a.commitLocked(func(d *diskState) {
 		s := d.session(id)
-		if slices.Contains([]string{"session", "always", "deny_project", "allow_global", "deny_global"}, body.Decision) {
+		if slices.Contains([]string{"session", "always", "deny_project", "allow_global", "deny_global"}, decision) {
 			grantID = newID()
 			grant := permissionGrant{ID: grantID, ProjectID: s.ProjectID, Harness: pending.ruleHarness, Kind: pending.ruleKind, Key: pending.ruleKey, CreatedAt: now(), Decision: "allow", Label: pending.request.ScopeLabel}
-			if body.Decision == "session" {
+			if decision == "session" {
 				grant.SessionID = id
 			}
-			if body.Decision == "allow_global" || body.Decision == "deny_global" {
+			if decision == "allow_global" || decision == "deny_global" {
 				grant.ProjectID = ""
 			}
-			if body.Decision == "deny_project" || body.Decision == "deny_global" {
+			if decision == "deny_project" || decision == "deny_global" {
 				grant.Decision = "deny"
 			}
 			d.Grants = append(d.Grants, grant)
@@ -229,15 +266,14 @@ func (a *app) permissionDecision(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		a.mu.Unlock()
-		fail(w, 503, err.Error())
-		return
+		return err
 	}
 	pending.busy = true
 	a.mu.Unlock()
 	if t.ctx.Err() != nil {
 		err = t.ctx.Err()
 	} else {
-		err = pending.reply(body.Decision != "reject" && body.Decision != "deny_project" && body.Decision != "deny_global")
+		err = pending.reply(decision != "reject" && decision != "deny_project" && decision != "deny_global")
 	}
 	a.mu.Lock()
 	if err != nil {
@@ -254,11 +290,9 @@ func (a *app) permissionDecision(w http.ResponseWriter, r *http.Request) {
 		pending.busy = false
 		a.mu.Unlock()
 		if rollback != nil {
-			fail(w, 503, rollback.Error())
-			return
+			return rollback
 		}
-		fail(w, 409, "Could not deliver the permission decision. The request may have been cancelled; refresh or stop the turn.")
-		return
+		return controlError(409, "Could not confirm delivery of the permission decision. Native delivery may have occurred; refresh the owning conversation or stop the turn before retrying.")
 	}
 	delete(t.approvals, requestID)
 	resolveRelated = grantID != ""
@@ -266,17 +300,18 @@ func (a *app) permissionDecision(w http.ResponseWriter, r *http.Request) {
 		s := d.session(id)
 		s.Permissions = slices.DeleteFunc(s.Permissions, func(req Permission) bool { return req.ID == requestID })
 		s.UpdatedAt = now()
-		entry := event("status", "Permission decision: "+body.Decision)
+		entry := event("status", "Permission decision: "+decision)
 		entry.ConsultationID = t.consultationID
 		entry.Title, entry.Status = pending.request.Title, "completed"
-		entry.Data = map[string]any{"harness": s.Harness, "permission": pending.request.Kind, "patterns": pending.request.Patterns, "decision": body.Decision}
+		entry.Data = map[string]any{"harness": s.Harness, "permission": pending.request.Kind, "patterns": pending.request.Patterns, "decision": decision, "scope": pending.request.ScopeLabel, "decisionScope": permissionDecisionScope(decision)}
+		if origin != nil {
+			entry.Data["origin"] = origin
+		}
 		s.Events = append(s.Events, entry)
 	}); err != nil {
 		a.mu.Unlock()
-		fail(w, 503, err.Error())
-		return
+		return err
 	}
-	response := a.currentSessionUpdateLocked(id)
 	a.mu.Unlock()
-	respond(w, 200, response)
+	return nil
 }

@@ -98,6 +98,12 @@ The engine-owned general conversation has no user ProjectID and uses a dedicated
 chat execution, history and request controls. Its dedicated private tool catalog
 can discover/read project conversations, send visible instructions, ask correlated
 questions and apply the documented session controls across nonremoved projects.
+These include explicit-project top-level creation, chat Stop, exact queue removal
+and Send now, archive/restore, and exact pending permission replies through the
+owning chat. Creation reuses durable spawn receipts and actual general-chat human
+message references; agent prompts remain attributed. Stop does not stop independent
+graphs. Uncertain delivery retries require an explicit user recovery decision;
+permission replies preserve the requested scope and available decisions.
 Do not expose implicit-project linked/side-agent, spawn or graph execution tools
 there, or give normal sessions its global scope. No automatic monitoring or
 completion notifications. Agent-authored instructions never become human graph

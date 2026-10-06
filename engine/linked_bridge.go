@@ -243,7 +243,7 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "Invalid tool call.")
 			return
 		}
-		if params.Name == "session_models_list" || params.Name == "session_settings_update" || params.Name == "session_question_answer" || params.Name == "session_spawn" || params.Name == "session_spawn_options" {
+		if params.Name == "session_models_list" || params.Name == "session_settings_update" || params.Name == "session_question_answer" || params.Name == "session_spawn" || params.Name == "session_spawn_options" || params.Name == "session_create" || params.Name == "session_create_options" || params.Name == "session_stop" || params.Name == "session_permission_reply" {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(linkedToolServerTimeout))
 		}
 		value, err := b.call(r.Context(), params.Name, params.Arguments, string(message.ID))

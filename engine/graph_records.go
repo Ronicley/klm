@@ -510,6 +510,9 @@ func validateGraphRecordsCached(d *diskState, cache map[string]validatedGraphSna
 	if err := validateSessionCommands(d); err != nil {
 		return err
 	}
+	if err := validateSessionSpawns(d); err != nil {
+		return err
+	}
 	for key := range d.Native {
 		if d.session(key) == nil {
 			return bad("native session reference", key)
