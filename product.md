@@ -484,6 +484,20 @@ does not dispatch the destination. Invalid submissions and normal endings withou
 a Choice share a three-violation limit per activation. The engine's built-in blocked
 escape remains distinct from an author-defined Choice with the same name.
 
+Agent and Join prompts guide recovery before a final Choice: a tool error or timeout
+does not automatically mean blocked. The agent inspects the current state and tries
+up to two concrete, distinct safe alternatives within its scope. For failed Git
+branch/base queries through a wrapper or shell, this can include calling the native
+Git executable directly while retaining the directory and necessary checks. If
+guidance is still needed, the node asks through its harness's existing question
+tool and waits in the same activation. The answer returns to that native session;
+unfinished work continues in its workspace without replaying completed graph steps.
+Recovery never bypasses permission denials or blindly repeats operations with
+uncertain effects. A definitive obstacle or cancelled/unavailable recovery can
+still produce blocked. This is agent guidance, not automatic engine classification
+of tool errors; real harness behavior requires human validation. Ended runs and
+harness failures retain the existing corrective-attempt and interruption policies.
+
 Terminal executes one noninteractive PowerShell script in its inherited directory,
 with `$payload` supplied as data. Output mapping can use `command.result`; a nonzero
 exit still follows that mapping, while infrastructure failure fails the run. Fork

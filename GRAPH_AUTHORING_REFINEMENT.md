@@ -552,6 +552,34 @@ are settled as clarified in section 11; their former pending status is supersede
   unchanged. Observability of harness activity does not turn free text into a
   valid result or introduce a second completion mechanism.
 
+### Confirmed: recovery within an unfinished node (2026-10-08)
+
+- Agent and Join nodes should attempt recovery before declaring a recoverable tool
+  problem terminal. Inspect the error and current state; try up to two concrete,
+  distinct safe alternatives within the authorized scope, without repeating the
+  same failing command indefinitely. This prompt-level bound is not a graph-run
+  retry limit or a new activation/time-limit setting.
+- For Git branch/base query timeouts through a wrapper or shell, consider the
+  native executable directly (git.exe on Windows), preserving the working directory
+  and required verification. Do not bypass checks, permission denials or explicit
+  agent restrictions. Uncertain side effects require state inspection and any
+  necessary user recovery decision before replaying an operation.
+- If alternatives cannot resolve the obstacle, use the harness's existing native
+  question tool with a concise failure, attempted alternatives and the missing
+  information/decision. Allow free text when supported. Keep the activation open
+  while awaiting the reply; do not submit a Choice or voluntarily end the turn.
+- A reply returns to the originating native session. Apply relevant guidance within
+  scope and continue unfinished work in that session/workspace, retaining completed
+  graph steps. The reply is not a permission grant or expanded task authorization.
+- Use blocked for a definitive impediment, a denial that prevents work, cancelled
+  or unavailable recovery, or guidance that still leaves no safe way forward. Do
+  not loop on the same question when no concrete progress is available.
+- This reuses the existing question cards and routing; it adds no runtime state,
+  endpoint or automatic interpretation of tool errors. Effectiveness is subject to
+  human validation with real harnesses. Choice finality and its three-violation
+  counter remain unchanged. Runs already ended, harness failures and engine restarts
+  retain the existing new-attempt/interruption policy; this is not their resumption.
+
 ### Confirmed: invalid Choice submissions
 
 - The engine validates the available Choice and its input contract. Validation
