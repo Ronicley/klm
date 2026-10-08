@@ -24,6 +24,7 @@ import { MessageQueue } from './features/chat/MessageQueue';
 import { PendingSubmission, readPendingSubmissions, savePendingSubmissions, type LocalSubmission } from './features/chat/PendingSubmission';
 import { MessageComposer, type ComposerDraft, type SendMode } from './features/chat/MessageComposer';
 import { connectUpdates } from './features/chat/updatesConnection';
+import { usePermissionAlerts } from './features/chat/usePermissionAlerts';
 import { DesignSystem } from './DesignSystem';
 import { ProjectRail } from './features/projects/ProjectRail';
 import { ProjectDialog } from './features/projects/ProjectDialog';
@@ -93,6 +94,7 @@ export function App() {
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const [loaded, setLoaded] = useState(false);
+  usePermissionAlerts(engine.sessions, projects, loaded);
   const [connectionError, setConnectionError] = useState('');
   const [focusError, setFocusError] = useState('');
   async function focus() {
@@ -323,6 +325,7 @@ export function App() {
   }
   const streamSet = new Set<string>();
   if (activeId) streamSet.add(activeId);
+  if (generalSession) streamSet.add(generalSession.id);
   if (sideVisible && sideSession) streamSet.add(sideSession.id);
   session?.events.forEach(event => {
     const childSessionId = event.type === 'subagent' && ['running', 'pending', 'started'].includes(event.status ?? 'running') && typeof event.data?.childSessionId === 'string' ? event.data.childSessionId : '';

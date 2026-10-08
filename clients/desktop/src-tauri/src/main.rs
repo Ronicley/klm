@@ -5,6 +5,7 @@ mod web;
 use tauri::{menu::{Menu, MenuItem}, tray::TrayIconBuilder, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_notification::NotificationExt;
 
 fn open_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -22,12 +23,29 @@ fn open_focus(app: tauri::AppHandle, server: tauri::State<'_, web::WebServer>) -
     app.opener().open_url(web::FOCUS_URL, None::<&str>).map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn notify_permission(app: tauri::AppHandle, body: String) -> Result<(), String> {
+    let window = app.get_webview_window("main").ok_or("Main window unavailable")?;
+    if window.is_visible().map_err(|error| error.to_string())?
+        && !window.is_minimized().map_err(|error| error.to_string())?
+        && window.is_focused().map_err(|error| error.to_string())?
+    {
+        return Ok(());
+    }
+    app.notification().builder()
+        .title("Permission required")
+        .body(body.chars().take(300).collect::<String>())
+        .sound("Default")
+        .show().map_err(|error| error.to_string())
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| open_window(app)))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![open_focus])
+        .plugin(tauri_plugin_notification::init())
+        .invoke_handler(tauri::generate_handler![open_focus, notify_permission])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
             let exit = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;

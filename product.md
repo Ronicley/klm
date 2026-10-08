@@ -216,6 +216,19 @@ The normal workspace policy, precise matching rules, API recovery controls and
 adapter coverage are documented in `PERMISSIONS.md`. Runtime behavior awaits human
 validation; command classification is not filesystem or network isolation.
 
+New permission requests in active main chats, including native-subagent and graph-node
+requests projected into their parent, produce sound and a system notification only
+when the client window is unfocused. This also applies to the general-agent chat.
+Side chats, questions, archived chats/folders and existing requests on initial load
+do not alert. Requests alert once per client lifetime, including across reconnects.
+Windows desktop uses native notifications and the default system notification sound,
+including when minimized or hidden in the tray. Browser/Focus uses Web Audio and the
+Notifications API; Settings > Chat exposes **Enable notifications**. Browser alerts
+require notification permission and a secure context, while audio requires prior
+user interaction and browser autoplay support. Flutter WebView alerts and delivery
+to closed clients are not included. Multiple open clients alert independently;
+system notification/sound settings still apply. Runtime behavior awaits human validation.
+
 Agents can ask users questions through their harness tools. The interface shows
 clickable choices and an optional custom answer, including multi-select when the
 tool supports it. Answers are returned to the waiting tool, not sent as a separate

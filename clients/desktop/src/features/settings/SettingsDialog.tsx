@@ -3,7 +3,7 @@ import { KeyRound, MessageSquare, Mic, Plus, Trash2, X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
 import { ENGINE_URL, getTranscriptionSettings, updateTranscriptionSettings, type TranscriptionSettings } from '../../engine';
-import { configureEngineURL } from '../../platform';
+import { configureEngineURL, enableNotifications, IS_DESKTOP, IS_MOBILE_HOST, notificationPermission } from '../../platform';
 
 type SettingsSection = 'chat' | 'transcription';
 
@@ -23,6 +23,9 @@ export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => voi
   const [section, setSection] = useState<SettingsSection>('chat');
   const [engineURL, setEngineURL] = useState(ENGINE_URL);
   const [engineError, setEngineError] = useState('');
+  const [notifications, setNotifications] = useState(notificationPermission);
+  const [notificationError, setNotificationError] = useState('');
+  const [enablingNotifications, setEnablingNotifications] = useState(false);
   const [settings, setSettings] = useState(emptyTranscription);
   const [apiKey, setAPIKey] = useState('');
   const [removeAPIKey, setRemoveAPIKey] = useState(false);
@@ -52,6 +55,14 @@ export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => voi
     } catch (error) {
       setEngineError(error instanceof Error ? error.message : 'Enter a valid engine URL.');
     }
+  }
+
+  async function activateNotifications() {
+    setEnablingNotifications(true);
+    setNotificationError('');
+    try { setNotifications(await enableNotifications()); }
+    catch (error) { setNotificationError(error instanceof Error ? error.message : 'Could not enable notifications.'); }
+    finally { setEnablingNotifications(false); }
   }
 
   async function saveTranscription(event: FormEvent<HTMLFormElement>) {
@@ -94,6 +105,14 @@ export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => voi
             {engineError && <p id="engine-url-error" className="form-error" role="alert">{engineError}</p>}
             <div className="dialog-actions"><Button variant="primary" type="submit">Connect</Button></div>
           </form>
+          {!IS_DESKTOP && !IS_MOBILE_HOST && <div className="settings-form">
+            <h4>Notifications</h4>
+            {notifications === 'default' && <Button disabled={enablingNotifications} onClick={() => void activateNotifications()}>{enablingNotifications ? 'Enabling...' : 'Enable notifications'}</Button>}
+            {notifications === 'granted' && <p role="status">Notifications enabled</p>}
+            {notifications === 'denied' && <p>Notifications blocked. Allow notifications in your browser's site settings.</p>}
+            {notifications === 'unsupported' && <p>Notifications unavailable. Open this client over HTTPS or localhost.</p>}
+            {notificationError && <p className="form-error" role="alert">{notificationError}</p>}
+          </div>}
           <div className="settings-design-system"><span>Interface components and tokens</span><Button onClick={onDesignSystem}>Open design system</Button></div>
         </section> : <section aria-labelledby="transcription-settings-title">
           <div className="settings-panel-title"><div><h3 id="transcription-settings-title">Transcription</h3>{settings.apiKeyConfigured && !removeAPIKey && <span className="settings-configured"><KeyRound />API key configured</span>}</div>{loading && <span className="muted">Loading...</span>}</div>
