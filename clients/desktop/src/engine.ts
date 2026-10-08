@@ -93,7 +93,7 @@ export type ConversationGraphState = {
 };
 export type GraphRunProjection = {
   id: string; graphId: string; active: boolean;
-  status: 'starting' | 'running' | 'ending'; revision: number;
+  status: 'starting' | 'running' | 'pausing' | 'paused' | 'ending'; revision: number;
   snapshot: GraphFile;
   activeNodeIds: string[]; completedNodeIds: string[];
   completedChoiceIds: string[]; collectingJoinIds: string[];

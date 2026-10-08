@@ -77,7 +77,7 @@ func nextGraphActivation(d *diskState, r *GraphRun, nodeID string, input map[str
 }
 
 func consumeGraphDeliveries(d *diskState, r *GraphRun, c *CompiledGraph) error {
-	if r.Status != "running" {
+	if r.Status != "running" || r.PauseRequested {
 		return nil
 	}
 	for i := range d.GraphDeliveries {
@@ -150,6 +150,21 @@ func consumeGraphDeliveries(d *diskState, r *GraphRun, c *CompiledGraph) error {
 
 func addGraphDelivery(d *diskState, r *GraphRun, x GraphActivation, edge GraphConnection, payload map[string]string, workspaceID, originID, causalID, forkID, branchID string) {
 	d.GraphDeliveries = append(d.GraphDeliveries, GraphDelivery{ID: newID(), RunID: r.ID, ConnectionID: edge.ID, ProducerActivationID: x.ID, TargetNodeID: edge.To, Payload: payload, WorkspaceID: workspaceID, OriginWorkspaceID: originID, CausalID: causalID, ForkActivationID: forkID, BranchID: branchID, Status: "pending", CreatedAt: now()})
+}
+
+// Called under app.mu: this reservation is the dispatch boundary for Pause.
+func reserveGraphWorkers(d *diskState, r *GraphRun, workers map[string]bool) []GraphActivation {
+	launch := []GraphActivation{}
+	if r.Status != "running" || r.PauseRequested {
+		return launch
+	}
+	for _, x := range d.GraphActivations {
+		if x.RunID == r.ID && x.Status == "reserved" && !workers[x.ID] {
+			launch = append(launch, x)
+			workers[x.ID] = true
+		}
+	}
+	return launch
 }
 
 func (a *app) finishGraphRunLocked(runID string) error {
@@ -278,14 +293,19 @@ func (a *app) runGraph(runID string, g *graphExecution) {
 				return
 			}
 		}
-		launch := []GraphActivation{}
-		if r.Status == "running" {
-			for _, x := range a.state.GraphActivations {
-				if x.RunID == runID && x.Status == "reserved" && !workers[x.ID] {
-					launch = append(launch, x)
-					workers[x.ID] = true
-				}
+		if r.PauseRequested && !r.Paused && r.Status == "running" && len(workers) == 0 {
+			if err := a.graphChangeLocked(func(d *diskState) error {
+				run := d.graphRun(runID)
+				run.Paused, run.UpdatedAt = true, now()
+				run.Revision++
+				return nil
+			}); err != nil {
+				_ = a.endGraphLocked(runID, GraphRunResult{Kind: "failed", Error: err.Error()}, "")
 			}
+			r = a.state.graphRun(runID)
+		}
+		launch := reserveGraphWorkers(&a.state, r, workers)
+		if r.Status == "running" && !r.PauseRequested {
 			if len(workers) == 0 {
 				missing := []string{}
 				for _, round := range a.state.GraphJoinRounds {

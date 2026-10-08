@@ -1,9 +1,62 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"sort"
 )
+
+func (a *app) controlGraphRun(w http.ResponseWriter, req *http.Request) {
+	control := req.PathValue("control")
+	if control != "pause" && control != "resume" {
+		fail(w, 404, "Unknown graph control.")
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.state.session(req.PathValue("id"))
+	r := a.state.graphRun(req.PathValue("runId"))
+	if s == nil || s.ParentID != "" || s.GraphRunID != "" || r == nil || r.ConversationID != s.ID {
+		fail(w, 404, "Run not found in this conversation.")
+		return
+	}
+	if (r.Status != "starting" && r.Status != "running") || a.graphRuns[r.ID] == nil || a.closing {
+		fail(w, 409, "Run is not available for pause or resume.")
+		return
+	}
+	if err := a.setGraphPausedLocked(r.ID, control == "pause"); err != nil {
+		fail(w, 409, err.Error())
+		return
+	}
+	respond(w, 200, a.state.graphProjection(s.ID))
+}
+
+func (a *app) setGraphPausedLocked(runID string, pause bool) error {
+	r := a.state.graphRun(runID)
+	if r == nil || (r.Status != "starting" && r.Status != "running") {
+		return errors.New("Run is not available for pause or resume.")
+	}
+	if r.PauseRequested == pause {
+		return nil
+	}
+	err := a.graphChangeLocked(func(d *diskState) error {
+		run := d.graphRun(runID)
+		run.PauseRequested, run.Paused, run.UpdatedAt = pause, false, now()
+		run.Revision++
+		if !pause && run.Status == "running" {
+			compiled, err := compileGraphSnapshot(run.Snapshot)
+			if err != nil {
+				return err
+			}
+			return consumeGraphDeliveries(d, run, compiled)
+		}
+		return nil
+	})
+	if err == nil {
+		a.signalGraphLocked(runID)
+	}
+	return err
+}
 
 type graphActivitySummary struct {
 	ID         string `json:"id"`

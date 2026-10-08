@@ -18,6 +18,8 @@ import { isSessionResponse, mergeSessions, prependHistory } from './features/cha
 import { ConversationHistory } from './features/chat/ConversationHistory';
 import { SubagentView } from './features/chat/SubagentView';
 import { GraphPicker } from './features/chat/GraphPicker';
+import { GraphRequestQueue } from './features/graphs/GraphRequestQueue';
+import { GraphRunControl } from './features/graphs/GraphRunControl';
 import { PermissionCard } from './features/chat/PermissionCard';
 import { QuestionCard } from './features/chat/QuestionCard';
 import { MessageQueue } from './features/chat/MessageQueue';
@@ -97,6 +99,22 @@ export function App() {
   usePermissionAlerts(engine.sessions, projects, loaded);
   const [connectionError, setConnectionError] = useState('');
   const [focusError, setFocusError] = useState('');
+  const [windowFocused, setWindowFocused] = useState(() => document.hasFocus() && document.visibilityState === 'visible');
+  const [graphChatTarget, setGraphChatTarget] = useState<HTMLDivElement | null>(null);
+  const [graphPanelTarget, setGraphPanelTarget] = useState<HTMLDivElement | null>(null);
+  const graphControlPending = useRef(new Set<string>());
+  const [graphControls, setGraphControls] = useState<Record<string, { pending: boolean; error: string }>>({});
+  useEffect(() => {
+    const refresh = () => setWindowFocused(document.hasFocus() && document.visibilityState === 'visible');
+    window.addEventListener('focus', refresh);
+    window.addEventListener('blur', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('blur', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, []);
   async function focus() {
     try { await openFocus(); setFocusError(''); }
     catch (error) { setFocusError(error instanceof Error ? error.message : String(error)); }
@@ -199,6 +217,7 @@ export function App() {
   const openingSide = useRef(new Set<string>());
   const [drafts, setDrafts] = useState<Record<string, ComposerDraft>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const requestSurfaceFocused = windowFocused && !settingsOpen && !sidebarOpen && addingProject === null && !editingProject && !creatingSession && !renamingSession;
   const shell = useRef<HTMLDivElement>(null);
   const drag = useRef<{ pointerId: number; x: number; y: number; left: number; top: number; minX: number; maxX: number; minY: number; maxY: number } | null>(null);
   useEffect(() => {
@@ -322,6 +341,18 @@ export function App() {
     try { applyGraph(await selectConversationGraph(id, graphId)); }
     catch (error) { setGraphErrors(current => ({ ...current, [id]: errorMessage(error) })); }
     finally { graphSelectionPending.current.delete(id); setGraphPreview(current => { const next = { ...current }; delete next[id]; return next; }); setSelectingGraphs(current => ({ ...current, [id]: false })); }
+  }
+  async function controlGraph(id: string, runId: string, control: 'pause' | 'resume') {
+    if (graphControlPending.current.has(runId)) return;
+    graphControlPending.current.add(runId);
+    setGraphControls(current => ({ ...current, [runId]: { pending: true, error: '' } }));
+    let error = '';
+    try { applyGraph(await request<ConversationGraphState>(`/api/sessions/${encodeURIComponent(id)}/graph/runs/${encodeURIComponent(runId)}/${control}`, 'POST', {})); }
+    catch (cause) { error = errorMessage(cause); }
+    finally {
+      graphControlPending.current.delete(runId);
+      setGraphControls(current => ({ ...current, [runId]: { pending: false, error } }));
+    }
   }
   const streamSet = new Set<string>();
   if (activeId) streamSet.add(activeId);
@@ -750,23 +781,13 @@ export function App() {
         {activeTab.startsWith('subagent:') && <SubagentView session={activeSubagent} onSnapshot={receiveSession} onHistory={receiveHistory} />}
         {!generalView && (catalogError || !!catalog?.errors.length) && <div role="alert" className="storage-error">{catalogError || catalog?.errors.join(' ')} <Button size="sm" disabled={catalogLoading} onClick={() => void reloadCatalog().catch(() => {})}>Retry</Button></div>}
         {graphErrors[session.id] && <div role="alert" className="storage-error">{graphErrors[session.id]} <Button size="sm" onClick={() => setRefreshVersion(current => current + 1)}>Retry</Button></div>}
-        {selectedGraph ? <Suspense fallback={activeTab === 'graph' ? <section className="graph-view-loading" aria-label="Loading graph canvas" aria-busy="true" /> : null}><GraphView key={`${session.id}:${selectedGraphId}`} sessionId={session.id} graph={selectedGraph} agents={catalog?.agents ?? []} visible={activeTab === 'graph'} run={graphRunInProgress ? graphRun : undefined} /></Suspense> : activeTab === 'graph' && <section className="graph-view-loading" role="status">{catalogLoading ? 'Loading graph...' : 'Selected graph is unavailable.'} <Button size="sm" disabled={catalogLoading} onClick={() => void reloadCatalog().catch(() => {})}>Reload</Button></section>}
+        {selectedGraph ? <Suspense fallback={activeTab === 'graph' ? <section className="graph-view-loading" aria-label="Loading graph canvas" aria-busy="true" /> : null}><GraphView key={`${session.id}:${selectedGraphId}`} sessionId={session.id} graph={selectedGraph} agents={catalog?.agents ?? []} visible={activeTab === 'graph'} run={graphRunInProgress ? graphRun : undefined} requests={graphRequests} windowFocused={requestSurfaceFocused} parentFocused={requestSurfaceFocused && activeTab === 'chat'} onRequestTarget={setGraphPanelTarget} controlPending={!!graphRun && !!graphControls[graphRun.id]?.pending} controlError={graphRun ? graphControls[graphRun.id]?.error ?? '' : ''} onControl={control => { if (graphRun) void controlGraph(session.id, graphRun.id, control); }} /></Suspense> : activeTab === 'graph' && <section className="graph-view-loading" role="status">{catalogLoading ? 'Loading graph...' : 'Selected graph is unavailable.'} <Button size="sm" disabled={catalogLoading} onClick={() => void reloadCatalog().catch(() => {})}>Reload</Button></section>}
         {sessionErrors[session.id] && <div role="alert" className="storage-error">{sessionErrors[session.id]}</div>}
         <div className="composer-area" hidden={activeTab !== 'chat'}>
           {(awaitingPermission || awaitingQuestion || graphRequests.length > 0) && <div className="permission-queue">
             {session.permissions?.map(permission => <PermissionCard key={permission.id} permission={permission} sessionId={session.id} projectName={generalView ? '' : project?.name ?? ''} onResolved={snapshot => setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [snapshot]) }))} />)}
             {session.questions?.map(question => <QuestionCard key={question.id} question={question} sessionId={session.id} onResolved={snapshot => setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [snapshot]) }))} />)}
-            {graphRequests.map(item => {
-              const graphName = graphRun?.id === item.runId ? graphRun.snapshot.definition.name : catalog?.graphs.find(graph => graph.id === item.graphId)?.definition.name ?? item.graphId;
-              const node = graphRun?.id === item.runId ? graphRun.snapshot.definition.nodes[item.nodeId] : undefined;
-              const nodeName = node?.name || (node?.type === 'join' ? `Join · ${node.agent || item.nodeId}` : item.nodeName || item.nodeId);
-              const origin = `${graphName || 'Graph'} · ${nodeName}`;
-              const key = `${item.sessionId}:${item.kind}:${item.requestId}`;
-              return item.kind === 'permission' && item.permission
-                ? <PermissionCard key={key} permission={{ ...item.permission, id: item.requestId }} sessionId={item.sessionId} projectName={project?.name ?? ''} origin={origin} onResolved={() => graphRequestResolved(session.id)} />
-                : item.kind === 'question' && item.question
-                  ? <QuestionCard key={key} question={{ ...item.question, id: item.requestId }} sessionId={item.sessionId} origin={origin} onResolved={() => graphRequestResolved(session.id)} /> : null;
-            })}
+            <div ref={setGraphChatTarget} />
           </div>}
           <PendingSubmission items={localMessages[session.id] ?? []} onRestore={item => restoreLocal(session, item)} onRetry={item => submitLocal(session, item)} />
           <MessageQueue key={`queue/${session.id}`} session={session} disabled={!!connectionError || !!pendingSessions[session.id]} onSnapshot={receiveSession} />
@@ -774,7 +795,8 @@ export function App() {
           {generalView && !harnesses.some(harness => harness.id === session.harness && harness.available) && <p role="status" className="form-error">The selected harness is not installed.</p>}
           {graphRun?.active && <div className="chat-graph-progress" role="status" aria-atomic="true">
             <span className="chat-graph-progress-name">{graphRun.snapshot.definition.name || graphRun.graphId}</span>
-            {(graphProgress.length ? graphProgress : [graphRun.status === 'starting' ? 'Starting' : graphRun.status === 'ending' ? 'Finishing' : 'Running']).map(progress => <span key={progress}>{progress}</span>)}
+            {(graphProgress.length ? graphProgress : [graphRun.status === 'starting' ? 'Starting' : graphRun.status === 'ending' ? 'Finishing' : graphRun.status === 'running' ? 'Running' : '']).filter(Boolean).map(progress => <span key={progress}>{progress}</span>)}
+            <GraphRunControl run={graphRun} pending={!!graphControls[graphRun.id]?.pending} error={graphControls[graphRun.id]?.error ?? ''} onControl={control => void controlGraph(session.id, graphRun.id, control)} />
           </div>}
           <MessageComposer key={session.id} projectId={session.projectId} draft={drafts[session.id] ?? { text: '', mentions: [] }} onDraftChange={draft => setDrafts(current => ({ ...current, [session.id]: draft }))} onSend={send} onTranscription={text => setDrafts(current => {
             const draft = current[session.id] ?? { text: '', mentions: [] };
@@ -783,6 +805,7 @@ export function App() {
           })} disabled={!!pendingSessions[session.id] || generalView && !harnesses.some(harness => harness.id === session.harness && harness.available)} running={session.status === 'running'} onStop={() => void updateSession(session, 'stop', {})} graphControl={generalView ? undefined : <GraphPicker key={session.id} graphs={catalogGraphs} value={selectedGraphId} selectedName={catalogSelectedGraph?.definition.name ?? selectedGraph?.definition.name} running={graphRunInProgress} disabled={!!selectingGraphs[session.id] || !session.graph} loading={catalogLoading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reloadCatalog().catch(() => {})} onChange={graphId => void chooseGraph(session.id, graphId)} />} modelControl={<ModelPicker key={`${session.id}/${session.harness}`} session={session} disabled={!!pendingSessions[session.id] || working} optionsDisabled={!!pendingSessions[session.id] || !!connectionError} onSave={(model, effort) => applyModelSettings(session, model, effort)} onSnapshot={receiveSession} />} />
           <SessionStatusBar session={session} />
         </div>
+        <GraphRequestQueue key={session.id} requests={graphRequests} run={graphRun} graphs={catalog?.graphs ?? []} projectName={project?.name ?? ''} target={activeTab === 'chat' ? graphChatTarget : activeTab === 'graph' ? graphPanelTarget : null} onResolved={() => graphRequestResolved(session.id)} />
       </>}
     </main>
     {sideVisible && project && session && <SideChatPanel key={session.id} session={sideSession} project={project} harnesses={harnesses}

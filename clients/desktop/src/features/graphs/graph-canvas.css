@@ -63,6 +63,12 @@
 .graph-canvas--readonly :is(.graph-ai-agent-card, .graph-fork-card) { position: relative; }
 .graph-node--running { position: relative; }
 .graph-node--running::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: var(--graph-shimmer-gradient); background-size: 240% 100%; background-position: 100% 0; pointer-events: none; animation: var(--graph-shimmer-animation); }
+.graph-node--attention { border-color: var(--color-warning); animation: graph-input-pulse 1.4s ease-in-out infinite; }
+@keyframes graph-input-pulse { 0%, 100% { background: var(--color-elevated); box-shadow: var(--shadow-card); } 50% { background: color-mix(in srgb, var(--color-warning) 22%, var(--color-elevated)); box-shadow: 0 0 18px color-mix(in srgb, var(--color-warning) 55%, transparent); } }
+.graph-run-status--waiting { color: var(--color-warning); }
+.graph-run-requests { flex: 0 1 auto; min-height: 0; max-height: 42dvh; overflow-y: auto; overscroll-behavior: contain; padding: 12px 16px; border-top: 1px solid var(--color-border); }
+.graph-run-requests[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .graph-node--attention { animation: none; background: color-mix(in srgb, var(--color-warning) 22%, var(--color-elevated)); } }
 .graph-node-running-label { display: inline-flex; align-items: center; gap: 6px; color: var(--color-accent); font-size: var(--text-xs); white-space: nowrap; }
 .graph-tab-label { display: inline-flex; align-items: center; gap: 8px; }
 .graph-node-inspect-button { position: absolute; inset: 0; z-index: 1; padding: 0; border: 0; border-radius: inherit; background: transparent; cursor: pointer; pointer-events: auto; }

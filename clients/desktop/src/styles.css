@@ -136,6 +136,8 @@ body { background-color: var(--color-canvas); background-image: var(--gradient-c
 .chat-graph-progress { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 8px; padding-inline: 12px; color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
 .chat-graph-progress > span { min-width: 0; }
 .chat-graph-progress-name { color: var(--color-text); font-weight: 500; }
+.graph-run-control { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 8px; border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text); font-size: 12px; }
+.graph-run-control [role="alert"] { color: var(--color-danger); max-width: 280px; }
 .composer { position: relative; border: 1px solid var(--color-border); border-radius: var(--radius-composer); background: var(--color-elevated); box-shadow: var(--shadow-sm); }
 .file-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 8px 0; list-style: none; }
 .composer > .file-attachments { margin: 10px 12px 0; }
@@ -431,6 +433,7 @@ body { background-color: var(--color-canvas); background-image: var(--gradient-c
 .event-status { color: var(--color-muted); font-size: 12px; flex-shrink: 0; }
 .composer-error { padding: 0 16px 12px; }
 .permission-queue { max-height: 42dvh; overflow-y: auto; display: grid; gap: 12px; margin-bottom: 12px; }
+.graph-request-queue { display: grid; gap: 12px; }
 .permission-card { padding: 16px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-permission); font-size: 13px; }
 .permission-heading { display: flex; align-items: center; gap: 8px; }
 .permission-heading > svg { color: var(--color-permission-icon); }

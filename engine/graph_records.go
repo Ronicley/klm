@@ -73,6 +73,8 @@ type GraphRunResult struct {
 	Error  string            `json:"error,omitempty"`
 }
 type GraphRun struct {
+	PauseRequested     bool                   `json:"pauseRequested,omitempty"`
+	Paused             bool                   `json:"paused,omitempty"`
 	FinalityError      string                 `json:"finalityError,omitempty"`
 	ID                 string                 `json:"id"`
 	ActivityID         string                 `json:"activityId"`
@@ -311,6 +313,12 @@ func (d *diskState) graphProjection(conversationID string) ConversationGraphStat
 		return p
 	}
 	view := &GraphRunProjection{ID: r.ID, GraphID: r.GraphID, Active: true, Status: r.Status, Revision: d.GraphViewRevision, Snapshot: r.Snapshot.Graph, ActiveNodeIDs: []string{}, CompletedNodeIDs: []string{}, CompletedChoiceIDs: []string{}, CollectingJoinIDs: []string{}}
+	if r.PauseRequested && r.Status != "ending" {
+		view.Status = "pausing"
+		if r.Paused {
+			view.Status = "paused"
+		}
+	}
 	if r.CatalogGraphID != nil {
 		view.GraphID = *r.CatalogGraphID
 	}
@@ -319,7 +327,7 @@ func (d *diskState) graphProjection(conversationID string) ConversationGraphStat
 		if activation.RunID != r.ID {
 			continue
 		}
-		if graphActivationActive(activation.Status) {
+		if graphActivationActive(activation.Status) && !(r.PauseRequested && activation.Status == "reserved") {
 			active[activation.NodeID] = true
 		}
 		if activation.Status == "completed" {

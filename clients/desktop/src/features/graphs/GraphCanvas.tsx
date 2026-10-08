@@ -29,7 +29,8 @@ import './graph-canvas.css';
 type CanvasNodeData = {
   readOnly?: boolean;
   running?: boolean;
-  activityStatus?: 'pending' | 'running' | 'collecting' | 'completed';
+  activityStatus?: 'pending' | 'running' | 'waiting' | 'collecting' | 'completed';
+  attention?: boolean;
   inspecting?: boolean;
   inspectionMode?: 'activity' | 'configuration';
   onInspect?: () => void;
@@ -64,17 +65,16 @@ function InitialNodePlaceholder({ data }: NodeProps<CanvasNode>) {
 function NodeInspectionButton({ data }: { data: CanvasNodeData }) {
   if (!data.readOnly || !data.onInspect) return null;
   const name = data.name ?? data.choice?.name ?? data.fork?.name ?? data.terminal?.name ?? `Join · ${data.agent?.name ?? 'Integration'}`;
-  const label = data.inspectionMode === 'configuration' ? `View configuration for ${name}` : `View activity for ${name}, ${data.activityStatus ?? 'pending'}`;
+  const label = data.inspectionMode === 'configuration' ? `View configuration for ${name}` : `View activity for ${name}, ${data.activityStatus === 'waiting' ? 'Waiting for input' : data.activityStatus ?? 'pending'}`;
   return <button type="button" className="graph-node-inspect-button nodrag nopan" aria-label={label} aria-expanded={data.inspecting} onClick={data.onInspect} />;
 }
 
 function AgentNodeCard({ data }: NodeProps<CanvasNode>) {
-  return <div className={`graph-ai-agent-card ${data.configuring ? 'is-configuring' : ''} ${data.running ? 'graph-node--running' : ''}`}>
+  return <div className={`graph-ai-agent-card ${data.configuring ? 'is-configuring' : ''} ${data.running ? 'graph-node--running' : ''} ${data.attention ? 'graph-node--attention' : ''}`}>
     <Handle type="target" position={Position.Left} id="input" isConnectableStart={false} aria-label="Agent input" />
     <div className="graph-ai-agent-heading"><span><Bot />AI agent</span><span className="graph-node-heading-meta">
       {data.initial && <Badge>Start</Badge>}
-      {data.running && <span className="graph-node-running-label"><i aria-hidden="true" />Running</span>}
-      {!data.running && data.activityStatus === 'completed' && <span className="graph-run-status graph-run-status--completed">Completed</span>}
+      <NodeProgress data={data} />
       {!data.readOnly && <IconButton label="Configure agent node" className="nodrag nopan" onClick={data.onConfigure}><Settings2 /></IconButton>}
     </span></div>
     <strong>{data.name?.trim() || 'New agent node'}</strong>
@@ -87,6 +87,7 @@ function AgentNodeCard({ data }: NodeProps<CanvasNode>) {
 }
 
 function NodeProgress({ data }: { data: CanvasNodeData }) {
+  if (data.activityStatus === 'waiting') return <span className="graph-run-status graph-run-status--waiting">Waiting for input</span>;
   if (data.running) return <span className="graph-node-running-label"><i aria-hidden="true" />Running</span>;
   if (data.activityStatus === 'collecting') return <span className="graph-run-status">Collecting</span>;
   return data.activityStatus === 'completed' ? <span className="graph-run-status graph-run-status--completed">Completed</span> : null;
@@ -118,7 +119,7 @@ function ForkNodeCard({ id, data }: NodeProps<CanvasNode>) {
 }
 
 function JoinNodeCard({ data }: NodeProps<CanvasNode>) {
-  return <div className={`graph-ai-agent-card ${data.configuring ? 'is-configuring' : ''} ${data.running ? 'graph-node--running' : ''}`}>
+  return <div className={`graph-ai-agent-card ${data.configuring ? 'is-configuring' : ''} ${data.running ? 'graph-node--running' : ''} ${data.attention ? 'graph-node--attention' : ''}`}>
     <Handle type="target" position={Position.Left} id="branches" isConnectableStart={false} aria-label="Join branch inputs" />
     <div className="graph-ai-agent-heading"><span><GitMerge />Join</span><NodeProgress data={data} />{!data.readOnly && <IconButton label="Configure join node" className="nodrag nopan" onClick={data.onConfigure}><Settings2 /></IconButton>}</div>
     <strong>{data.agent?.name ?? data.join?.agentId ?? 'Select agent'}</strong>

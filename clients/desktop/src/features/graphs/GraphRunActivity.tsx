@@ -9,8 +9,9 @@ import { EventSequence } from '../chat/ConversationEvents';
 
 const statusLabels: Record<string, string> = { reserved: 'Pending', running: 'Running', waiting_user: 'Waiting', sealing: 'Finishing', completed: 'Completed', failed: 'Failed', interrupted: 'Interrupted' };
 
-export function GraphRunActivity({ sessionId, runId, nodeId, nodeName, onClose }: {
+export function GraphRunActivity({ sessionId, runId, nodeId, nodeName, onClose, hasRequests, onRequestTarget }: {
   sessionId: string; runId: string; nodeId: string; nodeName: string; onClose: () => void;
+  hasRequests: boolean; onRequestTarget: (target: HTMLDivElement | null) => void;
 }) {
   const [tab, setTab] = useState<'run' | 'input' | 'output'>('run');
   const [activationId, setActivationId] = useState('');
@@ -70,6 +71,7 @@ export function GraphRunActivity({ sessionId, runId, nodeId, nodeName, onClose }
           <pre>{JSON.stringify(activity.submission.payload, null, 2)}</pre>
         </> : <p className="muted">No Choice submitted.</p>}
       </div>}
+      <div ref={onRequestTarget} className="graph-run-requests" hidden={!hasRequests} aria-label="Graph requests" />
     </section>
   </Panel>;
 }

@@ -90,6 +90,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions", a.createSession)
 	mux.HandleFunc("POST /api/general-session", a.generalConversation)
 	mux.HandleFunc("GET /api/sessions/{id}/graph", a.getConversationGraph)
+	mux.HandleFunc("POST /api/sessions/{id}/graph/runs/{runId}/{control}", a.controlGraphRun)
 	mux.HandleFunc("GET /api/sessions/{id}/graph/runs/{runId}/nodes/{nodeId}/activity", a.getGraphNodeActivity)
 	mux.HandleFunc("PATCH /api/sessions/{id}/graph", a.selectConversationGraph)
 	mux.HandleFunc("GET /api/graph-runs/{runID}", a.getGraphRun)

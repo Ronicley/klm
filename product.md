@@ -492,8 +492,13 @@ the inherited workspace. Join waits for all incoming deliveries and delegates
 integration to its agent. The engine records workspace provenance and explicit reuse;
 it does not implicitly reset the original directory, commit work or clean worktrees.
 
-Node questions and permissions use the existing cards in the owning main chat and
-route answers to the originating native session. Session grants remain local to
+Node questions and permissions use the existing cards in the owning main chat or
+the currently open node activity panel. The open panel receives requests from all
+parallel nodes, with graph and node origin identified, without switching the
+inspected node, activity tab or historical activation. Returning to the parent Chat
+shows the same pending requests; switching these surfaces preserves question drafts
+and in-flight submissions. Answers route to the originating native session and
+request, independently of the inspected activation. Session grants remain local to
 that node session. Agent and Join harness sessions inherit the invoking conversation's
 current YOLO setting at each turn start, including reused sessions and correction
 turns. Changes apply to subsequent activations; running turns retain their initial
@@ -522,7 +527,17 @@ does not leave the run in `ending` indefinitely or accept a pending Choice. Gran
 approval flows and sandbox settings remain unchanged. Implementation and runtime
 validation of this revised boundary are tracked separately.
 
-Nested Forks, worktree cleanup, user interruption/resumption controls, concurrent
+The active graph offers **Pause** and **Resume** in its canvas and the Chat progress
+indicator. Pause prevents new node activations and correction turns from dispatching;
+already dispatched nodes finish normally, including parallel branches. **Pausing**
+becomes **Paused** once those workers settle. Pending permissions and questions remain
+answerable. Resume continues the same run with retained results, queued deliveries,
+native conversations and workspaces. Completion or failure of in-flight work still
+ends the run normally. Pause state is engine-owned and shared across clients; engine
+shutdown/restart retains the existing interruption policy, without automatic resumption.
+These controls do not suspend running commands or change the chat's Stop behavior.
+
+Nested Forks, worktree cleanup, immediate interruption/resumption controls, concurrent
 runs within one conversation, rich graph inputs/files, activation limits and task
 timeouts remain outside this delivery.
 
@@ -563,6 +578,13 @@ The indicator remains tied to the actual run when the selected graph changes or
 becomes None, and disappears when the run ends.
 
 The active cards retain the pink-to-blue body shimmer and Running indicator.
+Nodes with pending permissions or questions show **Waiting for input** instead.
+When neither the parent Chat nor a node activity panel is visible in the focused
+client window, those nodes pulse yellow. Opening either surface presents all pending
+requests without resolving them; the waiting label remains until requests settle.
+Reduced-motion preferences use a static yellow highlight. Focus means the visible
+surface in the active window, not the location of the text cursor. Navigation and
+closing the panel never discard pending requests or answer them automatically.
 The Run/Input/Output panel is connected to real Agent and Join activations during
 a run. Run reuses the chat timeline for the reasoning and tool events exposed by
 the harness, including reads, writes, commands, results and errors. Input shows
