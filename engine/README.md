@@ -47,9 +47,10 @@ directories remain unchanged. The override is ignored by release builds. API and
 web ports remain fixed, so only one development engine can listen at a time.
 
 
-All mutation requests, including stop and directory picker, require
-`Content-Type: application/json`. Stop and picker accept an empty body or `{}`.
-Other mutation bodies are a single JSON object; unknown fields are rejected.
+Mutation requests, including stop and directory picker, require
+`Content-Type: application/json`, except multipart audio transcriptions and chat
+file uploads. Stop and picker accept an empty body or `{}`. JSON bodies are a
+single object; unknown fields are rejected.
 Errors are non-2xx JSON objects: `{"error":"message"}`.
 
 | Method | Path | Body / response |
@@ -71,7 +72,7 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | GET | `/api/sessions/{id}/models` | Harness model catalog; `?refresh=true` bypasses the two-minute cache |
 | PATCH | `/api/sessions/{id}/settings` | `{model:string,effort:string}` -> Session; empty strings select harness defaults |
 | GET | `/api/sessions/{id}/quota` | `{quota:QuotaSnapshot\|null}`; null for unsupported/unverified connections |
-| POST | `/api/sessions/{id}/messages` | `{text,mentions?:[{id,path,kind,start,end}],sources?:[{sessionId,messageId,passage}]}` -> 202 Session, already containing the durable user event |
+| POST | `/api/sessions/{id}/messages` | JSON `{clientId?,text,mode?,mentions?,sources?}` or multipart files (below) -> 202 SessionUpdate after durable acceptance; input may be queued |
 | GET | `/api/sessions/{id}/events` | SSE, initial and subsequent full Session JSON snapshots |
 | PATCH | `/api/sessions/{id}/events/{eventID}` | `{favorite}` -> 200 Event; completed assistant messages only |
 | GET | `/api/sessions/{id}/graph` | Conversation selection, active-run projection and node requests |
@@ -84,6 +85,32 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 
 Adding the same directory again restores a removed project's identity, folders,
 and session history with the name and icon chosen in the add dialog.
+
+### Uploaded chat files
+
+`POST /api/sessions/{id}/messages` also accepts `multipart/form-data`: first a
+`metadata` text field containing the normal JSON message, followed by one to eight
+`files` parts. Uploaded bytes total at most 25 MiB; empty files and empty message
+text are allowed. Images are rejected by this flow. Project `@` reference limits
+are independent. Requests with files have a bounded two-minute upload deadline.
+
+Files are stored under `<engine-data>/attachments/<conversation-hash>/message-*`
+with generated basenames and safe extensions. Accepted uploads are retained for
+queue delivery, steering, native conversation tools and restart recovery. Definitively
+rejected uploads are removed; uncertain journal writes retain files for recovery.
+Queue/history expose `{id,name,size,type,sha256,truncated?}` metadata, not bytes.
+
+All three harnesses receive a JSON manifest with absolute engine-local paths.
+Valid UTF-8 content is prepared with existing 50 KiB/2,000-line text limits and the
+aggregate 200 KiB context cap. Other formats, including PDF, DOCX and ZIP, remain
+available through tools by path. No document conversion, extraction or execution
+is performed. Normal permissions and sandbox settings still apply.
+
+The existing client message receipt includes file names, sizes, detected types and
+content hashes, excluding generated storage paths. An identical retry returns the
+existing acceptance and removes its redundant upload; reuse with different files
+returns 409. Client reload recovery retains file metadata only and requires file
+reselection before submitting an unaccepted message again.
 
 ### General conversation
 

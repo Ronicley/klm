@@ -30,7 +30,7 @@ export const MentionEditor = forwardRef<MentionEditorHandle, Props>(function Men
   function changed() {
     if (!root.current) return;
     const snapshot = readMentionEditor(root.current, known.current);
-    onChange({ text: snapshot.text, mentions: snapshot.mentions });
+    onChange({ ...draft, text: snapshot.text, mentions: snapshot.mentions });
     onCaretChange(snapshot.range?.start === snapshot.range?.end ? snapshot.range?.start ?? -1 : -1);
   }
   function insertText(text: string) {

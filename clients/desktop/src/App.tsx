@@ -174,6 +174,15 @@ export function App() {
   const activeSubagentId = activeTab.startsWith('subagent:') ? activeTab.slice('subagent:'.length) : '';
   const activeSubagent = sessions.find(item => item.id === activeSubagentId && item.parentId === activeId && item.role === 'subagent');
   const graphRequests = session?.graph?.requests ?? [];
+  const waitingGraphNodes = new Set(graphRequests.filter(item => item.runId === graphRun?.id).map(item => item.nodeId));
+  const graphProgress = graphRun?.active ? [
+    { status: 'Running', ids: graphRun.activeNodeIds.filter(id => !waitingGraphNodes.has(id)) },
+    { status: 'Waiting for input', ids: graphRun.activeNodeIds.filter(id => waitingGraphNodes.has(id)) },
+    { status: 'Collecting', ids: graphRun.collectingJoinIds.filter(id => !graphRun.activeNodeIds.includes(id)) },
+  ].filter(group => group.ids.length).map(group => `${group.status} · ${group.ids.map(id => {
+    const node = graphRun.snapshot.definition.nodes[id];
+    return node?.name || (node?.type === 'join' ? `Join · ${node.agent || id}` : node?.agent || id);
+  }).join(', ')}`) : [];
   useEffect(() => {
     void reloadCatalog().catch(() => {});
   }, [reloadCatalog, selectedGraphId, graphRun?.id, view]);
@@ -452,6 +461,10 @@ export function App() {
   }
   function submitLocal(target: Session, message: LocalSubmission) {
     const { id, draft, sources, mode } = message;
+    if (draft.missingFiles?.length) {
+      setSessionErrors(current => ({ ...current, [target.id]: 'Restore the draft and reselect its files before sending.' }));
+      return;
+    }
     if (submissionRequests.current.has(id)) return;
     submissionRequests.current.add(id);
     if (target.role === 'general_agent') generalHarnessBlocks.current.set(id, target.id);
@@ -464,8 +477,16 @@ export function App() {
       if ((stopVersions.current.get(target.id) ?? 0) !== stopVersion) throw new EngineRequestError('Message paused by Stop. Restore it when ready.', 409);
       const controller = new AbortController();
       submissionControllers.current.set(id, { sessionId: target.id, controller });
-      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]);
-      return request<SessionResponse>(`/api/sessions/${encodeURIComponent(target.id)}/messages`, 'POST', { ...draft, sources, mode, clientId: id }, 45000, signal);
+      const timeout = draft.files?.length ? 120000 : 45000;
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeout)]);
+      const metadata = { text: draft.text, mentions: draft.mentions, sources, mode, clientId: id };
+      let body: typeof metadata | FormData = metadata;
+      if (draft.files?.length) {
+        body = new FormData();
+        body.append('metadata', JSON.stringify(metadata));
+        for (const file of draft.files) body.append('files', file, file.name);
+      }
+      return request<SessionResponse>(`/api/sessions/${encodeURIComponent(target.id)}/messages`, 'POST', body, timeout, signal);
     })
       .then(next => {
         setEngine(current => { const sessions = mergeSessions(current.sessions, [next], 'mutation'); return sessions === current.sessions ? current : { ...current, sessions }; });
@@ -491,7 +512,7 @@ export function App() {
     return true;
   }
   function restoreLocal(target: Session, message: LocalSubmission, key = target.id) {
-    if (drafts[key]?.text || drafts[key]?.mentions.length) {
+    if (drafts[key]?.text || drafts[key]?.mentions.length || drafts[key]?.files?.length || drafts[key]?.missingFiles?.length) {
       setSessionErrors(current => ({ ...current, [target.id]: 'Clear the current draft before restoring this message.' }));
       return;
     }
@@ -501,7 +522,7 @@ export function App() {
     setLocalMessages(current => ({ ...current, [target.id]: (current[target.id] ?? []).filter(item => item.id !== message.id) }));
   }
   function send(draft: ComposerDraft, mode?: SendMode) {
-    if (!session || !draft.text.trim()) return false;
+    if (!session || (!draft.text.trim() && !draft.files?.length) || draft.missingFiles?.length) return false;
     return sendMessage(session, draft, [], mode);
   }
   function receiveSession(snapshot: SessionResponse) {
@@ -745,9 +766,13 @@ export function App() {
             })}
           </div>}
           <PendingSubmission items={localMessages[session.id] ?? []} onRestore={item => restoreLocal(session, item)} onRetry={item => submitLocal(session, item)} />
-          <MessageQueue key={`queue/${session.id}`} session={session} disabled={!!pendingSessions[session.id]} onSnapshot={receiveSession} />
+          <MessageQueue key={`queue/${session.id}`} session={session} disabled={!!connectionError || !!pendingSessions[session.id]} onSnapshot={receiveSession} />
           {generalView && <GeneralHarnessPicker session={session} harnesses={harnesses} disabled={!!pendingSessions[session.id] || generalHarnessBlocked(session) || !!connectionError} onChange={harness => void updateSession(session, 'harness', { harness })} />}
           {generalView && !harnesses.some(harness => harness.id === session.harness && harness.available) && <p role="status" className="form-error">The selected harness is not installed.</p>}
+          {graphRun?.active && <div className="chat-graph-progress" role="status" aria-atomic="true">
+            <span className="chat-graph-progress-name">{graphRun.snapshot.definition.name || graphRun.graphId}</span>
+            {(graphProgress.length ? graphProgress : [graphRun.status === 'starting' ? 'Starting' : graphRun.status === 'ending' ? 'Finishing' : 'Running']).map(progress => <span key={progress}>{progress}</span>)}
+          </div>}
           <MessageComposer key={session.id} projectId={session.projectId} draft={drafts[session.id] ?? { text: '', mentions: [] }} onDraftChange={draft => setDrafts(current => ({ ...current, [session.id]: draft }))} onSend={send} onTranscription={text => setDrafts(current => {
             const draft = current[session.id] ?? { text: '', mentions: [] };
             const separator = !draft.text || draft.text.endsWith('\n\n') ? '' : draft.text.endsWith('\n') ? '\n' : '\n\n';

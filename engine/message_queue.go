@@ -16,6 +16,7 @@ type QueuedMessage struct {
 	Error    string            `json:"error,omitempty"`
 	Sources  []SourceReference `json:"sources,omitempty"`
 	Mentions []Mention         `json:"mentions,omitempty"`
+	Files    []ChatFile        `json:"files,omitempty"`
 }
 type queuedPayload struct {
 	Submission submission
@@ -45,6 +46,9 @@ func appendQueuedUser(d *diskState, sessionID string, q QueuedMessage) {
 	e := event(kind, q.Text)
 	e.ID = q.ID
 	e.Data = map[string]any{"delivery": q.Mode}
+	if len(q.Files) > 0 {
+		e.Data["files"] = q.Files
+	}
 	if q.Origin != nil {
 		e.Data["origin"] = q.Origin
 	}

@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { IconButton } from '../../design-system/Button';
 import type { Message } from '../workspace/demo';
 import { MentionText } from './MentionText';
+import { FileAttachments } from './FileAttachments';
 import { Flowchart } from './Flowchart';
 import { normalizeFlowchartMarkdown } from './flowchartMarkdown';
 
@@ -81,6 +82,7 @@ export function ChatMessage({ message, onFavorite, senderLabel }: { message: Mes
       {message.context && <div className="context-injections">{message.context.map(file => <div key={file}><FileText /><span>Context injection</span><span aria-hidden="true">·</span><span className="context-file">{file}</span></div>)}</div>}
       {message.thought && <details className="thought"><summary><Atom /><strong>Think</strong><span>·</span><span className="thought-preview">{message.thought}</span></summary><p>{message.thought}</p></details>}
       {message.role === 'assistant' ? <MarkdownContent text={message.text} className="message-text" /> : <p className="message-text"><MentionText text={message.text} mentions={message.mentions} preparation={message.mentionPreparation} /></p>}
+      <FileAttachments files={message.files} />
       {!streaming && <div className="message-actions"><IconButton label={copied ? 'Copied' : 'Copy message'} onClick={copy}>{copied ? <Check /> : <Copy />}</IconButton>{canFavorite && <IconButton label={message.favorite ? 'Remove from favorites' : 'Add to favorites'} aria-pressed={!!message.favorite} disabled={favoriting} onClick={() => void favorite()}><Star /></IconButton>}</div>}
       {copyError && <p role="status" className="small muted">Clipboard unavailable. Select the message to copy it.</p>}
       {favoriteError && <p role="alert" className="small muted">Could not update the favorite. Try again.</p>}

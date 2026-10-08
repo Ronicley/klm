@@ -489,6 +489,11 @@ func (a *app) launchGraphAgent(g *graphExecution, run GraphRun, x GraphActivatio
 		return
 	}
 	err = a.graphChangeLocked(func(d *diskState) error {
+		conversation := d.session(run.ConversationID)
+		if conversation == nil {
+			return errors.New("Graph conversation no longer exists.")
+		}
+		yolo := conversation.YOLO
 		if newSession {
 			d.Sessions = append(d.Sessions, Session{ID: sessionID, ProjectID: run.ProjectID, Title: compiled.Definition.Nodes[x.NodeID].Name, Workspace: "Ungrouped", Role: "graph_node", GraphRunID: run.ID, GraphNodeID: x.NodeID, ExecutionCWD: cwd, Harness: agent.Harness, Model: agent.Model, Effort: agent.Effort, Status: "idle", Events: []Event{}, CreatedAt: now(), UpdatedAt: now()})
 			if agent.Harness == "pi" {
@@ -496,6 +501,7 @@ func (a *app) launchGraphAgent(g *graphExecution, run GraphRun, x GraphActivatio
 			}
 		}
 		s := d.session(sessionID)
+		s.YOLO = yolo
 		s.Status, s.UpdatedAt = "running", now()
 		s.Permissions, s.Questions = nil, nil
 		activation := d.graphActivation(x.ID)

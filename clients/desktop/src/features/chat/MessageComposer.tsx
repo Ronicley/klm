@@ -1,13 +1,14 @@
-import { ArrowUp, FileText, Folder, ListPlus, LoaderCircle, Mic, Square } from 'lucide-react';
+import { ArrowUp, FileText, Folder, ListPlus, LoaderCircle, Mic, Paperclip, Square } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
 import { request, transcribeAudio, type FileMention, type ProjectPath } from '../../engine';
 import { mentionQuery } from './mentions';
 import { MentionEditor, type MentionEditorHandle } from './MentionEditor';
+import { FileAttachments, type FileInfo } from './FileAttachments';
 
 export type SendMode = 'queue' | 'steer';
 
-export type ComposerDraft = { text: string; mentions: FileMention[] };
+export type ComposerDraft = { text: string; mentions: FileMention[]; files?: File[]; missingFiles?: FileInfo[] };
 
 type AudioState = 'idle' | 'recording' | 'transcribing';
 
@@ -29,6 +30,10 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
   placeholder?: string;
 }) {
   const { text, mentions } = draft;
+  const files = draft.files ?? [];
+  const missingFiles = draft.missingFiles ?? [];
+  const fileInput = useRef<HTMLInputElement>(null);
+  const canSend = (!!text.trim() || files.length > 0) && missingFiles.length === 0;
   const [caret, setCaret] = useState(0);
   const [focused, setFocused] = useState(false);
   const [composing, setComposing] = useState(false);
@@ -90,7 +95,7 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
     setDismissed(queryKey);
   }
   function send(mode: SendMode = 'queue') {
-    if (!text.trim() || disabled || submittedDraft.current === draft) return;
+    if (!canSend || disabled || submittedDraft.current === draft) return;
     setError('');
     try {
       // The parent synchronously owns the pending draft before starting HTTP.
@@ -101,6 +106,23 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
     audioStream.current?.getTracks().forEach(track => track.stop());
     audioStream.current = null;
     recorder.current = null;
+  }
+  function addFiles(selected: File[]) {
+    if (disabled || !selected.length) return;
+    if (selected.some(file => file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?|avif|heic|heif|jxl)$/i.test(file.name))) {
+      setError('Images are not supported by this file attachment flow.');
+      return;
+    }
+    const next = [...files];
+    for (const file of selected) {
+      if (!next.some(existing => existing.name === file.name && existing.size === file.size && existing.lastModified === file.lastModified)) next.push(file);
+    }
+    if (next.length > 8 || next.reduce((size, file) => size + file.size, 0) > 25 * 1024 * 1024) {
+      setError('Attach at most eight files, totaling at most 25 MiB.');
+      return;
+    }
+    onDraftChange({ ...draft, files: next, missingFiles: missingFiles.filter(missing => !selected.some(file => file.name === missing.name && file.size === missing.size)) });
+    setError('');
   }
   async function toggleRecording() {
     if (!onTranscription || audioState === 'transcribing') return;
@@ -168,7 +190,19 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       }
     }
   }
-  return <form className="composer" aria-label="Message composer" onSubmit={event => { event.preventDefault(); send(); }}>
+  return <form className="composer" aria-label="Message composer" onSubmit={event => { event.preventDefault(); send(); }}
+    onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = disabled ? 'none' : 'copy'; } }}
+    onDropCapture={event => {
+      if (!event.dataTransfer.types.includes('Files')) return;
+      event.preventDefault(); event.stopPropagation();
+      const directories = Array.from(event.dataTransfer.items).some(item => (item as DataTransferItem & { webkitGetAsEntry?: () => { isDirectory: boolean } | null }).webkitGetAsEntry?.()?.isDirectory);
+      if (directories) { setError('Select files instead of folders.'); return; }
+      addFiles(Array.from(event.dataTransfer.files));
+    }}
+    onPasteCapture={event => { if (event.clipboardData.files.length) { event.preventDefault(); event.stopPropagation(); addFiles(Array.from(event.clipboardData.files)); } }}>
+    <input ref={fileInput} type="file" multiple hidden onChange={event => { addFiles(Array.from(event.target.files ?? [])); event.target.value = ''; }} />
+    <FileAttachments files={files} onRemove={index => onDraftChange({ ...draft, files: files.filter((_, i) => i !== index) })} />
+    <FileAttachments files={missingFiles} missing onRemove={index => onDraftChange({ ...draft, missingFiles: missingFiles.filter((_, i) => i !== index) })} />
     {open && <div className="mention-picker">
       <ul id={listId} role="listbox" aria-label="Project files and folders">{paths.map((path, index) => {
         const Icon = path.kind === 'directory' ? Folder : FileText;
@@ -199,6 +233,7 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       } else if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
     }} />
     {error && <p role="alert" className="form-error composer-error">{error}</p>}
-    <div className="composer-controls">{graphControl && <div className="composer-graph-control">{graphControl}</div>}<div className="composer-model-controls">{modelControl}{running && text.trim() && <Button size="sm" disabled={disabled} onClick={() => void send('steer')}>Send now</Button>}{running && onStop && <IconButton label="Stop response" variant="outline" onClick={onStop}><Square /></IconButton>}{onTranscription && <IconButton label={audioState === 'recording' ? 'Stop recording' : audioState === 'transcribing' ? 'Transcribing audio' : 'Record audio'} aria-pressed={audioState === 'recording'} variant={audioState === 'recording' ? 'danger-soft' : 'ghost'} disabled={(disabled && audioState === 'idle') || audioState === 'transcribing'} className={`audio-record-button ${audioState === 'recording' ? 'is-recording' : ''}`} onClick={() => void toggleRecording()}>{audioState === 'recording' ? <Square /> : audioState === 'transcribing' ? <LoaderCircle className="audio-spinner" /> : <Mic />}</IconButton>}<IconButton label={running ? 'Queue message' : 'Send message'} variant="soft" type="submit" disabled={!text.trim() || disabled} className="send-button">{running ? <ListPlus /> : <ArrowUp />}</IconButton></div></div>
+    <div className="composer-controls"><div className="composer-graph-control"><IconButton label="Attach files" disabled={disabled} onClick={() => fileInput.current?.click()}><Paperclip /></IconButton>{graphControl}</div>
+      <div className="composer-model-controls">{modelControl}{running && canSend && <Button size="sm" disabled={disabled} onClick={() => void send('steer')}>Send now</Button>}{running && onStop && <IconButton label="Stop response" variant="outline" onClick={onStop}><Square /></IconButton>}{onTranscription && <IconButton label={audioState === 'recording' ? 'Stop recording' : audioState === 'transcribing' ? 'Transcribing audio' : 'Record audio'} aria-pressed={audioState === 'recording'} variant={audioState === 'recording' ? 'danger-soft' : 'ghost'} disabled={(disabled && audioState === 'idle') || audioState === 'transcribing'} className={`audio-record-button ${audioState === 'recording' ? 'is-recording' : ''}`} onClick={() => void toggleRecording()}>{audioState === 'recording' ? <Square /> : audioState === 'transcribing' ? <LoaderCircle className="audio-spinner" /> : <Mic />}</IconButton>}<IconButton label={running ? 'Queue message' : 'Send message'} variant="soft" type="submit" disabled={!canSend || disabled} className="send-button">{running ? <ListPlus /> : <ArrowUp />}</IconButton></div></div>
   </form>;
 }

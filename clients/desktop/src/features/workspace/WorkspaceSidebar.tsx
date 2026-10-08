@@ -10,6 +10,13 @@ function sessionRuntimeState(session: Session) {
   if (session.status === 'error') return { state: 'error', label: 'Runtime error' };
   if ((session.permissions?.length ?? 0) > 0) return { state: 'waiting', label: 'Waiting for approval' };
   if ((session.questions?.length ?? 0) > 0) return { state: 'waiting', label: 'Waiting for input' };
+  const graphRun = session.graph?.run;
+  if (graphRun?.active) {
+    const requests = session.graph?.requests.filter(request => request.runId === graphRun.id) ?? [];
+    if (requests.some(request => request.kind === 'permission')) return { state: 'waiting', label: 'Waiting for approval' };
+    if (requests.some(request => request.kind === 'question')) return { state: 'waiting', label: 'Waiting for input' };
+    return { state: 'running', label: 'Graph running' };
+  }
   if (session.status === 'running') return { state: 'running', label: 'Turn running' };
   if (session.runtimeActive) return { state: 'active', label: 'Runtime active' };
   return { state: 'off', label: 'Runtime stopped' };

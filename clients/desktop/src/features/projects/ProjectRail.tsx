@@ -16,8 +16,10 @@ function projectRuntimeState(project: Project, sessions: Session[]) {
     if (session.projectId !== project.id || session.role === 'graph_node' || session.role === 'subagent' || session.archived || parent?.archived) continue;
     if (project.archivedFolders.includes(parent?.workspace ?? session.workspace)) continue;
     if (session.status === 'error') return { state: 'error', label: 'Session error' };
-    if ((session.permissions?.length ?? 0) > 0 || (session.questions?.length ?? 0) > 0) state = 'waiting';
-    else if (state === 'off' && (session.status === 'running' || session.runtimeActive)) state = 'active';
+    const graphRun = session.graph?.run;
+    const graphWaiting = graphRun?.active && session.graph?.requests.some(request => request.runId === graphRun.id);
+    if ((session.permissions?.length ?? 0) > 0 || (session.questions?.length ?? 0) > 0 || graphWaiting) state = 'waiting';
+    else if (state === 'off' && (session.status === 'running' || session.runtimeActive || graphRun?.active)) state = 'active';
   }
   if (state === 'waiting') return { state, label: 'Waiting for input' };
   if (state === 'active') return { state, label: 'Runtime active' };

@@ -279,6 +279,35 @@ The engine persists references and preparation metadata, while the harness owns
 the native message content, history, compaction, and subsequent tool execution.
 Selecting context does not change tool permissions or sandbox settings.
 
+## Uploaded Chat Files
+
+Main, side and general-agent chats accept non-image files from the client device
+through **Attach files**, drag-and-drop, or clipboard file data when exposed by the
+client platform. Text paste remains ordinary message text. Users can remove selected
+files and send a message containing only files. Folders are not uploaded.
+
+Up to eight uploaded files, totaling at most 25 MiB, are allowed per message;
+empty files are valid. These limits are separate from project `@` references.
+Uploads use multipart message submission and are stored under the engine data
+directory in private conversation/message directories, not in project files.
+Accepted files remain available across queueing, steering and engine restarts.
+Filenames and sizes appear in the queue and history; file bytes are not sent through SSE.
+
+The engine gives Pi, OpenCode and Codex a JSON manifest with local paths and bounded
+UTF-8 content using the existing text-reference limits. PDF, DOCX, ZIP, other binary
+formats and other encodings are made available by path; their interpretation belongs
+to harness tools. KLM does not convert documents, unpack archives, or execute uploaded
+files. Existing tool permissions and sandbox settings still apply. Images are outside
+this upload flow. Combined prepared context retains the 200 KiB limit.
+
+Message identity includes uploaded content hashes, so retrying the same submission
+does not duplicate accepted messages or files. Rejected/incomplete uploads are removed;
+uncertain persistence failures retain files for restart recovery.
+Unaccepted files remain recoverable in the client's memory. After a page reload, only
+their names and sizes are retained; recovery requires restoring the draft and selecting
+the files again. Missing file bytes are never silently omitted from a retry.
+Native mobile WebView file selection and real harness behavior require human validation.
+
 ## Messages During Execution
 
 Main and side chats accept messages while a turn is active. Enter or the send
@@ -452,7 +481,11 @@ it does not implicitly reset the original directory, commit work or clean worktr
 
 Node questions and permissions use the existing cards in the owning main chat and
 route answers to the originating native session. Session grants remain local to
-that node session. Shutdown/restart records interrupted runs without automatic
+that node session. Agent and Join harness sessions inherit the invoking conversation's
+current YOLO setting at each turn start, including reused sessions and correction
+turns. Changes apply to subsequent activations; running turns retain their initial
+setting. User questions and graph authorization/lifecycle controls remain independent
+of YOLO. Shutdown/restart records interrupted runs without automatic
 resumption, while retaining scheduled activities and pending result notifications.
 
 Windows mechanisms for Pi, OpenCode and Codex are implemented and admitted by the
@@ -507,6 +540,14 @@ including startup, shutdown and human waits. The name remains plain text. On run
 completion, activity and LED clear and the view returns to idle configuration;
 an already-open node activity panel remains available until closed so its final
 output can be read. Unexecuted nodes are never marked completed.
+
+The owning main chat shows a compact live indicator immediately above the message
+composer, identifying the running graph and all active nodes from its captured
+definition. Parallel nodes are listed together; nodes with pending questions or
+permissions show **Waiting for input**, and Join input collection shows **Collecting**.
+Startup and shutdown without active nodes show **Starting** and **Finishing**.
+The indicator remains tied to the actual run when the selected graph changes or
+becomes None, and disappears when the run ends.
 
 The active cards retain the pink-to-blue body shimmer and Running indicator.
 The Run/Input/Output panel is connected to real Agent and Join activations during

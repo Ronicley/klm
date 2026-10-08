@@ -130,8 +130,9 @@ func (a *app) routes() http.Handler {
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			transcriptionUpload := r.Method == http.MethodPost && r.URL.Path == "/api/transcriptions"
+			messageUpload := r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/sessions/") && strings.HasSuffix(r.URL.Path, "/messages")
 			kind, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-			if (!transcriptionUpload && (err != nil || kind != "application/json")) ||
+			if (!transcriptionUpload && (err != nil || (kind != "application/json" && !(messageUpload && kind == "multipart/form-data")))) ||
 				(transcriptionUpload && (err != nil || kind != "multipart/form-data")) {
 				if transcriptionUpload {
 					fail(w, 415, "Transcriptions require multipart/form-data.")
@@ -809,16 +810,26 @@ func (a *app) patchEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) message(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		ClientID string `json:"clientId"`
-		Text     string
-		Mode     string            `json:"mode"`
-		Sources  []SourceReference `json:"sources"`
-		Mentions []Mention         `json:"mentions"`
-	}
-	if !decode(w, r, &body) {
+	a.mu.Lock()
+	initial := a.state.session(r.PathValue("id"))
+	if initial == nil {
+		a.mu.Unlock()
+		fail(w, 404, "Session not found.")
 		return
 	}
+	submissionStopVersion := a.stopVersions[initial.ID]
+	a.mu.Unlock()
+	var body messageBody
+	files, uploadDir, decoded := a.decodeMessage(w, r, &body)
+	if !decoded {
+		return
+	}
+	retainFiles := false
+	defer func() {
+		if !retainFiles && uploadDir != "" {
+			_ = os.RemoveAll(uploadDir)
+		}
+	}()
 	if body.Mode != "" && body.Mode != "queue" && body.Mode != "steer" {
 		fail(w, 400, "Message mode must be queue or steer.")
 		return
@@ -829,8 +840,8 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Invalid message identity.")
 		return
 	}
-	if strings.TrimSpace(body.Text) == "" || len(body.Text) > 128<<10 || !utf8.ValidString(body.Text) || strings.ContainsRune(body.Text, 0) {
-		fail(w, 400, "Message must be nonempty UTF-8 text, at most 128 KiB, without NUL characters.")
+	if (strings.TrimSpace(body.Text) == "" && len(files) == 0) || len(body.Text) > 128<<10 || !utf8.ValidString(body.Text) || strings.ContainsRune(body.Text, 0) {
+		fail(w, 400, "Provide text or files; text must be UTF-8, at most 128 KiB, without NUL characters.")
 		return
 	}
 	a.mu.Lock()
@@ -840,13 +851,14 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "Session not found.")
 		return
 	}
-	// The fingerprint covers user intent, never prepared filesystem content.
+	// The fingerprint covers user intent (including uploaded bytes), not mutable
+	// project reference contents or generated upload paths.
 	// This check precedes expensive preparation and repeats under the accept lock.
 	identity := body.ClientID
 	if identity == "" {
 		identity = newID()
 	}
-	fingerprint := messageFingerprint(body.Text, body.Mode, body.Sources, body.Mentions)
+	fingerprint := chatFileFingerprint(messageFingerprint(body.Text, body.Mode, body.Sources, body.Mentions), files)
 	if previous, ok := a.state.AcceptedMessages[s.ID+"/"+identity]; ok {
 		if previous != fingerprint {
 			a.mu.Unlock()
@@ -881,7 +893,7 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, projectID, harness := s.ID, s.ProjectID, s.Harness
-	stopVersion := a.stopVersions[id]
+	stopVersion := submissionStopVersion
 	folder, _ := a.state.conversationDirectory(s)
 	if s.Role == sessionRoleGeneralAgent && len(body.Mentions) > 0 {
 		a.mu.Unlock()
@@ -897,6 +909,9 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload, err := prepareMentions(r.Context(), cwd, harness, body.Text, body.Mentions)
+	if err == nil {
+		err = prepareChatFiles(&payload, files)
+	}
 	if err != nil {
 		fail(w, 400, err.Error())
 		return
@@ -942,6 +957,9 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err.Error())
 		return
 	}
+	if strings.TrimSpace(prompt) == "" && len(files) > 0 {
+		prompt = "User attached files."
+	}
 	guidance, err := conversationGuidance(s)
 	if err != nil {
 		a.mu.Unlock()
@@ -967,7 +985,7 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	if mode == "steer" {
 		status = "steering"
 	}
-	q := QueuedMessage{ID: identity, Text: body.Text, Mode: mode, Status: status, Sources: body.Sources, Mentions: body.Mentions}
+	q := QueuedMessage{ID: identity, Text: body.Text, Mode: mode, Status: status, Sources: body.Sources, Mentions: body.Mentions, Files: files}
 	if err := a.commitLocked(func(d *diskState) {
 		if d.AcceptedMessages == nil {
 			d.AcceptedMessages = map[string]string{}
@@ -984,10 +1002,14 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		}
 		d.QueuePayloads[q.ID] = queuedPayload{Submission: payload, Harness: harness, Directory: folder}
 	}); err != nil {
+		// A journal sync failure can still leave a recoverable accepted frame.
+		// Keep its files rather than destroy data referenced after restart.
+		retainFiles = a.storageErr != nil
 		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
 	}
+	retainFiles = true
 	a.wakeSteeringLocked(id)
 	a.scheduleMessagesLocked()
 	response := a.currentSessionUpdateLocked(id)

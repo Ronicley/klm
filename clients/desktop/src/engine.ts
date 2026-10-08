@@ -28,7 +28,7 @@ export type EngineEvent = {
   status?: string;
   favorite?: boolean;
   createdAt: string;
-  data?: Record<string, unknown> & { mentions?: FileMention[]; mentionPreparation?: MentionPreparation[] };
+  data?: Record<string, unknown> & { mentions?: FileMention[]; mentionPreparation?: MentionPreparation[]; files?: ChatFile[] };
 };
 
 export type SessionUsage = {
@@ -37,7 +37,7 @@ export type SessionUsage = {
   context: { tokens: number | null; window: number | null } | null;
 };
 
-export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer"; status: "queued" | "steering" | "sending" | "paused" | "uncertain"; error?: string; origin?: { sessionId: string; title: string; kind?: 'instruction' | 'question_answer' } };
+export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer"; status: "queued" | "steering" | "sending" | "paused" | "uncertain"; error?: string; files?: ChatFile[]; origin?: { sessionId: string; title: string; kind?: 'instruction' | 'question_answer' } };
 
 export type Session = {
   queue?: QueuedMessage[] | null;
@@ -129,6 +129,7 @@ export type ProjectPath = { path: string; kind: 'file' | 'directory' };
 // Offsets use UTF-16 units in canonical message text (full @path), not UTF-8 bytes
 // or the visible length of the editor's basename-only badges.
 export type FileMention = ProjectPath & { id: string; start: number; end: number };
+export type ChatFile = { id: string; name: string; size: number; type: string; sha256: string; truncated?: boolean };
 export type MentionPreparation = ProjectPath & { mode: 'native' | 'prepared'; bytes?: number; truncated?: boolean };
 export type MessageSubmission = { text: string; mentions: FileMention[]; sources?: SourceReference[] };
 
@@ -202,9 +203,9 @@ export async function request<T>(path: string, method = 'GET', body?: unknown, t
   try {
     response = await fetch(`${ENGINE_URL}${path}`, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: body instanceof FormData ? undefined : { 'Content-Type': 'application/json' },
       credentials: 'omit',
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body),
       signal: requestSignal,
     });
   } catch (error) {

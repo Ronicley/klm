@@ -61,6 +61,9 @@ func (s submission) piText() string {
 
 func (s submission) openCodeParts() []any {
 	parts := []any{map[string]any{"type": "text", "text": s.Text}}
+	if s.Context != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": s.Context})
+	}
 	for _, file := range s.Files {
 		parts = append(parts, file)
 	}

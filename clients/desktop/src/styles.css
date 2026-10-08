@@ -133,7 +133,16 @@ body { background-color: var(--color-canvas); background-image: var(--gradient-c
 .thought-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 500px; flex: 1; }
 .thought p { padding: 12px 0 0 24px; line-height: 1.6; }
 .composer-area { padding: 0 clamp(24px, 6vw, 96px) 16px; }
+.chat-graph-progress { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 8px; padding-inline: 12px; color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
+.chat-graph-progress > span { min-width: 0; }
+.chat-graph-progress-name { color: var(--color-text); font-weight: 500; }
 .composer { position: relative; border: 1px solid var(--color-border); border-radius: var(--radius-composer); background: var(--color-elevated); box-shadow: var(--shadow-sm); }
+.file-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 8px 0; list-style: none; }
+.composer > .file-attachments { margin: 10px 12px 0; }
+.file-attachments li { display: flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; padding: 4px 8px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-elevated); }
+.file-attachments li > svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--color-accent); }
+.file-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.file-attachments small { flex-shrink: 0; color: var(--color-muted); font-size: 10px; }
 .mention-picker { position: absolute; z-index: 20; bottom: calc(100% + 8px); left: 0; right: 0; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-elevated); box-shadow: var(--shadow-menu); overflow: hidden; }
 .mention-picker ul { list-style: none; margin: 0; padding: 4px; max-height: min(280px, 35vh); overflow-y: auto; }
 .mention-picker li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
