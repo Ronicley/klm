@@ -14,7 +14,7 @@ func TestSubagentSessionsPersistBesideSideAgent(t *testing.T) {
 		Native:   map[string]nativeSession{},
 		Projects: []Project{{ID: "project", Folders: []string{}}},
 		Sessions: []Session{
-			{ID: "main", ProjectID: "project", Title: "Main", Workspace: "Ungrouped", Harness: "opencode", Status: "running", Events: []Event{}},
+			{ID: "main", ProjectID: "project", Title: "Main", Workspace: "Ungrouped", Harness: "opencode", YOLO: true, Status: "running", Events: []Event{}},
 			{ID: "side", ParentID: "main", Role: sessionRoleSideAgent, ProjectID: "project", Title: "Side agent", Workspace: "Ungrouped", Harness: "opencode", Status: "idle", Events: []Event{}},
 		},
 	}}
@@ -33,6 +33,9 @@ func TestSubagentSessionsPersistBesideSideAgent(t *testing.T) {
 	}
 	if first == nil || second == nil || first.id == second.id {
 		t.Fatal("subagents were not created independently")
+	}
+	if !first.yolo || !a.state.session(first.id).YOLO {
+		t.Fatal("subagent did not inherit current YOLO")
 	}
 	if err := p.put("task-one", "subagent", "Explore engine", "", "running", false, map[string]any{"childSessionId": first.id}); err != nil {
 		t.Fatal(err)

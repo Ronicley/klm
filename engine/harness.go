@@ -159,12 +159,14 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 func (b *cappedBuffer) String() string { return string(b.data) }
 
 type jsonLines struct {
-	mu      sync.Mutex
-	pending []byte
-	total   int
-	err     error
-	consume func([]byte) error
-	cancel  func()
+	mu        sync.Mutex
+	pending   []byte
+	total     int
+	lineLimit int
+	turnLimit int
+	err       error
+	consume   func([]byte) error
+	cancel    func()
 }
 
 func (l *jsonLines) Write(p []byte) (int, error) {
@@ -175,8 +177,12 @@ func (l *jsonLines) Write(p []byte) (int, error) {
 	}
 	n := len(p)
 	l.total += n
-	if l.total > 32<<20 {
-		return 0, l.reject("Harness output exceeded the 32 MiB per-turn limit.")
+	turnLimit := l.turnLimit
+	if turnLimit == 0 {
+		turnLimit = 32 << 20
+	}
+	if l.total > turnLimit {
+		return 0, l.reject("Harness output exceeded the per-turn transport limit.")
 	}
 	for len(p) > 0 {
 		end := bytes.IndexByte(p, '\n')
@@ -184,8 +190,12 @@ func (l *jsonLines) Write(p []byte) (int, error) {
 		if end >= 0 {
 			part = p[:end]
 		}
-		if len(l.pending)+len(part) > 2<<20 {
-			return 0, l.reject("Harness JSON line exceeded the 2 MiB limit.")
+		lineLimit := l.lineLimit
+		if lineLimit == 0 {
+			lineLimit = 2 << 20
+		}
+		if len(l.pending)+len(part) > lineLimit {
+			return 0, l.reject("Harness JSON line exceeded the transport limit.")
 		}
 		l.pending = append(l.pending, part...)
 		if end < 0 {
@@ -265,6 +275,13 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 		payload.Text = t.prompt
 	}
 	if err == nil && s.Role != "graph_node" && s.Role != sessionRoleSubagent {
+		var agentPrompt string
+		agentPrompt, err = a.chatAgentPrompt(s)
+		if err == nil && agentPrompt != "" {
+			payload.Text = agentPrompt + "\n\n" + payload.Text
+		}
+	}
+	if err == nil && s.Role != "graph_node" && s.Role != sessionRoleSubagent {
 		var guidance string
 		guidance, err = conversationGuidance(&s)
 		if err == nil {
@@ -299,7 +316,7 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 			case "opencode":
 				err = p.runOpenCode(b, cwd, payload)
 			case "pi":
-				err = p.runPi(b, cwd, payload.piText())
+				err = p.runPi(b, cwd, payload)
 			case "codex":
 				err = p.runCodex(b, cwd, payload)
 			default:

@@ -8,6 +8,7 @@ import (
 
 // Prepared attachments are stored separately from the public queue projection.
 type QueuedMessage struct {
+	Images   []ChatImage       `json:"images,omitempty"`
 	Origin   *SpawnOrigin      `json:"origin,omitempty"`
 	ID       string            `json:"id"`
 	Text     string            `json:"text"`
@@ -48,6 +49,9 @@ func appendQueuedUser(d *diskState, sessionID string, q QueuedMessage) {
 	e.Data = map[string]any{"delivery": q.Mode}
 	if len(q.Files) > 0 {
 		e.Data["files"] = q.Files
+	}
+	if len(q.Images) > 0 {
+		e.Data["images"] = q.Images
 	}
 	if q.Origin != nil {
 		e.Data["origin"] = q.Origin

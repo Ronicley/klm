@@ -55,7 +55,7 @@ func (p *adapter) ensureSubagent(nativeID, title, model, effort string) (*adapte
 	if childSession == nil {
 		created := now()
 		child := Session{ID: newID(), ParentID: parent.ID, ProjectID: parent.ProjectID, Title: subagentTitle(title), Workspace: parent.Workspace,
-			Role: sessionRoleSubagent, Harness: parent.Harness, Model: model, Effort: effort, Status: "running", Events: []Event{}, CreatedAt: created, UpdatedAt: created}
+			Role: sessionRoleSubagent, Harness: parent.Harness, Model: model, Effort: effort, YOLO: parent.YOLO, Status: "running", Events: []Event{}, CreatedAt: created, UpdatedAt: created}
 		if err := p.app.commitLocked(func(d *diskState) {
 			d.Sessions = append(d.Sessions, child)
 			d.Native[child.ID] = nativeSession{ID: nativeID}
@@ -65,9 +65,9 @@ func (p *adapter) ensureSubagent(nativeID, title, model, effort string) (*adapte
 		}
 		childSession = p.app.state.session(child.ID)
 	}
-	childID := childSession.ID
+	childID, yolo := childSession.ID, parent.YOLO
 	p.app.mu.Unlock()
-	child := &adapter{app: p.app, turn: p.turn, id: childID, harness: p.harness, role: sessionRoleSubagent, subagent: true, yolo: p.yolo, cwd: p.cwd,
+	child := &adapter{app: p.app, turn: p.turn, id: childID, harness: p.harness, role: sessionRoleSubagent, subagent: true, yolo: yolo, cwd: p.cwd,
 		keys: map[string]string{}, toolNames: map[string]string{}, commands: map[string]string{}, processesDrained: true, model: model, effort: effort}
 	child.stream = newStreamBatch(child)
 	if p.subagents == nil {

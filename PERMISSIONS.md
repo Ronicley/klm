@@ -9,8 +9,11 @@
   enabling resolves pending permission cards without stopping the turn. Model and
   effort still require an idle turn. Codex full-access turns cannot disable YOLO
   until they end, because their native sandbox cannot be safely downgraded live.
-  Main and side conversations have independent settings. Private graph-node
-  sessions retain their own normal policy; main-chat YOLO is not graph authorization.
+  New side agents and native subagents inherit their parent's current setting.
+  Updates also propagate through all descendants, including independent spawned
+  sessions and active graph nodes. A Codex full-access descendant prevents an unsafe
+  downgrade of the entire tree before any mutation. Other settings and grants retain
+  their conversation ownership; main-chat YOLO is not graph authorization.
 - Recognized deletion commands and file-deletion patches display a warning icon.
   Recognition is deterministic; no permission-review agent is launched.
 

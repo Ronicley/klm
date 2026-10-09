@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
-import { request, type Session, type SessionResponse } from '../../engine';
+import { legacyImageFiles, request, type Session, type SessionResponse } from '../../engine';
 import { FileAttachments } from './FileAttachments';
 
 const labels = { queued: 'Queued', steering: 'Sending', sending: 'Sending', paused: 'Paused', uncertain: 'Delivery unconfirmed' };
@@ -20,7 +20,7 @@ export function MessageQueue({ session, disabled, onSnapshot }: { session: Sessi
   if (!session.queue?.length && !error) return null;
   return <section className="message-queue" aria-label="Message queue">
     {session.queue?.map(message => <div className="message-queue-item" key={message.id}>
-      <div className="message-queue-content"><small>{message.origin ? `${message.origin.kind === 'instruction' ? 'Instruction' : 'Initial prompt'} from ${message.origin.title} (${message.origin.sessionId}) · ` : ''}{labels[message.status]}</small><p>{message.text}</p><FileAttachments files={message.files} />{message.error && <small className="form-error">{message.error}</small>}</div>
+      <div className="message-queue-content"><small>{message.origin ? `${message.origin.kind === 'instruction' ? 'Instruction' : 'Initial prompt'} from ${message.origin.title} (${message.origin.sessionId}) · ` : ''}{labels[message.status]}</small><p>{message.text}</p><FileAttachments files={[...(message.files ?? []), ...legacyImageFiles(message.images)]} />{message.error && <small className="form-error">{message.error}</small>}</div>
       <div className="message-queue-actions">
         {message.status !== 'sending' && message.status !== 'steering' && <Button size="sm" disabled={disabled || !!pending} onClick={() => void update(message.id, true)}>Send now</Button>}
         <IconButton label="Remove queued message" disabled={disabled || !!pending || message.status === 'sending'} onClick={() => void update(message.id, false)}><X /></IconButton>

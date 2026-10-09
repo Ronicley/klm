@@ -68,7 +68,7 @@ the user requests a redesign.
 - User data stays in `%APPDATA%/klm/engine`, separate from installed executables.
   Development engine builds use `-tags dev`: API 17331, Focus origin 17332 and
   `%APPDATA%/klm/engine-dev` (including separate locks/control). `desktop:dev` uses
-  its own app identifier and web port 17332; Vite stays on 5173 and targets 17331.
+  its own app identifier and web port 17332; Vite stays on 17333 and targets 17331.
   Install/uninstall, login and LAN validation remain explicit human checks.
 
 ## UI Copy

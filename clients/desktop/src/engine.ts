@@ -28,7 +28,7 @@ export type EngineEvent = {
   status?: string;
   favorite?: boolean;
   createdAt: string;
-  data?: Record<string, unknown> & { mentions?: FileMention[]; mentionPreparation?: MentionPreparation[]; files?: ChatFile[] };
+  data?: Record<string, unknown> & { mentions?: FileMention[]; mentionPreparation?: MentionPreparation[]; files?: ChatFile[]; images?: ChatImage[] };
 };
 
 export type SessionUsage = {
@@ -37,12 +37,13 @@ export type SessionUsage = {
   context: { tokens: number | null; window: number | null } | null;
 };
 
-export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer"; status: "queued" | "steering" | "sending" | "paused" | "uncertain"; error?: string; files?: ChatFile[]; origin?: { sessionId: string; title: string; kind?: 'instruction' | 'question_answer' } };
+export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer"; status: "queued" | "steering" | "sending" | "paused" | "uncertain"; error?: string; files?: ChatFile[]; images?: ChatImage[]; origin?: { sessionId: string; title: string; kind?: 'instruction' | 'question_answer' } };
 
 export type Session = {
   queue?: QueuedMessage[] | null;
   role?: 'side_agent' | 'subagent' | 'graph_node' | 'general_agent';
   selectedGraphId?: string;
+  selectedAgentId?: string;
   graph?: ConversationGraphState;
   parentId?: string;
   sources?: SourceReference[];
@@ -129,7 +130,11 @@ export type ProjectPath = { path: string; kind: 'file' | 'directory' };
 // Offsets use UTF-16 units in canonical message text (full @path), not UTF-8 bytes
 // or the visible length of the editor's basename-only badges.
 export type FileMention = ProjectPath & { id: string; start: number; end: number };
-export type ChatFile = { id: string; name: string; size: number; type: string; sha256: string; truncated?: boolean };
+export type ChatFile = { id: string; name: string; size: number; type: string; sha256: string; truncated?: boolean; url?: string };
+export type ChatImage = { id: string; name: string; size: number; mime: string; width: number; height: number };
+export function legacyImageFiles(images: ChatImage[] = []): ChatFile[] {
+  return images.map(image => ({ id: image.id, name: image.name, size: image.size, type: image.mime, sha256: '', url: `/api/images/${encodeURIComponent(image.id)}` }));
+}
 export type MentionPreparation = ProjectPath & { mode: 'native' | 'prepared'; bytes?: number; truncated?: boolean };
 export type MessageSubmission = { text: string; mentions: FileMention[]; sources?: SourceReference[] };
 
@@ -179,13 +184,18 @@ export type ModelCatalog = { models: ModelOption[]; connectedProviders: { id: st
 export type SessionMetadata = { sessionId: string; gitBranch?: string };
 export type QuotaSnapshot = { source: string; observedAt: string; stale?: boolean; windows: { name: string; usedPercent: number; resetsAt: number }[] };
 export type TranscriptionVocabularyEntry = { term: string; note: string };
+export type TranscriptionProvider = 'openai' | 'openrouter';
 export type TranscriptionSettings = {
+	provider?: TranscriptionProvider;
+	providers?: Record<TranscriptionProvider, { apiKeyConfigured: boolean; model: string }>;
   apiKeyConfigured: boolean;
   model: string;
   language: string;
   vocabulary: TranscriptionVocabularyEntry[];
 };
 export type TranscriptionSettingsUpdate = {
+	provider?: TranscriptionProvider;
+	credentialsProvider?: TranscriptionProvider;
   apiKey?: string | null;
   model?: string;
   language?: string;
@@ -228,12 +238,20 @@ export async function pickDirectory(signal?: AbortSignal): Promise<string | null
   return result.path;
 }
 
-export const getTranscriptionSettings = () => request<TranscriptionSettings>('/api/transcription/settings');
+export const getTranscriptionSettings = (signal?: AbortSignal) => request<TranscriptionSettings>('/api/transcription/settings', 'GET', undefined, 15000, signal);
 export const updateTranscriptionSettings = (settings: TranscriptionSettingsUpdate) => request<TranscriptionSettings>('/api/transcription/settings', 'PATCH', settings);
 
 export async function transcribeAudio(audio: Blob, filename: string, signal?: AbortSignal): Promise<string> {
+	if (audio.size > 25 * 1024 * 1024) throw new Error('Audio file must be no larger than 25 MiB.');
+	const settings = await getTranscriptionSettings(signal);
+	if (settings.provider === 'openrouter') {
+		audio = await transcriptionWAV(audio);
+		filename = 'recording.wav';
+	}
+	signal?.throwIfAborted();
   const form = new FormData();
   form.append('file', audio, filename);
+	form.append('provider', settings.provider ?? 'openai');
   let response: Response;
   try {
     response = await fetch(`${ENGINE_URL}/api/transcriptions`, {
@@ -254,4 +272,46 @@ export async function transcribeAudio(audio: Blob, filename: string, signal?: Ab
     throw new Error('The engine returned an invalid transcription. Retry.');
   }
   return result.text;
+}
+
+async function transcriptionWAV(audio: Blob): Promise<Blob> {
+  const context = new AudioContext();
+  let decoded: AudioBuffer;
+  try {
+    decoded = await context.decodeAudioData(await audio.arrayBuffer());
+  } catch {
+    throw new Error('Could not decode the recording for OpenRouter. Retry.');
+  } finally {
+    await context.close();
+  }
+  const sampleRate = 16000;
+  const length = Math.ceil(decoded.duration * sampleRate);
+  if (length <= 0 || 44 + length * 2 > 25 * 1024 * 1024) throw new Error('WAV recording must be nonempty and no larger than 25 MiB. Record a shorter clip.');
+  const offline = new OfflineAudioContext(1, length, sampleRate);
+  const source = offline.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offline.destination);
+  source.start();
+  const samples = (await offline.startRendering()).getChannelData(0);
+  const buffer = new ArrayBuffer(44 + length * 2);
+  const view = new DataView(buffer);
+  const text = (offset: number, value: string) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); };
+  text(0, 'RIFF');
+  view.setUint32(4, buffer.byteLength - 8, true);
+  text(8, 'WAVE');
+  text(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  text(36, 'data');
+  view.setUint32(40, length * 2, true);
+  for (let i = 0; i < length; i++) {
+    const sample = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, sample * (sample < 0 ? 32768 : 32767), true);
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
 }

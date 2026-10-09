@@ -235,6 +235,10 @@ changing harness uses that harness's model defaults. Omitted `yolo` inherits the
 sender's current mode at creation; `yolo:false` starts the requested non-YOLO child
 with permissions enabled. Override only at the user's request. The receipt records
 the resolved creation mode, which does not change on retry or later sender updates.
+Later sender YOLO updates propagate to all descendants through linked relationships,
+spawn receipts and graph ownership, including active turns. Native Codex full-access
+turns block disabling for the entire tree before any mutation. Enabling resolves
+pending permissions without answering user questions.
 Local grants, selected graphs, native history and active turns are not copied. No automatic completion
 notification is sent to the origin. Pending or uncertain deliveries remain
 recoverable with the ordinary queue controls after interruption.
@@ -424,6 +428,38 @@ prefix) is checked with 16 KiB reserved for protocol envelopes and metadata.
 Preparation errors preserve the draft and do not start a turn. Native failures
 after acceptance remain visible as harness errors. Subsequent linked consultations
 and continuations do not reattach earlier files. Tool permissions are unchanged.
+
+### Uploaded images and selected chat agents
+
+Chat uploads accept PNG, JPEG, GIF and WebP images through multipart message
+submission, sharing the eight-file/25 MiB limit with other uploaded files. Images
+are stored in private conversation directories; queue payloads retain their paths.
+Pi RPC sends native `images` blocks for prompt/steer, OpenCode sends native image
+file parts, and Codex sends `localImage` inputs. Image-only messages are valid.
+Draft previews use local blob URLs; persisted previews use
+`GET /api/sessions/{id}/files/{fileID}`, which resolves only images owned by that
+conversation's queue/history. No arbitrary local path is accepted. Native base64
+echoes are omitted from engine events, SSE and OpenCode history projection.
+
+`PATCH /api/sessions/{id}/agent` accepts `{selectedAgentId}` (empty for None).
+It validates the project's enabled definition and model catalog and applies the
+agent's harness/model/effort for subsequent turns, while injecting its prompt into
+normal chat execution. Selection requires no current turn or queued input. KLM
+history stays visible; a harness change starts a new native conversation. None
+removes future prompt injection but keeps the current harness/model settings.
+Removed/disabled definitions fail recoverably; changed harness definitions require
+reselection. Agent and graph selection remain independent and never invoke work.
+
+Compatibility retains the earlier `selectedAgent` snapshot and selection-lock
+field, image registry, image metadata in queued/history messages and prepared native
+image paths. The HTTP summary exposes `selectedAgentId` derived from that snapshot.
+Earlier uploaded-image IDs can still be submitted and previewed; retry fingerprints
+retain their original shape. Transcription provider/OpenRouter settings and execution
+are restored without exposing credentials in API responses. OpenRouter records mono
+16 kHz PCM WAV via Web Audio and sends native audio input to chat completions, while
+OpenAI retains its transcription endpoint. Separate local
+checkouts share the same development data directory, so switching engine builds
+requires schema compatibility as well as matching frontend/backend APIs.
 
 #### Manual acceptance checklist
 
@@ -993,7 +1029,12 @@ execution, a full suite, or an adversarial review.
   the cancelled prompt. Force-killing the engine itself cannot run cleanup and
   may leave external children, which are not blindly killed by PID on restart.
 - Output is consumed concurrently from stdout and stderr. JSON lines are capped
-  at 2 MiB and total stdout at 32 MiB per turn; hitting a limit cancels the turn
+  at 2 MiB and total stdout at 32 MiB per turn. Pi RPC has a bounded image-echo
+  allowance (25 MiB base64 plus 2 MiB per record, 192 MiB raw stdout per turn),
+  with image bytes removed before delivery to engine events. OpenCode SSE uses the
+  same image-record wire allowance while retaining the 2 MiB non-image content
+  bound. History projection discards inline image URLs without retaining their bytes.
+  Hitting a limit cancels the turn
   with an explicit error. Stderr is capped at 16 KiB and is never persisted,
   exposed, or logged. Exit failures report a bounded generic diagnostic instead.
 - Session history is durable and unbounded across turns. Full checkpoint/recovery

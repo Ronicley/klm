@@ -93,6 +93,9 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/graph/runs/{runId}/{control}", a.controlGraphRun)
 	mux.HandleFunc("GET /api/sessions/{id}/graph/runs/{runId}/nodes/{nodeId}/activity", a.getGraphNodeActivity)
 	mux.HandleFunc("PATCH /api/sessions/{id}/graph", a.selectConversationGraph)
+	mux.HandleFunc("PATCH /api/sessions/{id}/agent", a.chatSessionHandler(a.selectConversationAgent))
+	mux.HandleFunc("GET /api/sessions/{id}/files/{fileID}", a.chatSessionHandler(a.chatFileContent))
+	mux.HandleFunc("GET /api/images/{imageID}", a.getStoredImage)
 	mux.HandleFunc("GET /api/graph-runs/{runID}", a.getGraphRun)
 	mux.HandleFunc("POST /api/sessions/{id}/side", a.chatSessionHandler(a.sideConversation))
 	mux.HandleFunc("PATCH /api/sessions/{id}/harness", a.chatSessionHandler(a.sideHarness))
@@ -841,7 +844,7 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Invalid message identity.")
 		return
 	}
-	if (strings.TrimSpace(body.Text) == "" && len(files) == 0) || len(body.Text) > 128<<10 || !utf8.ValidString(body.Text) || strings.ContainsRune(body.Text, 0) {
+	if (strings.TrimSpace(body.Text) == "" && len(files) == 0 && len(body.Images) == 0) || len(body.Text) > 128<<10 || !utf8.ValidString(body.Text) || strings.ContainsRune(body.Text, 0) {
 		fail(w, 400, "Provide text or files; text must be UTF-8, at most 128 KiB, without NUL characters.")
 		return
 	}
@@ -859,7 +862,7 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	if identity == "" {
 		identity = newID()
 	}
-	fingerprint := chatFileFingerprint(messageFingerprint(body.Text, body.Mode, body.Sources, body.Mentions), files)
+	fingerprint := chatFileFingerprint(messageFingerprint(body.Text, body.Mode, body.Sources, body.Mentions, body.Images...), files)
 	if previous, ok := a.state.AcceptedMessages[s.ID+"/"+identity]; ok {
 		if previous != fingerprint {
 			a.mu.Unlock()
@@ -951,6 +954,13 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "Submission interrupted or engine unavailable. Retry the message.")
 		return
 	}
+	legacyImages, imageMetadata, err := a.prepareStoredImagesLocked(id, body.Images, files)
+	if err != nil {
+		a.mu.Unlock()
+		fail(w, 400, err.Error())
+		return
+	}
+	payload.Images = append(payload.Images, legacyImages...)
 
 	prompt, err := a.focusedPrompt(s, body.Text, body.Sources)
 	if err != nil {
@@ -958,7 +968,7 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err.Error())
 		return
 	}
-	if strings.TrimSpace(prompt) == "" && len(files) > 0 {
+	if strings.TrimSpace(prompt) == "" && (len(files) > 0 || len(body.Images) > 0) {
 		prompt = "User attached files."
 	}
 	guidance, err := conversationGuidance(s)
@@ -986,8 +996,13 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	if mode == "steer" {
 		status = "steering"
 	}
-	q := QueuedMessage{ID: identity, Text: body.Text, Mode: mode, Status: status, Sources: body.Sources, Mentions: body.Mentions, Files: files}
+	q := QueuedMessage{ID: identity, Text: body.Text, Mode: mode, Status: status, Sources: body.Sources, Mentions: body.Mentions, Files: files, Images: imageMetadata}
 	if err := a.commitLocked(func(d *diskState) {
+		for _, image := range imageMetadata {
+			stored := d.Images[image.ID]
+			stored.Accepted = true
+			d.Images[image.ID] = stored
+		}
 		if d.AcceptedMessages == nil {
 			d.AcceptedMessages = map[string]string{}
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 )
 
 // These are presentation-only tool diff previews, not tool input/output.
@@ -142,9 +143,17 @@ func (p *openCodeHistoryProjection) value(path []string, depth int) error {
 	}
 	switch b {
 	case '"':
-		raw, err := p.quoted(openCodeDiffPreviewPath(path))
+		imageURL := len(path) == 4 && path[0] == "[]" && path[1] == "parts" && path[2] == "[]" && path[3] == "url"
+		raw, err := p.quoted(openCodeDiffPreviewPath(path) || imageURL)
 		if err != nil {
 			return err
+		}
+		if imageURL {
+			var url string
+			_ = json.Unmarshal(raw, &url)
+			if strings.HasPrefix(url, "data:image/") || url == openCodeOmittedDiff {
+				raw, _ = json.Marshal("[Image content retained by the harness.]")
+			}
 		}
 		return p.emit(raw...)
 	case '{', '[':

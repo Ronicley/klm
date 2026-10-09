@@ -1,14 +1,14 @@
-import { ArrowUp, FileText, Folder, ListPlus, LoaderCircle, Mic, Paperclip, Square } from 'lucide-react';
+import { ArrowUp, FileText, Folder, ImagePlus, ListPlus, LoaderCircle, Mic, Paperclip, Square } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
-import { request, transcribeAudio, type FileMention, type ProjectPath } from '../../engine';
+import { legacyImageFiles, request, transcribeAudio, type ChatImage, type FileMention, type ProjectPath } from '../../engine';
 import { mentionQuery } from './mentions';
 import { MentionEditor, type MentionEditorHandle } from './MentionEditor';
 import { FileAttachments, type FileInfo } from './FileAttachments';
 
 export type SendMode = 'queue' | 'steer';
 
-export type ComposerDraft = { text: string; mentions: FileMention[]; files?: File[]; missingFiles?: FileInfo[] };
+export type ComposerDraft = { text: string; mentions: FileMention[]; files?: File[]; missingFiles?: FileInfo[]; images?: { id: string; name: string; size: number; uploaded?: ChatImage }[] };
 
 type AudioState = 'idle' | 'recording' | 'transcribing';
 
@@ -33,7 +33,9 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
   const files = draft.files ?? [];
   const missingFiles = draft.missingFiles ?? [];
   const fileInput = useRef<HTMLInputElement>(null);
-  const canSend = (!!text.trim() || files.length > 0) && missingFiles.length === 0;
+  const imageInput = useRef<HTMLInputElement>(null);
+  const legacyImages = draft.images ?? [];
+  const canSend = (!!text.trim() || files.length > 0 || legacyImages.length > 0) && missingFiles.length === 0 && legacyImages.every(image => !!image.uploaded);
   const [caret, setCaret] = useState(0);
   const [focused, setFocused] = useState(false);
   const [composing, setComposing] = useState(false);
@@ -109,8 +111,8 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
   }
   function addFiles(selected: File[]) {
     if (disabled || !selected.length) return;
-    if (selected.some(file => file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?|avif|heic|heif|jxl)$/i.test(file.name))) {
-      setError('Images are not supported by this file attachment flow.');
+    if (selected.some(file => (file.type.startsWith('image/') && !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type)) || /\.(svg|bmp|ico|tiff?|avif|heic|heif|jxl)$/i.test(file.name))) {
+      setError('Attach PNG, JPEG, GIF or WebP images.');
       return;
     }
     const next = [...files];
@@ -121,7 +123,7 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       setError('Attach at most eight files, totaling at most 25 MiB.');
       return;
     }
-    onDraftChange({ ...draft, files: next, missingFiles: missingFiles.filter(missing => !selected.some(file => file.name === missing.name && file.size === missing.size)) });
+    onDraftChange({ ...draft, files: next, missingFiles: missingFiles.filter(missing => !selected.some(file => file.name === missing.name && file.size === missing.size)), images: legacyImages.filter(image => image.uploaded || !selected.some(file => file.name === image.name && file.size === image.size)) });
     setError('');
   }
   async function toggleRecording() {
@@ -201,8 +203,10 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
     }}
     onPasteCapture={event => { if (event.clipboardData.files.length) { event.preventDefault(); event.stopPropagation(); addFiles(Array.from(event.clipboardData.files)); } }}>
     <input ref={fileInput} type="file" multiple hidden onChange={event => { addFiles(Array.from(event.target.files ?? [])); event.target.value = ''; }} />
+    <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onChange={event => { addFiles(Array.from(event.target.files ?? [])); event.target.value = ''; }} />
     <FileAttachments files={files} onRemove={index => onDraftChange({ ...draft, files: files.filter((_, i) => i !== index) })} />
     <FileAttachments files={missingFiles} missing onRemove={index => onDraftChange({ ...draft, missingFiles: missingFiles.filter((_, i) => i !== index) })} />
+    {legacyImages.map(image => <FileAttachments key={image.id} files={image.uploaded ? legacyImageFiles([image.uploaded]) : [image]} missing={!image.uploaded} onRemove={() => onDraftChange({ ...draft, images: legacyImages.filter(item => item.id !== image.id) })} />)}
     {open && <div className="mention-picker">
       <ul id={listId} role="listbox" aria-label="Project files and folders">{paths.map((path, index) => {
         const Icon = path.kind === 'directory' ? Folder : FileText;
@@ -233,7 +237,7 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       } else if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
     }} />
     {error && <p role="alert" className="form-error composer-error">{error}</p>}
-    <div className="composer-controls"><div className="composer-graph-control"><IconButton label="Attach files" disabled={disabled} onClick={() => fileInput.current?.click()}><Paperclip /></IconButton>{graphControl}</div>
+    <div className="composer-controls"><div className="composer-graph-control"><IconButton label="Attach files" disabled={disabled} onClick={() => fileInput.current?.click()}><Paperclip /></IconButton><IconButton label="Attach images" disabled={disabled} onClick={() => imageInput.current?.click()}><ImagePlus /></IconButton>{graphControl}</div>
       <div className="composer-model-controls">{modelControl}{running && canSend && <Button size="sm" disabled={disabled} onClick={() => void send('steer')}>Send now</Button>}{running && onStop && <IconButton label="Stop response" variant="outline" onClick={onStop}><Square /></IconButton>}{onTranscription && <IconButton label={audioState === 'recording' ? 'Stop recording' : audioState === 'transcribing' ? 'Transcribing audio' : 'Record audio'} aria-pressed={audioState === 'recording'} variant={audioState === 'recording' ? 'danger-soft' : 'ghost'} disabled={(disabled && audioState === 'idle') || audioState === 'transcribing'} className={`audio-record-button ${audioState === 'recording' ? 'is-recording' : ''}`} onClick={() => void toggleRecording()}>{audioState === 'recording' ? <Square /> : audioState === 'transcribing' ? <LoaderCircle className="audio-spinner" /> : <Mic />}</IconButton>}<IconButton label={running ? 'Queue message' : 'Send message'} variant="soft" type="submit" disabled={!canSend || disabled} className="send-button">{running ? <ListPlus /> : <ArrowUp />}</IconButton></div></div>
   </form>;
 }

@@ -21,6 +21,7 @@ type SessionSummary struct {
 	GraphNodeID     string                  `json:"graphNodeId,omitempty"`
 	ExecutionCWD    string                  `json:"executionCwd,omitempty"`
 	SelectedGraphID string                  `json:"selectedGraphId,omitempty"`
+	SelectedAgentID string                  `json:"selectedAgentId,omitempty"`
 	Graph           *ConversationGraphState `json:"graph,omitempty"`
 	ParentID        string                  `json:"parentId,omitempty"`
 	ID              string                  `json:"id"`
@@ -88,7 +89,7 @@ func sessionSummary(view *Session) SessionSummary {
 	return SessionSummary{
 		Queue: view.Queue,
 		Role:  view.Role, GraphRunID: view.GraphRunID, GraphNodeID: view.GraphNodeID, ExecutionCWD: view.ExecutionCWD,
-		SelectedGraphID: view.SelectedGraphID, Graph: view.Graph, ParentID: view.ParentID, ID: view.ID, ProjectID: view.ProjectID,
+		SelectedGraphID: view.SelectedGraphID, SelectedAgentID: view.selectedAgentID(), Graph: view.Graph, ParentID: view.ParentID, ID: view.ID, ProjectID: view.ProjectID,
 		Title: view.Title, Workspace: view.Workspace, Harness: view.Harness, HarnessLocked: view.HarnessLocked, YOLO: view.YOLO, Model: view.Model, Effort: view.Effort,
 		ResolvedModel: view.ResolvedModel, ResolvedEffort: view.ResolvedEffort, Status: view.Status, Archived: view.Archived, RuntimeActive: view.RuntimeActive,
 		Permissions: view.Permissions, Questions: view.Questions, Usage: view.Usage, CreatedAt: view.CreatedAt, UpdatedAt: view.UpdatedAt,

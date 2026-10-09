@@ -16,6 +16,57 @@ func (p *adapter) captureNativeYOLO() bool {
 	return value
 }
 
+// Spawn receipts preserve independent conversations' ancestry without changing
+// their visual grouping or permission-grant ownership.
+func (d *diskState) yoloDescendants(id string) map[string]bool {
+	// ponytail: fixed-point scan; index ancestry if inventories become large.
+	ids := map[string]bool{id: true}
+	for changed := true; changed; {
+		changed = false
+		for _, s := range d.Sessions {
+			owner := s.ParentID
+			if run := d.graphRun(s.GraphRunID); run != nil {
+				owner = run.ConversationID
+			}
+			if !ids[s.ID] && ids[owner] {
+				ids[s.ID], changed = true, true
+			}
+		}
+		for _, receipt := range d.SessionSpawns {
+			if !ids[receipt.SessionID] && ids[receipt.From] {
+				ids[receipt.SessionID], changed = true, true
+			}
+		}
+	}
+	return ids
+}
+
+func (a *app) validateYOLOChangeLocked(ids map[string]bool, enabled bool) error {
+	for id := range ids {
+		s := a.state.session(id)
+		if s == nil {
+			continue
+		}
+		if t := a.runs[id]; t != nil {
+			if t.ctx.Err() != nil {
+				return controlError(409, "A descendant execution is still stopping.")
+			}
+			if !enabled && s.Harness == "codex" && t.nativeYOLOConfigured && t.nativeYOLO {
+				return controlError(409, "Codex started a conversation or descendant turn with a full-access sandbox. Finish or stop that turn before disabling YOLO.")
+			}
+		}
+	}
+	return nil
+}
+
+func (d *diskState) setYOLO(ids map[string]bool, enabled bool) {
+	for id := range ids {
+		if s := d.session(id); s != nil && s.YOLO != enabled {
+			s.YOLO, s.UpdatedAt = enabled, now()
+		}
+	}
+}
+
 func (a *app) changeSessionYOLO(ctx context.Context, id string, enabled bool) error {
 	a.mu.Lock()
 	s := a.state.session(id)
@@ -35,21 +86,14 @@ func (a *app) changeSessionYOLO(ctx context.Context, id string, enabled bool) er
 		a.mu.Unlock()
 		return controlError(404, "Conversation directory is unavailable.")
 	}
-	if t := a.runs[id]; t != nil {
-		if t.ctx.Err() != nil {
-			a.mu.Unlock()
-			return controlError(409, "Execution is still stopping.")
-		}
-		if !enabled && s.Harness == "codex" && t.nativeYOLOConfigured && t.nativeYOLO {
-			a.mu.Unlock()
-			return controlError(409, "Codex started this turn with a full-access sandbox. Finish or stop that turn before disabling YOLO; its native sandbox cannot be downgraded mid-turn.")
-		}
+	ids := a.state.yoloDescendants(id)
+	if err := a.validateYOLOChangeLocked(ids, enabled); err != nil {
+		a.mu.Unlock()
+		return err
 	}
-	if s.YOLO != enabled {
-		if err := a.commitLocked(func(d *diskState) { s := d.session(id); s.YOLO, s.UpdatedAt = enabled, now() }); err != nil {
-			a.mu.Unlock()
-			return err
-		}
+	if err := a.commitLocked(func(d *diskState) { d.setYOLO(ids, enabled) }); err != nil {
+		a.mu.Unlock()
+		return err
 	}
 	a.mu.Unlock()
 	if enabled {

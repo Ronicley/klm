@@ -34,7 +34,7 @@ packaged client.
 Vite dev uses API port **17331**. `desktop:dev` applies `tauri.dev.conf.json` for
 an independent app instance and serves Focus on **17332**, also targeting **17331**.
 The embedded Focus snapshot selects the dev API by its web port. Vite HMR remains
-on **5173**; ordinary production builds and previews default to API **7331**.
+on **17333**; ordinary production builds and previews default to API **7331**.
 The dev engine keeps data and local start/stop control separate in
 `%APPDATA%\klm\engine-dev`.
 

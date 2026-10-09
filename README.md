@@ -38,13 +38,13 @@ npm --prefix clients/desktop install
 npm --prefix clients/desktop run dev
 ```
 
-Open http://127.0.0.1:5173. The development API is available at http://localhost:17331.
+Open http://127.0.0.1:17333. The development API is available at http://localhost:17331.
 `VITE_ENGINE_URL` overrides the client endpoint. For the native client, install
 Rust/MSVC prerequisites and use `npm --prefix clients/desktop run desktop:dev`.
 End the worker explicitly with `.\engine\klm-dev.exe stop`.
 
 Development uses API port **17331** and native Focus/web port **17332**; Vite HMR
-stays on **5173**. The installed release uses **7331/7332**. The `dev` build tag
+stays on **17333**. The installed release uses **7331/7332**. The `dev` build tag
 also separates engine data/logs/control into `%APPDATA%\klm\engine-dev`.
 `desktop:dev` uses a distinct application identifier, so both desktops can run
 together. Dev starts with its own empty data store; release data is not migrated.

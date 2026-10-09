@@ -66,7 +66,7 @@ func validatePiSessionDirectory(path, cwd string) error {
 	return nil
 }
 
-func (p *adapter) runPi(b binary, cwd, text string) (err error) {
+func (p *adapter) runPi(b binary, cwd string, payload submission) (err error) {
 	ctx := p.turn.ctx
 	if err := ctx.Err(); err != nil {
 		return err
@@ -212,7 +212,11 @@ reading:
 				return errors.New("Pi permission bridge startup timed out.")
 			default:
 			}
-			if err := proc.Send(map[string]any{"id": "klm-prompt", "type": "prompt", "message": text}); err != nil {
+			message, err := payload.piMessage("klm-prompt", "prompt")
+			if err != nil {
+				return err
+			}
+			if err := proc.Send(message); err != nil {
 				return err
 			}
 			prompted = true
@@ -235,7 +239,11 @@ reading:
 			}
 			if q != nil {
 				steeringRequests["klm-steer-"+q.ID] = true
-				if err := proc.Send(map[string]any{"id": "klm-steer-" + q.ID, "type": "steer", "message": payload.piText()}); err != nil {
+				message, err := payload.piMessage("klm-steer-"+q.ID, "steer")
+				if err != nil {
+					return err
+				}
+				if err := proc.Send(message); err != nil {
 					return err
 				}
 			}

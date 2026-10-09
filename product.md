@@ -150,7 +150,7 @@ uses `http://IP-OF-ENGINE-COMPUTER:7332`; API and SSE use that same host on 7331
 Ports remain fixed; collisions are reported instead of selecting another port.
 
 Local development uses API **17331** and Tauri Focus/web **17332**, with Vite HMR
-on **5173**. Engine builds with the `dev` tag use a separate `engine-dev` data
+on **17333**. Engine builds with the `dev` tag use a separate `engine-dev` data
 directory and control channel; the dev desktop has a distinct app identifier so
 development and the installed release can run concurrently.
 
@@ -175,10 +175,18 @@ sending the resulting text automatically. Transcribed text is appended to the cu
 draft while preserving selected file and folder references. Side-agent and design-system
 composers do not expose recording.
 
-The engine stores the OpenAI API key, model, optional language, and vocabulary globally.
-The API never returns the key, only whether one is configured. Vocabulary notes remain
-available as engine-backed context for the interface; this first slice sends only terms
-as transcription prompt context. Audio uploads are limited to 25 MiB.
+The engine stores OpenAI and OpenRouter API keys/models separately, with one active
+transcription provider and shared optional language/vocabulary. Settings expose
+provider selection; switching providers retains both configurations. The API never
+returns keys, only whether each is configured. OpenAI uses its audio-transcription
+endpoint. OpenRouter uses native audio input through chat completions; the client
+converts recordings to mono 16 kHz PCM WAV using Web Audio before uploading them.
+Provider changes during upload produce a recoverable error rather than switching
+credentials silently. Vocabulary notes remain
+available as engine-backed context for the interface; this slice sends only terms
+as transcription prompt context. Audio uploads and converted WAV files are limited
+to 25 MiB. This restores the existing OpenRouter integration from the earlier local
+checkout; browser audio conversion and real provider behavior require human validation.
 
 Recording requires the client environment to support `getUserMedia` and `MediaRecorder`.
 Browser security rules may deny microphone capture on insecure remote origins, so remote
@@ -206,6 +214,11 @@ selector, initially contains only **YOLO mode**. YOLO is persisted per conversat
 and can be enabled during work without stopping the turn. Enabling resolves pending
 permissions and automatically handles future requests; disabling restores normal
 engine policy for future requests without deleting rules or undoing approved work.
+Changing YOLO also updates all descendants, including linked side conversations,
+native subagents, independent spawned sessions and graph-node sessions. Creation
+copies the current sender/owner setting. Enabling resolves their pending permissions;
+disabling restores their normal engine policy. A descendant Codex full-access turn
+blocks disabling for the entire affected tree before any settings change.
 Pi and OpenCode gate new tool dispatch using the live engine setting. Native startup
 configuration refreshes on the next turn. Codex uses `never` approvals and
 `danger-full-access` when a turn starts in YOLO; that native full-access turn cannot
@@ -294,8 +307,8 @@ Selecting context does not change tool permissions or sandbox settings.
 
 ## Uploaded Chat Files
 
-Main, side and general-agent chats accept non-image files from the client device
-through **Attach files**, drag-and-drop, or clipboard file data when exposed by the
+Main, side and general-agent chats accept files from the client device
+through **Attach files**, **Attach images**, drag-and-drop, or clipboard file data when exposed by the
 client platform. Text paste remains ordinary message text. Users can remove selected
 files and send a message containing only files. Folders are not uploaded.
 
@@ -310,8 +323,16 @@ The engine gives Pi, OpenCode and Codex a JSON manifest with local paths and bou
 UTF-8 content using the existing text-reference limits. PDF, DOCX, ZIP, other binary
 formats and other encodings are made available by path; their interpretation belongs
 to harness tools. KLM does not convert documents, unpack archives, or execute uploaded
-files. Existing tool permissions and sandbox settings still apply. Images are outside
-this upload flow. Combined prepared context retains the 200 KiB limit.
+files. Existing tool permissions and sandbox settings still apply. PNG, JPEG, GIF
+and WebP images use native visual inputs: Pi RPC image blocks, OpenCode file parts
+and Codex local-image input. PNG/JPEG/GIF headers are decoded with a 40-megapixel
+limit; WebP container headers and length are checked. Other image formats are rejected.
+Image-only messages are accepted; drafts, queue and history show removable draft
+previews or engine-served persisted previews. Native image bytes stay outside SSE
+and engine events. Pi materializes image bytes only at dispatch; durable queue
+payloads retain local paths. Combined prepared text context retains the 200 KiB limit.
+Visual interpretation depends on the selected harness/model; real native behavior
+still requires human validation.
 
 Message identity includes uploaded content hashes, so retrying the same submission
 does not duplicate accepted messages or files. Rejected/incomplete uploads are removed;
@@ -398,8 +419,9 @@ session controls and inventory show it to the user.
 
 Spawned sessions inherit the sender's current YOLO mode by default. An explicit
 `yolo:false` implements the user's request for a non-YOLO child before its first
-turn; overrides are only made at the user's request. Later sender-mode changes do
-not change an existing child. Spawn options expose exact model IDs/efforts, visual
+turn; overrides are only made at the user's request. Later sender-mode changes also
+update existing descendants, while creation receipts retain the original mode for
+idempotency. Spawn options expose exact model IDs/efforts, visual
 folders and recent user message IDs. Validation rejects malformed or unavailable
 settings before creating a child and returns an actionable error to the agent for
 correction. OpenCode model IDs require `provider/model` format.
@@ -515,8 +537,9 @@ and in-flight submissions. Answers route to the originating native session and
 request, independently of the inspected activation. Session grants remain local to
 that node session. Agent and Join harness sessions inherit the invoking conversation's
 current YOLO setting at each turn start, including reused sessions and correction
-turns. Changes apply to subsequent activations; running turns retain their initial
-setting. User questions and graph authorization/lifecycle controls remain independent
+turns. Later changes also update running node sessions and resolve their pending
+permissions. Native startup configuration changes on the next turn; a native Codex
+full-access turn cannot be downgraded safely. User questions and graph authorization/lifecycle controls remain independent
 of YOLO. Shutdown/restart records interrupted runs without automatic
 resumption, while retaining scheduled activities and pending result notifications.
 
@@ -554,6 +577,23 @@ These controls do not suspend running commands or change the chat's Stop behavio
 Nested Forks, worktree cleanup, immediate interruption/resumption controls, concurrent
 runs within one conversation, rich graph inputs/files, activation limits and task
 timeouts remain outside this delivery.
+
+## Agent Selection in Chat
+
+The main project chat composer exposes **Agent** beside **Graph**. It lists the
+project's enabled agents with search for longer lists and persists selection per
+conversation. Selecting an agent applies its harness, model and effort for subsequent
+turns and prepends its prompt to normal chat execution; model/effort controls remain
+available between turns. Selection changes require an idle conversation with no
+queued input. **None** removes future agent prompt injection and retains current
+harness/model settings. Selecting an agent never executes a task by itself.
+
+KLM history remains visible when switching agents or harnesses; changing harness
+starts a separate native conversation rather than claiming cross-harness continuity.
+Removed or disabled definitions produce a recoverable execution error. Changed
+harness definitions require reselecting the agent. Graph selection is independent;
+graph nodes still use their graph-defined agents. This selector is absent from the
+general-agent conversation. Runtime behavior requires human validation.
 
 ## Graph Selection in Chat
 

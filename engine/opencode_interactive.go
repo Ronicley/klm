@@ -302,18 +302,18 @@ func (h *openCodeHTTP) ownsSession(ctx context.Context, id string, owned map[str
 	return false, nil
 }
 
-// SSE frames, including multi-line data fields, have the same bound as CLI JSON lines.
+// Image echoes get a bounded wire allowance; retained ordinary events stay at 2 MiB.
 func openCodeEvents(ctx context.Context, body io.Reader, events chan<- map[string]any, failed chan<- error) {
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 4096), openCodeFrameLimit+1)
+	scanner.Buffer(make([]byte, 4096), imageJSONLineLimit+1)
 	var data []byte
 	frameBytes := 0
 	err := errors.New("OpenCode event stream disconnected before the turn completed.")
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		frameBytes += len(line) + 1
-		if frameBytes > openCodeFrameLimit {
-			err = errors.New("OpenCode event frame exceeded KLM's 2 MiB limit.")
+		if frameBytes > imageJSONLineLimit {
+			err = errors.New("OpenCode event frame exceeded KLM's image transport limit.")
 			break
 		}
 		if len(line) == 0 {
@@ -322,6 +322,14 @@ func openCodeEvents(ctx context.Context, body io.Reader, events chan<- map[strin
 				if json.Unmarshal(data, &event) != nil || str(event, "type") == "" {
 					err = errors.New("OpenCode returned an invalid event frame.")
 					break
+				}
+				omitNativeImageData(event)
+				if len(data) > openCodeFrameLimit {
+					retained, encodeErr := json.Marshal(event)
+					if encodeErr != nil || len(retained) > openCodeFrameLimit {
+						err = errors.New("OpenCode event content exceeded KLM's 2 MiB limit.")
+						break
+					}
 				}
 				select {
 				case events <- event:
@@ -341,7 +349,7 @@ func openCodeEvents(ctx context.Context, body io.Reader, events chan<- map[strin
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
 		if errors.Is(scanErr, bufio.ErrTooLong) {
-			err = fmt.Errorf("OpenCode event frame exceeded KLM's 2 MiB limit: %w", scanErr)
+			err = fmt.Errorf("OpenCode event frame exceeded KLM's image transport limit: %w", scanErr)
 		} else {
 			err = fmt.Errorf("Could not read the OpenCode event stream: %w", scanErr)
 		}

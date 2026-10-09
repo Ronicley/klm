@@ -63,7 +63,8 @@ folder is visual grouping only; omission means Ungrouped. Omitted harness inheri
 yours; same-harness model/effort inherit when compatible; another harness uses
 defaults. OpenCode model IDs must be provider/model. YOLO omission inherits your
 current setting; override it only at the user's request, including yolo:false for
-a non-YOLO child. Later changes to your settings do not alter existing children.
+a non-YOLO child. Later YOLO changes also update existing descendants, including
+spawned conversations and their graph nodes; creation receipts retain their original mode.
 Identical retries return the same durable receipt; changed requests conflict.
 Correct rejected arguments using the options and retry; rejection creates nothing.
 Creation acceptance is not start/completion and creates no monitoring subscription.

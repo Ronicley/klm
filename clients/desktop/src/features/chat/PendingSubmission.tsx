@@ -1,5 +1,5 @@
 import { Button } from '../../design-system/Button';
-import { ENGINE_URL, type SourceReference } from '../../engine';
+import { ENGINE_URL, legacyImageFiles, type SourceReference } from '../../engine';
 import type { ComposerDraft, SendMode } from './MessageComposer';
 import { FileAttachments } from './FileAttachments';
 
@@ -33,7 +33,8 @@ export function PendingSubmission({ items, onRestore, onRetry }: { items: LocalS
     <span>{item.status === 'sending' ? (item.mode === 'steer' ? 'Sending now…' : 'Sending message…') : item.status === 'accepted' ? 'Message accepted.' : item.status === 'failed' ? 'Message rejected.' : 'Delivery unconfirmed.'} {item.draft.text.slice(0, 120)}</span>
     <FileAttachments files={item.draft.files} />
     <FileAttachments files={item.draft.missingFiles} missing />
-    {item.status === 'uncertain' && <><Button size="sm" disabled={!!item.draft.missingFiles?.length} onClick={() => onRetry(item)}>Retry delivery</Button><Button size="sm" onClick={() => onRestore(item)}>Restore draft</Button></>}
+    {item.draft.images?.map(image => <FileAttachments key={image.id} files={image.uploaded ? legacyImageFiles([image.uploaded]) : [image]} missing={!image.uploaded} />)}
+    {item.status === 'uncertain' && <><Button size="sm" disabled={!!item.draft.missingFiles?.length || item.draft.images?.some(image => !image.uploaded)} onClick={() => onRetry(item)}>Retry delivery</Button><Button size="sm" onClick={() => onRestore(item)}>Restore draft</Button></>}
     {item.status === 'failed' && <Button size="sm" onClick={() => onRestore(item)}>Restore draft</Button>}
   </div>)}</>;
 }

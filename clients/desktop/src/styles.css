@@ -163,9 +163,10 @@ body { background-color: var(--color-canvas); background-image: var(--gradient-c
 .composer-editor:focus { outline: none; }
 .composer-editor[data-empty="true"]::before { content: attr(data-placeholder); color: var(--color-faint); pointer-events: none; position: absolute; }
 .composer-preview { padding: 0 16px 8px; font-size: 10px; color: var(--color-muted); }
+.file-attachment-preview { display: block; width: 56px; height: 56px; object-fit: contain; border-radius: var(--radius-sm); }
 .composer-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px; padding: 0 12px 12px; }
 .composer-model-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px; min-width: 0; margin-left: auto; }
-.composer-graph-control { display: flex; align-items: center; min-width: 0; max-width: 100%; }
+.composer-graph-control { display: flex; flex-wrap: wrap; align-items: center; min-width: 0; max-width: 100%; gap: 2px; }
 .graph-picker-name { max-width: clamp(100px, 16vw, 200px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graph-picker-run-indicator { display: inline-flex; align-items: center; justify-content: center; width: 12px; height: 12px; flex-shrink: 0; }
 .graph-picker-option small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

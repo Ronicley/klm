@@ -80,3 +80,45 @@ func TestLiveYOLORejectsUnsafeCodexDowngrade(t *testing.T) {
 		t.Fatal("turn started normally cannot restore normal engine policy", err)
 	}
 }
+
+func TestYOLODescendantsAndAtomicDowngrade(t *testing.T) {
+	d := diskState{Sessions: []Session{
+		{ID: "root"}, {ID: "side", ParentID: "root"}, {ID: "native", ParentID: "root"},
+		{ID: "spawn"}, {ID: "grandchild", ParentID: "spawn"}, {ID: "node", GraphRunID: "run"}, {ID: "unrelated"},
+	}, SessionSpawns: []SessionSpawn{{From: "root", SessionID: "spawn"}, {From: "spawn", SessionID: "root"}},
+		GraphRuns: []GraphRun{{ID: "run", ConversationID: "grandchild"}}}
+	ids := d.yoloDescendants("root")
+	if len(ids) != 6 || ids["unrelated"] || !ids["node"] {
+		t.Fatalf("wrong descendant scope: %v", ids)
+	}
+	d.setYOLO(ids, true)
+	for _, s := range d.Sessions {
+		if s.YOLO != ids[s.ID] {
+			t.Fatalf("wrong YOLO for %s", s.ID)
+		}
+	}
+
+	a := generalControlFixture(t)
+	if err := a.commitLocked(func(d *diskState) {
+		d.Sessions = append(d.Sessions, Session{ID: "side", ParentID: "target", Role: sessionRoleSideAgent, ProjectID: "p2", Harness: "codex", Title: "Side", Status: "running", Events: []Event{}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.runs["side"] = &turn{ctx: context.Background(), nativeYOLO: true, nativeYOLOConfigured: true}
+	if err := a.changeSessionYOLO(context.Background(), "target", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.changeSessionYOLO(context.Background(), "target", false); err == nil {
+		t.Fatal("unsafe child downgrade was accepted")
+	}
+	if !a.state.session("target").YOLO || !a.state.session("side").YOLO {
+		t.Fatal("rejected downgrade partially changed the tree")
+	}
+	delete(a.runs, "side")
+	if err := a.changeSessionYOLO(context.Background(), "target", false); err != nil {
+		t.Fatal(err)
+	}
+	if a.state.session("target").YOLO || a.state.session("side").YOLO {
+		t.Fatal("descendants retained YOLO")
+	}
+}

@@ -38,35 +38,37 @@ type Event struct {
 }
 
 type Session struct {
-	Queue           []QueuedMessage         `json:"queue"`
-	Role            string                  `json:"role,omitempty"`
-	GraphRunID      string                  `json:"graphRunId,omitempty"`
-	GraphNodeID     string                  `json:"graphNodeId,omitempty"`
-	ExecutionCWD    string                  `json:"executionCwd,omitempty"`
-	SelectedGraphID string                  `json:"selectedGraphId,omitempty"`
-	Graph           *ConversationGraphState `json:"graph,omitempty"` // HTTP/SSE view only
-	ParentID        string                  `json:"parentId,omitempty"`
-	Sources         []SourceReference       `json:"sources,omitempty"`
-	ID              string                  `json:"id"`
-	ProjectID       string                  `json:"projectId"`
-	Title           string                  `json:"title"`
-	Workspace       string                  `json:"workspace"`
-	Harness         string                  `json:"harness"`
-	HarnessLocked   bool                    `json:"harnessLocked,omitempty"`
-	YOLO            bool                    `json:"yolo,omitempty"`
-	Model           string                  `json:"model,omitempty"`
-	Effort          string                  `json:"effort,omitempty"`
-	ResolvedModel   string                  `json:"resolvedModel,omitempty"`
-	ResolvedEffort  string                  `json:"resolvedEffort,omitempty"`
-	Status          string                  `json:"status"`
-	Archived        bool                    `json:"archived,omitempty"`
-	RuntimeActive   bool                    `json:"runtimeActive,omitempty"` // HTTP/SSE view only
-	Events          []Event                 `json:"events"`
-	Permissions     []Permission            `json:"permissions,omitempty"`
-	Questions       []QuestionRequest       `json:"questions,omitempty"`
-	Usage           *SessionUsage           `json:"usage,omitempty"`
-	CreatedAt       string                  `json:"createdAt"`
-	UpdatedAt       string                  `json:"updatedAt"`
+	Queue                []QueuedMessage         `json:"queue"`
+	Role                 string                  `json:"role,omitempty"`
+	GraphRunID           string                  `json:"graphRunId,omitempty"`
+	GraphNodeID          string                  `json:"graphNodeId,omitempty"`
+	ExecutionCWD         string                  `json:"executionCwd,omitempty"`
+	SelectedGraphID      string                  `json:"selectedGraphId,omitempty"`
+	SelectedAgent        *AgentRecord            `json:"selectedAgent,omitempty"`
+	AgentSelectionLocked bool                    `json:"agentSelectionLocked,omitempty"`
+	Graph                *ConversationGraphState `json:"graph,omitempty"` // HTTP/SSE view only
+	ParentID             string                  `json:"parentId,omitempty"`
+	Sources              []SourceReference       `json:"sources,omitempty"`
+	ID                   string                  `json:"id"`
+	ProjectID            string                  `json:"projectId"`
+	Title                string                  `json:"title"`
+	Workspace            string                  `json:"workspace"`
+	Harness              string                  `json:"harness"`
+	HarnessLocked        bool                    `json:"harnessLocked,omitempty"`
+	YOLO                 bool                    `json:"yolo,omitempty"`
+	Model                string                  `json:"model,omitempty"`
+	Effort               string                  `json:"effort,omitempty"`
+	ResolvedModel        string                  `json:"resolvedModel,omitempty"`
+	ResolvedEffort       string                  `json:"resolvedEffort,omitempty"`
+	Status               string                  `json:"status"`
+	Archived             bool                    `json:"archived,omitempty"`
+	RuntimeActive        bool                    `json:"runtimeActive,omitempty"` // HTTP/SSE view only
+	Events               []Event                 `json:"events"`
+	Permissions          []Permission            `json:"permissions,omitempty"`
+	Questions            []QuestionRequest       `json:"questions,omitempty"`
+	Usage                *SessionUsage           `json:"usage,omitempty"`
+	CreatedAt            string                  `json:"createdAt"`
+	UpdatedAt            string                  `json:"updatedAt"`
 }
 
 type nativeSession struct {
@@ -75,6 +77,7 @@ type nativeSession struct {
 }
 
 const defaultTranscriptionModel = "gpt-4o-mini-transcribe"
+const defaultOpenRouterTranscriptionModel = "google/gemini-2.5-flash"
 
 type TranscriptionVocabularyEntry struct {
 	Term string `json:"term"`
@@ -82,13 +85,21 @@ type TranscriptionVocabularyEntry struct {
 }
 
 type TranscriptionSettings struct {
+	Provider   string                         `json:"provider,omitempty"`
+	OpenRouter TranscriptionProviderSettings  `json:"openrouter"`
 	APIKey     string                         `json:"apiKey,omitempty"`
 	Model      string                         `json:"model"`
 	Language   string                         `json:"language,omitempty"`
 	Vocabulary []TranscriptionVocabularyEntry `json:"vocabulary"`
 }
 
+type TranscriptionProviderSettings struct {
+	APIKey string `json:"apiKey,omitempty"`
+	Model  string `json:"model"`
+}
+
 type diskState struct {
+	Images              map[string]storedImage `json:"images,omitempty"`
 	tx                  *stateTransaction
 	JournalFormat       int                      `json:"journalFormat,omitempty"`
 	AcceptedMessages    map[string]string        `json:"acceptedMessages,omitempty"`
@@ -116,6 +127,12 @@ type diskState struct {
 }
 
 func normalizeTranscriptionSettings(settings *TranscriptionSettings) {
+	if settings.Provider == "" {
+		settings.Provider = "openai"
+	}
+	if settings.OpenRouter.Model == "" {
+		settings.OpenRouter.Model = defaultOpenRouterTranscriptionModel
+	}
 	if settings.Model == "" {
 		settings.Model = defaultTranscriptionModel
 	}

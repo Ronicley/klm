@@ -160,7 +160,13 @@ func (a *app) changeSessionSettings(ctx context.Context, id string, model, effor
 		}
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	resolve := false
+	defer func() {
+		a.mu.Unlock()
+		if resolve {
+			a.resolveRememberedPermissions()
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -172,7 +178,13 @@ func (a *app) changeSessionSettings(ctx context.Context, id string, model, effor
 	if a.runs[id] != nil || s.Status == "running" {
 		return controlError(409, "Wait for the current turn before changing settings.")
 	}
-	return a.commitLocked(func(d *diskState) {
+	ids := a.state.yoloDescendants(id)
+	if yolo != nil {
+		if err := a.validateYOLOChangeLocked(ids, *yolo); err != nil {
+			return err
+		}
+	}
+	err := a.commitLocked(func(d *diskState) {
 		s := d.session(id)
 		if model != nil || effort != nil {
 			changed := s.Model != newModel
@@ -185,10 +197,12 @@ func (a *app) changeSessionSettings(ctx context.Context, id string, model, effor
 			}
 		}
 		if yolo != nil {
-			s.YOLO = *yolo
+			d.setYOLO(ids, *yolo)
 		}
 		s.UpdatedAt = now()
 	})
+	resolve = err == nil && yolo != nil && *yolo
+	return err
 }
 
 func (a *app) changeConversationGraph(ctx context.Context, id, graphID string) error {

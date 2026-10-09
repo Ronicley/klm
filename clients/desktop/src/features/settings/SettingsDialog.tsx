@@ -2,12 +2,14 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { KeyRound, MessageSquare, Mic, Plus, Trash2, X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
-import { ENGINE_URL, getTranscriptionSettings, updateTranscriptionSettings, type TranscriptionSettings } from '../../engine';
+import { Select } from '../../design-system/Select';
+import { ENGINE_URL, getTranscriptionSettings, updateTranscriptionSettings, type TranscriptionProvider, type TranscriptionSettings } from '../../engine';
 import { configureEngineURL, enableNotifications, IS_DESKTOP, IS_MOBILE_HOST, notificationPermission } from '../../platform';
 
 type SettingsSection = 'chat' | 'transcription';
 
 const emptyTranscription: TranscriptionSettings = {
+	provider: 'openai',
   apiKeyConfigured: false,
   model: 'gpt-4o-mini-transcribe',
   language: '',
@@ -73,6 +75,8 @@ export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => voi
     setSaved(false);
     try {
       const next = await updateTranscriptionSettings({
+		provider: settings.provider ?? 'openai',
+		credentialsProvider: settings.provider ?? 'openai',
         ...(apiKey.trim() ? { apiKey: apiKey.trim() } : removeAPIKey ? { apiKey: null } : {}),
         model: settings.model,
         language: settings.language,
@@ -117,9 +121,14 @@ export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => voi
         </section> : <section aria-labelledby="transcription-settings-title">
           <div className="settings-panel-title"><div><h3 id="transcription-settings-title">Transcription</h3>{settings.apiKeyConfigured && !removeAPIKey && <span className="settings-configured"><KeyRound />API key configured</span>}</div>{loading && <span className="muted">Loading...</span>}</div>
           <form className="settings-form transcription-settings-form" onSubmit={saveTranscription}>
+			<div className="settings-field"><label htmlFor="transcription-provider">Provider</label><Select id="transcription-provider" label="Transcription provider" variant="field" value={settings.provider ?? 'openai'} disabled={loading || saving} onChange={event => {
+				const provider = event.target.value as TranscriptionProvider;
+				setSettings(current => ({ ...current, provider, ...(current.providers?.[provider] ?? { apiKeyConfigured: false, model: provider === 'openrouter' ? 'google/gemini-2.5-flash' : 'gpt-4o-mini-transcribe' }) }));
+				setAPIKey(''); setRemoveAPIKey(false); setSaved(false);
+			}}><option value="openai">OpenAI</option><option value="openrouter">OpenRouter</option></Select></div>
             <div className="settings-field settings-api-key">
               <label htmlFor="transcription-api-key">API key</label>
-              <div><Input id="transcription-api-key" type="password" autoComplete="off" maxLength={512} placeholder={settings.apiKeyConfigured ? 'Leave blank to keep current key' : 'OpenAI API key'} value={apiKey} disabled={loading || saving || removeAPIKey} onChange={event => { setAPIKey(event.target.value); setRemoveAPIKey(false); setSaved(false); }} />
+              <div><Input id="transcription-api-key" type="password" autoComplete="off" maxLength={512} placeholder={settings.apiKeyConfigured ? 'Leave blank to keep current key' : `${settings.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI'} API key`} value={apiKey} disabled={loading || saving || removeAPIKey} onChange={event => { setAPIKey(event.target.value); setRemoveAPIKey(false); setSaved(false); }} />
               {settings.apiKeyConfigured && <Button size="sm" variant={removeAPIKey ? 'soft' : 'outline'} disabled={loading || saving} onClick={() => { setRemoveAPIKey(current => !current); setAPIKey(''); setSaved(false); }}>{removeAPIKey ? 'Keep key' : 'Remove key'}</Button>}</div>
             </div>
             <div className="settings-field"><label htmlFor="transcription-model">Model</label><Input id="transcription-model" required maxLength={200} autoCapitalize="none" autoCorrect="off" spellCheck={false} value={settings.model} disabled={loading || saving} onChange={event => { setSettings(current => ({ ...current, model: event.target.value })); setSaved(false); }} /></div>

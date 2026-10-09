@@ -130,7 +130,7 @@ func (a *app) sideConversation(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Harness is not installed.")
 		return
 	}
-	s := Session{ID: newID(), ParentID: main.ID, ProjectID: main.ProjectID, Title: "Side agent", Workspace: main.Workspace, Role: sessionRoleSideAgent, Harness: harness, Model: model, Effort: effort, Status: "idle", Events: []Event{}, CreatedAt: now(), UpdatedAt: now()}
+	s := Session{ID: newID(), ParentID: main.ID, ProjectID: main.ProjectID, Title: "Side agent", Workspace: main.Workspace, Role: sessionRoleSideAgent, Harness: harness, Model: model, Effort: effort, YOLO: main.YOLO, Status: "idle", Events: []Event{}, CreatedAt: now(), UpdatedAt: now()}
 	if err := a.commitLocked(func(d *diskState) {
 		d.Sessions = append(d.Sessions, s)
 		if harness == "pi" {

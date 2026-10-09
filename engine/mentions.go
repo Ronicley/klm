@@ -50,6 +50,7 @@ type submission struct {
 	Context     string
 	Files       []map[string]any
 	Preparation []MentionPreparation
+	Images      []uploadedImage
 }
 
 func (s submission) piText() string {
@@ -67,6 +68,13 @@ func (s submission) openCodeParts() []any {
 	for _, file := range s.Files {
 		parts = append(parts, file)
 	}
+	for _, image := range s.Images {
+		path := filepath.ToSlash(image.Path)
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		parts = append(parts, map[string]any{"type": "file", "mime": image.MIME, "filename": image.Name, "url": (&url.URL{Scheme: "file", Path: path}).String()})
+	}
 	return parts
 }
 
@@ -74,6 +82,9 @@ func (s submission) codexInput() []any {
 	input := []any{map[string]any{"type": "text", "text": s.Text, "text_elements": []any{}}}
 	if s.Context != "" {
 		input = append(input, map[string]any{"type": "text", "text": s.Context, "text_elements": []any{}})
+	}
+	for _, image := range s.Images {
+		input = append(input, map[string]any{"type": "localImage", "path": image.Path})
 	}
 	return input
 }

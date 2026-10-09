@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 )
 
-func messageFingerprint(text, mode string, sources []SourceReference, mentions []Mention) string {
+func messageFingerprint(text, mode string, sources []SourceReference, mentions []Mention, images ...string) string {
 	if mode == "" {
 		mode = "queue"
 	}
@@ -21,7 +21,8 @@ func messageFingerprint(text, mode string, sources []SourceReference, mentions [
 		Mode     string
 		Sources  []SourceReference
 		Mentions []Mention
-	}{text, mode, sources, mentions})
+		Images   []string `json:"Images,omitempty"`
+	}{text, mode, sources, mentions, images})
 	hash := sha256.Sum256(b)
 	return hex.EncodeToString(hash[:])
 }

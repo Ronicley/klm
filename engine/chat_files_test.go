@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/png"
 	"mime/multipart"
 	"net/http/httptest"
 	"os"
@@ -88,5 +91,76 @@ func TestChatFileUpload(t *testing.T) {
 		if _, err := os.Stat(rejectedDir); !os.IsNotExist(err) {
 			t.Fatalf("%s: rejected upload was retained", tc.name)
 		}
+	}
+}
+
+func TestChatImagesReachNativeInputs(t *testing.T) {
+	var pixels bytes.Buffer
+	if err := png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{dir: t.TempDir()}
+	var upload bytes.Buffer
+	writer := multipart.NewWriter(&upload)
+	_ = writer.WriteField("metadata", `{"text":""}`)
+	part, err := writer.CreateFormFile("files", "screenshot.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write(pixels.Bytes())
+	_ = writer.Close()
+	r := httptest.NewRequest("POST", "/api/sessions/s/messages", &upload)
+	r.SetPathValue("id", "s")
+	r.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	var body messageBody
+	files, _, ok := a.decodeMessage(w, r, &body)
+	if !ok || len(files) != 1 || files[0].URL == "" {
+		t.Fatalf("image rejected: %s", w.Body.String())
+	}
+	var payload submission
+	if err := prepareChatFiles(&payload, files); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := json.Marshal(payload)
+	var restored submission
+	if err := json.Unmarshal(stored, &restored); err != nil {
+		t.Fatal(err)
+	}
+	opencode := restored.openCodeParts()[1].(map[string]any)
+	codex := restored.codexInput()[1].(map[string]any)
+	if opencode["type"] != "file" || opencode["mime"] != "image/png" || codex["type"] != "localImage" || codex["path"] != files[0].Path {
+		t.Fatal("image not forwarded natively")
+	}
+	for _, kind := range []string{"prompt", "steer"} {
+		pi, err := restored.piMessage("input", kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		image := pi["images"].([]any)[0].(map[string]any)
+		data, err := base64.StdEncoding.DecodeString(image["data"].(string))
+		if err != nil || !bytes.Equal(data, pixels.Bytes()) || image["mimeType"] != "image/png" {
+			t.Fatal("Pi image bytes changed")
+		}
+	}
+	if chatFileFingerprint("base", files) == chatFileFingerprint("base", []ChatFile{{Name: files[0].Name, Size: files[0].Size, Type: files[0].Type, SHA256: "changed"}}) {
+		t.Fatal("image bytes omitted from retry identity")
+	}
+	if err := os.Remove(files[0].Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restored.piMessage("input", "prompt"); err == nil {
+		t.Fatal("missing image silently omitted")
+	}
+	native := map[string]any{"content": []any{map[string]any{"type": "image", "data": "base64"}, map[string]any{"type": "file", "url": "data:image/png;base64,base64"}, map[string]any{"type": "text", "text": "Keep this"}}}
+	omitNativeImageData(native)
+	clean, _ := json.Marshal(native)
+	if bytes.Contains(clean, []byte("base64")) || !bytes.Contains(clean, []byte("Keep this")) {
+		t.Fatal("image bytes leaked into engine metadata or text was lost")
+	}
+	history := `[{"parts":[{"type":"file","url":"data:image/png;base64,` + strings.Repeat("A", 3<<20) + `"}]}]`
+	projected, err := readOpenCodeHistoryJSON(strings.NewReader(history))
+	if err != nil || len(projected) > 1024 || !bytes.Contains(projected, []byte("retained by the harness")) {
+		t.Fatalf("image history is not bounded: %v", err)
 	}
 }

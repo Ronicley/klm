@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"slices"
 	"sync"
 	"time"
 )
@@ -59,6 +60,13 @@ func startInteractive(t *turn, b binary, args []string, cwd string, runtime *ses
 		if err := d.Decode(&frame); err != nil || frame == nil {
 			return errors.New("Harness returned invalid protocol JSON.")
 		}
+		omitNativeImageData(frame)
+		if len(line) > 2<<20 {
+			retained, err := json.Marshal(frame)
+			if err != nil || len(retained) > 2<<20 {
+				return errors.New("Harness event content exceeded the 2 MiB limit.")
+			}
+		}
 		select {
 		case frames <- frame:
 			return nil
@@ -66,6 +74,10 @@ func startInteractive(t *turn, b binary, args []string, cwd string, runtime *ses
 			return ctx.Err()
 		}
 	}}
+	if slices.Contains(args, "rpc") {
+		// Pi echoes image content in user messages and agent-end records.
+		lines.lineLimit, lines.turnLimit = imageJSONLineLimit, 192<<20
+	}
 	p.lines = lines
 	cmd.Stdout = lines
 	cmd.Stderr = &cappedBuffer{}

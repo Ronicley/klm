@@ -1,11 +1,12 @@
 import { useRef, useState, type KeyboardEvent } from 'react';
-import { Check, ChevronDown, Workflow } from 'lucide-react';
+import { Bot, Check, ChevronDown, Workflow } from 'lucide-react';
 import { Button } from '../../design-system/Button';
 import { Menu, MenuItem } from '../../design-system/Menu';
 import type { Graph } from '../graphs/demo';
 import '../graphs/graph-running-led.css';
 
-export function GraphPicker({ graphs, value, selectedName, running = false, disabled = false, loading = false, error, onReload, onChange }: {
+export function GraphPicker({ graphs, value, selectedName, running = false, disabled = false, loading = false, error, onReload, onChange, kind = 'graph' }: {
+	 kind?: 'graph' | 'agent';
   graphs: Graph[];
   value: string;
   running?: boolean;
@@ -21,7 +22,10 @@ export function GraphPicker({ graphs, value, selectedName, running = false, disa
   const options = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const selected = graphs.find(graph => graph.id === value);
-  const label = selectedName ?? selected?.name ?? (value || 'none');
+  const label = selectedName ?? selected?.name ?? (value || 'None');
+  const noun = kind === 'agent' ? 'Agent' : 'Graph';
+  const plural = kind === 'agent' ? 'agents' : 'graphs';
+  const Icon = kind === 'agent' ? Bot : Workflow;
   const searchable = graphs.length > 5;
   const query = searchable ? search.trim().toLowerCase() : '';
   const matches = graphs.filter(graph => `${graph.name} ${graph.description}`.toLowerCase().includes(query));
@@ -48,16 +52,16 @@ export function GraphPicker({ graphs, value, selectedName, running = false, disa
     event.preventDefault(); items[next].focus(); items[next].scrollIntoView({ block: 'nearest' });
   }
 
-  return <Menu label="Graphs" className="model-menu graph-picker-menu" align="start" open={open} onOpenChange={next => { setSearch(''); setOpen(next); if (next) onReload?.(); }} trigger={props => <Button {...props} disabled={disabled} variant="ghost" size="sm" className="model-picker-trigger graph-picker-trigger" aria-label={`Choose graph: ${value ? label : 'None'}`} title={label}>
-    {running && value ? <span className="graph-picker-run-indicator" role="img" aria-label="Graph run in progress" title="Graph run in progress" /> : <Workflow />}<span className="graph-picker-name">{label}</span><ChevronDown />
+  return <Menu label={plural} className="model-menu graph-picker-menu" align="start" open={open} onOpenChange={next => { setSearch(''); setOpen(next); if (next) onReload?.(); }} trigger={props => <Button {...props} disabled={disabled} variant="ghost" size="sm" className="model-picker-trigger graph-picker-trigger" aria-label={`Choose ${kind}: ${value ? label : 'None'}`} title={`${noun}: ${label}`}>
+    {running && value ? <span className="graph-picker-run-indicator" role="img" aria-label="Graph run in progress" title="Graph run in progress" /> : <Icon />}<span className="graph-picker-name">{noun} · {label}</span><ChevronDown />
   </Button>}>
     <div ref={options} onKeyDown={navigate}>
-      {searchable && <div className="model-menu-search"><input data-menu-autofocus type="search" aria-label="Search graphs" placeholder="Search graphs" value={search} onChange={event => { setSearch(event.target.value); list.current?.scrollTo({ top: 0 }); }} /></div>}
-      <div ref={list} className="model-menu-list" aria-label="Available graphs">
+      {searchable && <div className="model-menu-search"><input data-menu-autofocus type="search" aria-label={`Search ${plural}`} placeholder={`Search ${plural}`} value={search} onChange={event => { setSearch(event.target.value); list.current?.scrollTo({ top: 0 }); }} /></div>}
+      <div ref={list} className="model-menu-list" aria-label={`Available ${plural}`}>
         {matches.map(graph => <MenuItem key={graph.id} className="model-menu-option graph-picker-option" selected={selected?.id === graph.id} disabled={!graph.enabled} title={graph.description} onClick={() => choose(graph.id)}>
           <span><span className="model-menu-option-name">{graph.name}</span><small>{graph.enabled ? graph.description : 'Disabled'}</small></span>{selected?.id === graph.id && <Check />}
         </MenuItem>)}
-        {error ? <p className="menu-feedback" role="alert">{error}</p> : !matches.length && <p className="menu-feedback muted" role="status">{loading ? 'Loading graphs...' : query ? 'No matching graphs.' : 'No graphs available.'}</p>}
+        {error ? <p className="menu-feedback" role="alert">{error}</p> : !matches.length && <p className="menu-feedback muted" role="status">{loading ? `Loading ${plural}...` : query ? `No matching ${plural}.` : `No ${plural} available.`}</p>}
       </div>
       <div className="model-menu-footer"><MenuItem selected={!value} onClick={() => choose('')}>None{!value && <Check />}</MenuItem></div>
     </div>

@@ -493,9 +493,20 @@ export function App() {
       setModelPreviews(current => { const next = { ...current }; delete next[id]; return next; });
     }
   }
+  async function chooseAgent(target: Session, selectedAgentId: string) {
+    const id = target.id;
+    if (pending.current.has(id)) return;
+    pending.current.add(id); setPendingSessions(current => ({ ...current, [id]: true }));
+    setSessionErrors(current => ({ ...current, [id]: '' }));
+    try {
+      const next = await request<SessionResponse>(`/api/sessions/${encodeURIComponent(id)}/agent`, 'PATCH', { selectedAgentId });
+      setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [next]) }));
+    } catch (error) { setSessionErrors(current => ({ ...current, [id]: errorMessage(error) })); }
+    finally { pending.current.delete(id); setPendingSessions(current => ({ ...current, [id]: false })); }
+  }
   function submitLocal(target: Session, message: LocalSubmission) {
     const { id, draft, sources, mode } = message;
-    if (draft.missingFiles?.length) {
+    if (draft.missingFiles?.length || draft.images?.some(image => !image.uploaded)) {
       setSessionErrors(current => ({ ...current, [target.id]: 'Restore the draft and reselect its files before sending.' }));
       return;
     }
@@ -513,7 +524,7 @@ export function App() {
       submissionControllers.current.set(id, { sessionId: target.id, controller });
       const timeout = draft.files?.length ? 120000 : 45000;
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeout)]);
-      const metadata = { text: draft.text, mentions: draft.mentions, sources, mode, clientId: id };
+      const metadata = { text: draft.text, mentions: draft.mentions, sources, mode, clientId: id, images: draft.images?.map(image => image.uploaded!.id) };
       let body: typeof metadata | FormData = metadata;
       if (draft.files?.length) {
         body = new FormData();
@@ -802,7 +813,10 @@ export function App() {
             const draft = current[session.id] ?? { text: '', mentions: [] };
             const separator = !draft.text || draft.text.endsWith('\n\n') ? '' : draft.text.endsWith('\n') ? '\n' : '\n\n';
             return { ...current, [session.id]: { ...draft, text: `${draft.text}${separator}${text.trim()}` } };
-          })} disabled={!!pendingSessions[session.id] || generalView && !harnesses.some(harness => harness.id === session.harness && harness.available)} running={session.status === 'running'} onStop={() => void updateSession(session, 'stop', {})} graphControl={generalView ? undefined : <GraphPicker key={session.id} graphs={catalogGraphs} value={selectedGraphId} selectedName={catalogSelectedGraph?.definition.name ?? selectedGraph?.definition.name} running={graphRunInProgress} disabled={!!selectingGraphs[session.id] || !session.graph} loading={catalogLoading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reloadCatalog().catch(() => {})} onChange={graphId => void chooseGraph(session.id, graphId)} />} modelControl={<ModelPicker key={`${session.id}/${session.harness}`} session={session} disabled={!!pendingSessions[session.id] || working} optionsDisabled={!!pendingSessions[session.id] || !!connectionError} onSave={(model, effort) => applyModelSettings(session, model, effort)} onSnapshot={receiveSession} />} />
+          })} disabled={!!pendingSessions[session.id] || generalView && !harnesses.some(harness => harness.id === session.harness && harness.available)} running={session.status === 'running'} onStop={() => void updateSession(session, 'stop', {})} graphControl={generalView ? undefined : <>
+            <GraphPicker key={`agent:${session.id}`} kind="agent" graphs={catalog?.agents ?? []} value={session.selectedAgentId ?? ''} disabled={!!pendingSessions[session.id] || working || !!session.queue?.length || !!connectionError} loading={catalogLoading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reloadCatalog().catch(() => {})} onChange={agentId => void chooseAgent(session, agentId)} />
+            <GraphPicker key={session.id} graphs={catalogGraphs} value={selectedGraphId} selectedName={catalogSelectedGraph?.definition.name ?? selectedGraph?.definition.name} running={graphRunInProgress} disabled={!!selectingGraphs[session.id] || !!connectionError} loading={catalogLoading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reloadCatalog().catch(() => {})} onChange={graphId => void chooseGraph(session.id, graphId)} />
+          </>} modelControl={<ModelPicker key={`${session.id}/${session.harness}`} session={session} disabled={!!pendingSessions[session.id] || working} optionsDisabled={!!pendingSessions[session.id] || !!connectionError} onSave={(model, effort) => applyModelSettings(session, model, effort)} onSnapshot={receiveSession} />} />
           <SessionStatusBar session={session} />
         </div>
         <GraphRequestQueue key={session.id} requests={graphRequests} run={graphRun} graphs={catalog?.graphs ?? []} projectName={project?.name ?? ''} target={activeTab === 'chat' ? graphChatTarget : activeTab === 'graph' ? graphPanelTarget : null} onResolved={() => graphRequestResolved(session.id)} />
