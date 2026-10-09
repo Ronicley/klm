@@ -24,6 +24,15 @@ fn open_focus(app: tauri::AppHandle, server: tauri::State<'_, web::WebServer>) -
 }
 
 #[tauri::command]
+fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let parsed = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https" | "mailto") {
+        return Err("Unsupported link protocol".into());
+    }
+    app.opener().open_url(parsed.as_str(), None::<&str>).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn notify_permission(app: tauri::AppHandle, body: String) -> Result<(), String> {
     let window = app.get_webview_window("main").ok_or("Main window unavailable")?;
     if window.is_visible().map_err(|error| error.to_string())?
@@ -45,7 +54,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![open_focus, notify_permission])
+        .invoke_handler(tauri::generate_handler![open_focus, open_external_url, notify_permission])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
             let exit = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;

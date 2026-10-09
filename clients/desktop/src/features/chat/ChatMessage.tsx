@@ -2,6 +2,8 @@ import { Atom, Check, Copy, FileText, Star } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { invoke } from '@tauri-apps/api/core';
+import { IS_DESKTOP } from '../../platform';
 import { IconButton } from '../../design-system/Button';
 import type { Message } from '../workspace/demo';
 import { MentionText } from './MentionText';
@@ -10,10 +12,20 @@ import { Flowchart } from './Flowchart';
 import { normalizeFlowchartMarkdown } from './flowchartMarkdown';
 
 const markdownPlugins = [remarkGfm];
+function MarkdownLink({ href, children }: React.ComponentProps<'a'>) {
+  const [failed, setFailed] = useState(false);
+  return <><a href={href || undefined} target={href?.startsWith('#') ? undefined : '_blank'} rel="noopener noreferrer" onClick={event => {
+    if (!IS_DESKTOP || !href || href.startsWith('#')) return;
+    event.preventDefault();
+    setFailed(false);
+    void invoke('open_external_url', { url: new URL(href, window.location.href).href }).catch(() => setFailed(true));
+  }}>{children}</a>{failed && <span role="alert"> Could not open link. Try again.</span>}</>;
+}
+
 const markdownComponents: Components = {
-  a: ({ href, children }) => <a href={href || undefined} target={href?.startsWith('#') ? undefined : '_blank'} rel="noopener noreferrer">{children}</a>,
+  a: ({ href, children }) => <MarkdownLink href={href}>{children}</MarkdownLink>,
   // Model-generated images must not trigger unsolicited external requests.
-  img: ({ src, alt }) => <a href={typeof src === 'string' && src ? src : undefined} target="_blank" rel="noopener noreferrer">{alt || 'Image'}</a>,
+  img: ({ src, alt }) => <MarkdownLink href={typeof src === 'string' && src ? src : undefined}>{alt || 'Image'}</MarkdownLink>,
   table: ({ children }) => <div className="markdown-table" role="region" aria-label="Table" tabIndex={0}><table>{children}</table></div>,
   pre: ({ node, children }) => {
     const code = node?.children.find(child => child.type === 'element' && child.tagName === 'code');
