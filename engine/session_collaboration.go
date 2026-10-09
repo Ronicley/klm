@@ -108,6 +108,9 @@ func (d *diskState) conversationArchived(s *Session) bool {
 }
 
 func (a *app) existingSpawnLocked(from *Session, args spawnArgs) (*SessionSpawn, error) {
+	if from != nil && a.state.DeletedOperations["spawn/"+from.ID+"/"+args.OperationID] {
+		return nil, spawnProblem("operationId", "session_deleted", "The session created by this operation was deleted.", "Do not retry this creation. A new session requires a new user request and operationId.")
+	}
 	if !spawnSender(from, args) || !graphUserEvent(&a.state, from.ID, args.SourceUserEventID) {
 		return nil, spawnProblem("sourceUserEventId", "invalid_user_event", "sourceUserEventId must identify a real user message in this conversation.", "Use session_spawn_options to read recent user message IDs. Reference the user's request to create sessions, not a session ID, invented ID or agent-authored prompt.")
 	}

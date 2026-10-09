@@ -515,6 +515,16 @@ func validateGraphRecordsCached(d *diskState, cache map[string]validatedGraphSna
 			return bad("consultation identity", c.ID)
 		}
 	}
+	for id, record := range d.DeletedSessions {
+		if !claim(id) || !filepath.IsLocal(id) || strings.ContainsAny(id, `/\`) || record.RootID == "" || d.DeletedSessions[record.RootID].RootID != record.RootID {
+			return bad("deleted session", id)
+		}
+		for _, imageID := range record.Images {
+			if !filepath.IsLocal(imageID) || strings.ContainsAny(imageID, `/\`) {
+				return bad("deleted image", imageID)
+			}
+		}
+	}
 	if err := validateSessionCommands(d); err != nil {
 		return err
 	}

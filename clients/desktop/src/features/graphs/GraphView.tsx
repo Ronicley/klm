@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Background, MarkerType, Panel, ReactFlow } from '@xyflow/react';
+import { Background, MarkerType, Panel, ReactFlow, type NodeChange } from '@xyflow/react';
 import type { Agent } from '../agents/demo';
 import type { GraphRequestProjection, GraphRunProjection } from '../../engine';
 import { resolveAgentNode } from './agent-node';
@@ -16,6 +16,19 @@ export function GraphView({ sessionId, graph, agents, visible, run, requests, wi
   controlPending: boolean; controlError: string; onControl: (control: 'pause' | 'resume') => void;
 }) {
   const root = useRef<HTMLElement>(null);
+  const [measurements, setMeasurements] = useState<Record<string, { width: number; height: number }>>({});
+  function onNodesChange(changes: NodeChange<CanvasNode>[]) {
+    setMeasurements(current => {
+      let next = current;
+      for (const change of changes) {
+        if (change.type !== 'dimensions' || !change.dimensions) continue;
+        const { width, height } = change.dimensions;
+        if (width <= 0 || height <= 0 || current[change.id]?.width === width && current[change.id]?.height === height) continue;
+        next = { ...next, [change.id]: { width, height } };
+      }
+      return next;
+    });
+  }
   const [inspectingId, setInspectingId] = useState<string | null>(null);
   const [inspectionRun, setInspectionRun] = useState<GraphRunProjection | null>(null);
   const activityRun = run ?? inspectionRun;
@@ -47,7 +60,9 @@ export function GraphView({ sessionId, graph, agents, visible, run, requests, wi
       // live-catalog model settings as if they were this run's captured settings.
       const agent = running ? undefined : agentById.get(node.data.join?.agentId ?? node.data.agentId ?? '');
       const status = waiting.has(node.id) ? 'waiting' : active.has(node.id) ? 'running' : collecting.has(node.id) ? 'collecting' : completed.has(node.id) ? 'completed' : 'pending';
-      return { ...node, draggable: false, selectable: false, connectable: false, deletable: false, focusable: false,
+      // Controlled-node updates must retain ResizeObserver measurements. Otherwise
+      // ReactFlow resets dimensions and hides unchanged nodes until another resize.
+      return { ...node, measured: measurements[node.id], draggable: false, selectable: false, connectable: false, deletable: false, focusable: false,
         data: { ...node.data, readOnly: true, agent, settings: agent ? resolveAgentNode(agent, node.data.overrides ?? {}) : undefined,
           running: status === 'running', activityStatus: running ? status : undefined,
           attention: status === 'waiting' && !requestsVisible,
@@ -55,13 +70,13 @@ export function GraphView({ sessionId, graph, agents, visible, run, requests, wi
           inspecting: node.id === inspectingId, onInspect: running && node.type !== 'aiAgent' && node.type !== 'join' ? undefined : () => { setInspectingId(node.id); setInspectionRun(running ? run ?? null : null); } },
       };
     });
-  }, [drawing, agents, run, requests, requestsVisible, inspectingId, running]);
+  }, [drawing, agents, run, requests, requestsVisible, inspectingId, running, measurements]);
   const inspectedNode = nodes.find(node => node.id === inspectingId);
 
   return <section ref={root} hidden={!visible} className="graph-canvas graph-canvas--readonly" aria-label={`${graph.definition.name} graph canvas`} onKeyDown={event => {
     if (event.key === 'Escape' && inspectingId) { event.stopPropagation(); closeInspection(); }
   }}>
-    {hasOpened && <ReactFlow<CanvasNode> nodes={nodes} edges={drawing?.edges ?? []} nodeTypes={graphViewNodeTypes}
+    {hasOpened && <ReactFlow<CanvasNode> nodes={nodes} onNodesChange={onNodesChange} edges={drawing?.edges ?? []} nodeTypes={graphViewNodeTypes}
       nodesDraggable={false} nodesConnectable={false} nodesFocusable={false}
       edgesReconnectable={false} edgesFocusable={false} elementsSelectable={false}
       deleteKeyCode={null} selectionKeyCode={null} multiSelectionKeyCode={null}

@@ -101,6 +101,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("PATCH /api/sessions/{id}/harness", a.chatSessionHandler(a.sideHarness))
 	mux.HandleFunc("POST /api/sessions/{id}/consultations/{requestID}/cancel", a.chatSessionHandler(a.cancelConsultation))
 	mux.HandleFunc("PATCH /api/sessions/{id}", a.chatSessionHandler(a.patchSession))
+	mux.HandleFunc("DELETE /api/sessions/{id}", a.deleteSession)
 	mux.HandleFunc("GET /api/sessions/{id}/models", a.getModels)
 	mux.HandleFunc("GET /api/sessions/{id}/metadata", a.chatSessionHandler(a.getSessionMetadata))
 	mux.HandleFunc("PATCH /api/sessions/{id}/settings", a.chatSessionHandler(a.updateModelSettings))
@@ -193,11 +194,12 @@ func (a *app) getState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	state := struct {
-		Projects  []Project        `json:"projects"`
-		Sessions  []SessionSummary `json:"sessions"`
-		Harnesses []Harness        `json:"harnesses"`
-		Revision  uint64           `json:"revision"`
-	}{projects, sessions, a.harnesses, a.state.GraphRevision}
+		Projects          []Project        `json:"projects"`
+		Sessions          []SessionSummary `json:"sessions"`
+		Harnesses         []Harness        `json:"harnesses"`
+		Revision          uint64           `json:"revision"`
+		DeletedSessionIDs []string         `json:"deletedSessionIds"`
+	}{projects, sessions, a.harnesses, a.state.GraphRevision, a.state.deletedSessionIDs()}
 	a.mu.Unlock()
 	respond(w, 200, state)
 }

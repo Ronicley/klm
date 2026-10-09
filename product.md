@@ -46,6 +46,18 @@ waiting, or activity indicators to the project rail. Folder collapsed state rema
 local to each browser or WebView. Sessions can also be renamed and moved between
 active folders without changing their execution directory.
 
+Normal top-level sessions, including archived sessions, can be permanently deleted
+after confirmation. Deletion removes their KLM history, attachments, linked side chats,
+native subagent records and owned graph records/sessions. Running chats/processes,
+active or paused graphs, graph startup and unfinished consultations block deletion.
+Independent spawned sessions remain. The general-agent conversation cannot be deleted.
+Deletion synchronizes across clients and survives engine restart; retries of previously
+accepted collaboration operations cannot recreate deleted sessions. Project files and
+worktrees remain on disk. A workspace referenced by another session blocks deletion
+to preserve that session's provenance. Failed managed-file cleanup remains recoverable
+through Delete retry or engine restart; external harness storage and backups are outside
+KLM's deletion scope.
+
 Assistant message actions are hidden while that message is streaming. Completed
 assistant messages provide Copy and a durable Favorite toggle; like and dislike are
 not used. Failed or cancelled partial responses remain copyable but cannot be marked

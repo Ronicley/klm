@@ -174,6 +174,7 @@ export type PermissionRequest = {
 };
 
 export type EngineState = {
+  deletedSessionIds?: string[];
   projects: Project[];
   sessions: Session[];
   harnesses: Harness[];

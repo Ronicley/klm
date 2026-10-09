@@ -43,7 +43,7 @@ func (a *app) updates(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	for id := range observed {
 		s := a.state.session(id)
-		if s == nil || s.GraphRunID != "" {
+		if s == nil && a.state.DeletedSessions[id].RootID == "" || s != nil && s.GraphRunID != "" {
 			a.mu.Unlock()
 			fail(w, 404, "Conversation not found.")
 			return
@@ -124,10 +124,11 @@ func (a *app) updates(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		revision := a.state.GraphRevision
+		deletedIDs := a.state.deletedSessionIDs()
 		harnesses := a.harnesses
 		a.mu.Unlock()
 		if inventoryChanged {
-			if err := send(map[string]any{"kind": "inventory", "projects": projects, "sessions": all, "harnesses": harnesses, "revision": revision}); err != nil {
+			if err := send(map[string]any{"kind": "inventory", "projects": projects, "sessions": all, "harnesses": harnesses, "revision": revision, "deletedSessionIds": deletedIDs}); err != nil {
 				return err
 			}
 		} else {

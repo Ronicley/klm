@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import { Download, Focus, GitBranch, PanelLeft, PanelRight } from 'lucide-react';
 import { IS_DESKTOP, openFocus, startWindowDrag } from './platform';
 import { Button, IconButton } from './design-system/Button';
@@ -11,6 +11,7 @@ import { graphListEntry } from './features/graphs/files';
 import { SideChatPanel } from './features/chat/SideChatPanel';
 import { CreateSessionDialog } from './features/workspace/CreateSessionDialog';
 import { RenameSessionDialog } from './features/workspace/RenameSessionDialog';
+import { DeleteSessionDialog } from './features/workspace/DeleteSessionDialog';
 import { SessionStatusBar } from './features/chat/SessionStatusBar';
 import { ModelPicker } from './features/chat/ModelPicker';
 import { GeneralHarnessPicker } from './features/chat/GeneralHarnessPicker';
@@ -89,7 +90,16 @@ function readWorkspaceNavigation(): WorkspaceNavigation {
 }
 
 export function App() {
-  const [engine, setEngine] = useState<EngineState>({ projects: [], sessions: [], harnesses: [] });
+  const [engine, setEngineState] = useState<EngineState>({ projects: [], sessions: [], harnesses: [] });
+  // Every entry point (poll, SSE, mutation and history) honors durable deletion.
+  // A response prepared before Delete must never resurrect that conversation.
+  const setEngine = useCallback((update: SetStateAction<EngineState>) => setEngineState(current => {
+    const next = typeof update === 'function' ? update(current) : update;
+    const previous = current.deletedSessionIds ?? [];
+    const added = (next.deletedSessionIds ?? []).filter(id => !previous.includes(id));
+    const deletedSessionIds = added.length ? [...new Set([...previous, ...added])] : current.deletedSessionIds;
+    return deletedSessionIds?.length ? { ...next, deletedSessionIds, sessions: next.sessions.filter(item => !deletedSessionIds.includes(item.id)) } : next;
+  }), []);
   const [modelPreviews, setModelPreviews] = useState<Record<string, { model: string; effort: string }>>({});
   const { projects, harnesses } = engine;
   const sessions = useMemo(() => engine.sessions.map(item => modelPreviews[item.id] ? { ...item, ...modelPreviews[item.id] } : item), [engine.sessions, modelPreviews]);
@@ -149,6 +159,7 @@ export function App() {
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [creatingSession, setCreatingSession] = useState<{ projectId: string; workspace: string } | null>(null);
   const [renamingSession, setRenamingSession] = useState<Session | null>(null);
+  const [deletingSession, setDeletingSession] = useState<Session | null>(null);
   const project = projects.find(item => item.id === activeProjectId) ?? projects[0];
   const projectSessions = sessions.filter(item => item.projectId === project?.id && !item.parentId && item.role !== 'graph_node');
   const visibleProjectSessions = projectSessions.filter(item => !item.archived && !project?.archivedFolders.includes(item.workspace));
@@ -217,7 +228,17 @@ export function App() {
   const openingSide = useRef(new Set<string>());
   const [drafts, setDrafts] = useState<Record<string, ComposerDraft>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const requestSurfaceFocused = windowFocused && !settingsOpen && !sidebarOpen && addingProject === null && !editingProject && !creatingSession && !renamingSession;
+  const requestSurfaceFocused = windowFocused && !settingsOpen && !sidebarOpen && addingProject === null && !editingProject && !creatingSession && !renamingSession && !deletingSession;
+  useEffect(() => {
+    const ids = new Set(engine.deletedSessionIds ?? []);
+    if (!ids.size) return;
+    const keep = <T,>(entries: Record<string, T>) => Object.fromEntries(Object.entries(entries).filter(([id]) => !ids.has(id) && !ids.has(id.replace(/^side:/, ''))));
+    for (const item of submissionControllers.current.values()) if (ids.has(item.sessionId)) item.controller.abort();
+    for (const [messageId, sessionId] of generalHarnessBlocks.current) if (ids.has(sessionId)) generalHarnessBlocks.current.delete(messageId);
+    setLocalMessages(keep); setDrafts(keep); setSideSources(keep); setSessionTabs(keep); setOpenSubagentTabs(keep);
+    setWorkspaceNavigation(current => ({ ...current, selectedSessions: Object.fromEntries(Object.entries(current.selectedSessions).filter(([, id]) => !ids.has(id))), openSideSessions: current.openSideSessions.filter(id => !ids.has(id)) }));
+    setRenamingSession(current => current && ids.has(current.id) ? null : current);
+  }, [engine.deletedSessionIds]);
   const shell = useRef<HTMLDivElement>(null);
   const drag = useRef<{ pointerId: number; x: number; y: number; left: number; top: number; minX: number; maxX: number; minY: number; maxY: number } | null>(null);
   useEffect(() => {
@@ -266,6 +287,7 @@ export function App() {
             projects: visibleProjects,
             sessions: orderSessionSnapshot(current.sessions, next.sessions).filter(session => visibleIds.has(session.projectId) || session.role === 'general_agent' || session.projectId === '' && session.role === 'subagent'),
             harnesses: next.harnesses,
+            deletedSessionIds: next.deletedSessionIds,
           };
         });
         setLoaded(true);
@@ -375,7 +397,7 @@ export function App() {
         if (!packet || typeof packet !== 'object' || !('kind' in packet)) throw new Error('Invalid update');
         if (packet.kind === 'inventory' && 'sessions' in packet && 'projects' in packet && 'harnesses' in packet) {
           const snapshot = packet as EngineSnapshot & { kind: string };
-          setEngine(current => ({ projects: snapshot.projects, sessions: orderSessionSnapshot(current.sessions, snapshot.sessions), harnesses: snapshot.harnesses }));
+          setEngine(current => ({ projects: snapshot.projects, sessions: orderSessionSnapshot(current.sessions, snapshot.sessions), harnesses: snapshot.harnesses, deletedSessionIds: snapshot.deletedSessionIds }));
           setLoaded(true);
         } else if (packet.kind === 'summary' && 'summary' in packet) {
           setEngine(current => { const sessions = mergeSessions(current.sessions, [packet.summary as Session]); return sessions === current.sessions ? current : { ...current, sessions }; });
@@ -492,6 +514,16 @@ export function App() {
       pending.current.delete(id); setPendingSessions(current => ({ ...current, [id]: false }));
       setModelPreviews(current => { const next = { ...current }; delete next[id]; return next; });
     }
+  }
+  async function deleteSession(target: Session): Promise<string | null> {
+    if (pending.current.has(target.id)) return 'Another session update is still in progress.';
+    pending.current.add(target.id);
+    try {
+      const next = await request<{ deletedSessionIds: string[]; cleanupError?: string }>(`/api/sessions/${encodeURIComponent(target.id)}`, 'DELETE');
+      setEngine(current => ({ ...current, deletedSessionIds: next.deletedSessionIds }));
+      return next.cleanupError ?? null;
+    } catch (error) { return errorMessage(error); }
+    finally { pending.current.delete(target.id); }
   }
   async function chooseAgent(target: Session, selectedAgentId: string) {
     const id = target.id;
@@ -776,7 +808,7 @@ export function App() {
   >
     <ProjectRail projects={projects} sessions={sessions} activeId={generalView ? '' : project?.id ?? ''} generalActive={generalView} onGeneralAgent={() => { navigation.current += 1; setSidebarOpen(false); setView('general'); }} onSelect={selectProject} onEdit={openProjectEditor} onRemove={target => removeProject(target.id)} onReorder={reorderProject} onAdd={() => void openProjectPicker()} onSettings={() => { setSidebarOpen(false); setSettingsOpen(true); }} />
     {!generalView && sidebarOpen && <button className="panel-backdrop" aria-label="Close side panel" onClick={() => setSidebarOpen(false)} />}
-    {!generalView && project && <WorkspaceSidebar key={`sidebar:${project.id}`} project={project} sessions={projectSessions} activeId={view === 'chat' ? activeId : ''} activeSection={view} collapsed={collapsedFolders[project.id] ?? []} archivedCollapsed={collapsedArchivedProjects.includes(project.id)} onCollapsedChange={folders => setWorkspaceNavigation(current => ({ ...current, collapsedFolders: { ...current.collapsedFolders, [project.id]: folders } }))} onArchivedCollapsedChange={collapsed => setWorkspaceNavigation(current => ({ ...current, collapsedArchivedProjects: collapsed ? [...new Set([...current.collapsedArchivedProjects, project.id])] : current.collapsedArchivedProjects.filter(id => id !== project.id) }))} onNew={newSession} onCreateFolder={createFolder} onRename={setRenamingSession} onPosition={async (target, workspace, beforeId) => (await patchSession(target, { position: { workspace, beforeId } })) === null} onReorderFolder={reorderFolder} onArchiveSession={async (target, archived) => (await patchSession(target, { archived })) === null} onArchiveFolder={archiveFolder} onSelect={id => { navigation.current += 1; setWorkspaceNavigation(current => ({ ...current, selectedSessions: { ...current.selectedSessions, [project.id]: id } })); setView('chat'); setSidebarOpen(false); }} onClose={() => setSidebarOpen(false)} onAgents={() => { navigation.current += 1; setAgentsVisit(current => current + 1); setView('agents'); setSidebarOpen(false); }} onGraphs={() => { navigation.current += 1; setGraphsVisit(current => current + 1); setView('graphs'); setSidebarOpen(false); }} onEditProject={openProjectEditor} onRemoveProject={target => removeProject(target.id)} />}
+    {!generalView && project && <WorkspaceSidebar key={`sidebar:${project.id}`} project={project} sessions={projectSessions} activeId={view === 'chat' ? activeId : ''} activeSection={view} collapsed={collapsedFolders[project.id] ?? []} archivedCollapsed={collapsedArchivedProjects.includes(project.id)} onCollapsedChange={folders => setWorkspaceNavigation(current => ({ ...current, collapsedFolders: { ...current.collapsedFolders, [project.id]: folders } }))} onArchivedCollapsedChange={collapsed => setWorkspaceNavigation(current => ({ ...current, collapsedArchivedProjects: collapsed ? [...new Set([...current.collapsedArchivedProjects, project.id])] : current.collapsedArchivedProjects.filter(id => id !== project.id) }))} onNew={newSession} onCreateFolder={createFolder} onRename={setRenamingSession} onDelete={setDeletingSession} onPosition={async (target, workspace, beforeId) => (await patchSession(target, { position: { workspace, beforeId } })) === null} onReorderFolder={reorderFolder} onArchiveSession={async (target, archived) => (await patchSession(target, { archived })) === null} onArchiveFolder={archiveFolder} onSelect={id => { navigation.current += 1; setWorkspaceNavigation(current => ({ ...current, selectedSessions: { ...current.selectedSessions, [project.id]: id } })); setView('chat'); setSidebarOpen(false); }} onClose={() => setSidebarOpen(false)} onAgents={() => { navigation.current += 1; setAgentsVisit(current => current + 1); setView('agents'); setSidebarOpen(false); }} onGraphs={() => { navigation.current += 1; setGraphsVisit(current => current + 1); setView('graphs'); setSidebarOpen(false); }} onEditProject={openProjectEditor} onRemoveProject={target => removeProject(target.id)} />}
     <main className="main-panel">
       <header className="session-header"><div id="workspace-header-leading" className="header-leading">{!generalView && project && <IconButton label="Open sessions" className="mobile-nav" onClick={() => setSidebarOpen(true)}><PanelLeft /></IconButton>}<h1>{generalView ? 'General agent' : view === 'chat' && session ? <button className="session-title-button" title="Rename session" onClick={() => setRenamingSession(session)}>{session.title}</button> : view === 'design' ? 'Design system' : view === 'agents' ? 'Agents' : view === 'graphs' ? 'Graphs' : project?.name ?? 'KLM'}</h1>{view === 'chat' && session && gitBranch && <span className="mode-label session-header-branch" title={gitBranch}><GitBranch aria-hidden="true" /><span>{gitBranch}</span></span>}</div><div id="workspace-header-actions" className="header-actions">
         {session && chatView && <Button size="sm" className="export-button" onClick={exportSession}>Session log<Download /></Button>}
@@ -835,6 +867,7 @@ export function App() {
     {editingProject && <ProjectDialog key={`edit-project:${editingProject.id}`} initialFolder={editingProject.folder} project={editingProject} onSave={input => editProject(editingProject.id, input)} onClose={() => setEditingProject(null)} />}
     {creatingSession && createProject && <CreateSessionDialog project={createProject} harnesses={harnesses} workspace={creatingSession.workspace} onCreate={createSession} onClose={() => { navigation.current += 1; setCreatingSession(null); }} />}
     {renamingSession && <RenameSessionDialog key={renamingSession.id} session={renamingSession} onRename={title => patchSession(renamingSession, { title })} onClose={() => setRenamingSession(null)} />}
+    {deletingSession && <DeleteSessionDialog key={deletingSession.id} session={deletingSession} onDelete={() => deleteSession(deletingSession)} onClose={() => setDeletingSession(null)} />}
     {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} onDesignSystem={() => { setSettingsOpen(false); setView('design'); }} />}
   </div>;
 }

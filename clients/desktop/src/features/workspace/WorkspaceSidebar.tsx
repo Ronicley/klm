@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, Bot, Folder, FolderPlus, MoreHorizontal, PanelLeftClose, Pencil, Plus, Search, Settings, SquarePen, Workflow, X } from 'lucide-react';
+import { Archive, ArchiveRestore, Bot, Folder, FolderPlus, MoreHorizontal, PanelLeftClose, Pencil, Plus, Search, Settings, SquarePen, Trash2, Workflow, X } from 'lucide-react';
 import { Fragment, useLayoutEffect, useRef, useState } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Menu, MenuItem } from '../../design-system/Menu';
@@ -46,11 +46,12 @@ function sessionBeforeAt(container: HTMLElement, draggingId: string, clientY: nu
   return '';
 }
 
-export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onCreateFolder, onRename, onPosition, onReorderFolder, onArchiveSession, onArchiveFolder, onClose, onAgents, onGraphs, onEditProject, onRemoveProject }: {
+export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onCreateFolder, onRename, onDelete, onPosition, onReorderFolder, onArchiveSession, onArchiveFolder, onClose, onAgents, onGraphs, onEditProject, onRemoveProject }: {
   project: Project; sessions: Session[]; activeId: string; collapsed: string[]; archivedCollapsed: boolean; onCollapsedChange: (folders: string[]) => void; onArchivedCollapsedChange: (collapsed: boolean) => void;
   onSelect: (id: string) => void; onNew: (folder?: string) => void; onCreateFolder: (name: string) => Promise<string | null>;
   onRename: (session: Session) => void; onPosition: (session: Session, folder: string, beforeId: string) => Promise<boolean>;
   onReorderFolder: (folder: string, before: string) => Promise<boolean>;
+  onDelete: (session: Session) => void;
   onArchiveSession: (session: Session, archived: boolean) => Promise<boolean>; onArchiveFolder: (folder: string, archived: boolean) => Promise<boolean>;
   onClose: () => void; activeSection: 'chat' | 'design' | 'agents' | 'graphs'; onAgents: () => void; onGraphs: () => void;
   onEditProject: (project: Project) => void; onRemoveProject: (project: Project) => Promise<string | null>;
@@ -126,10 +127,11 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
         <span>{session.title}</span>{!archived && <i className={`session-runtime-led is-${runtime.state}`} role="img" aria-label={runtime.label} title={runtime.label} />}
       </button>
       {archived
-        ? <IconButton label={`Restore ${session.title}`} disabled={!!busyAction} onClick={() => void runAction(`restore:${session.id}`, () => onArchiveSession(session, false), 'Could not restore the session. Try again.')}><ArchiveRestore /></IconButton>
+        ? <><IconButton label={`Restore ${session.title}`} disabled={!!busyAction} onClick={() => void runAction(`restore:${session.id}`, () => onArchiveSession(session, false), 'Could not restore the session. Try again.')}><ArchiveRestore /></IconButton><IconButton label={`Delete ${session.title}`} disabled={!!busyAction} onClick={() => onDelete(session)}><Trash2 /></IconButton></>
         : <Menu label={`${session.title} actions`} role="menu" className="workspace-action-menu" open={sessionMenu === session.id} onOpenChange={open => { setActionError(''); setSessionMenu(open ? session.id : ''); }} side="bottom" trigger={props => <IconButton {...props} label={`${session.title} actions`}><MoreHorizontal /></IconButton>}>
           <MenuItem role="menuitem" disabled={!!busyAction} onClick={() => { setSessionMenu(''); onRename(session); }}><Pencil />Rename</MenuItem>
           <MenuItem role="menuitem" disabled={!!busyAction} onClick={() => void runAction(`archive:${session.id}`, () => onArchiveSession(session, true), 'Could not archive the session. Try again.')}><Archive />Archive</MenuItem>
+          <MenuItem role="menuitem" disabled={!!busyAction} onClick={() => { setSessionMenu(''); onDelete(session); }}><Trash2 />Delete</MenuItem>
         </Menu>}
     </div>;
   }

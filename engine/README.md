@@ -69,6 +69,7 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | PATCH | `/api/sessions/{id}/harness` | `{harness}` -> side/general SessionUpdate; general harness permanently locks at first accepted message |
 | POST | `/api/sessions/{id}/consultations/{requestID}/cancel` | `{}` -> Session; cancels the correlated request/continuation |
 | PATCH | `/api/sessions/{id}` | `{title?,workspace?,archived?}` -> 200 SessionUpdate |
+| DELETE | `/api/sessions/{id}` | 200 `{deletedSessionIds:string[],cleanupError?:string}`; permanently deletes normal top-level session and owned content; 409 while chats/processes, graph startup, active/paused graphs or consultations are unfinished |
 | GET | `/api/sessions/{id}/models` | Harness model catalog; `?refresh=true` bypasses the two-minute cache |
 | PATCH | `/api/sessions/{id}/settings` | `{model:string,effort:string}` -> Session; empty strings select harness defaults |
 | GET | `/api/sessions/{id}/quota` | `{quota:QuotaSnapshot\|null}`; null for unsupported/unverified connections |
@@ -82,6 +83,17 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | POST | `/api/sessions/{id}/permissions/{permissionID}` | `{decision:"once"\|"session"\|"always"\|"reject"}` -> Session |
 | POST | `/api/sessions/{id}/questions/{questionID}/reply` | `{answers:string[][]}` or `{cancelled:true}` -> Session |
 | POST | `/api/dialogs/directory` | `{path:string\|null}` |
+
+Session deletion includes KLM history/attachments, linked side chats, native subagent
+records and owned graph records/private sessions. Independent spawned sessions,
+project files and worktrees remain. General-agent identity is protected. A workspace
+referenced by another conversation blocks deletion. `/api/state` and SSE inventory
+packets include durable `deletedSessionIds`; clients must remove those identities
+and reject delayed session responses. DELETE retries are idempotent for deleted
+top-level sessions. `cleanupError` means logical deletion succeeded but file/checkpoint
+cleanup is pending: retry DELETE or restart the engine. Tombstones retain identities
+and accepted-operation markers only, not deleted history/prompts. Native harness
+shared storage and external backups are not purged.
 
 Adding the same directory again restores a removed project's identity, folders,
 and session history with the name and icon chosen in the add dialog.

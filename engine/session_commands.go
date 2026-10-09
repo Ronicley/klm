@@ -72,6 +72,9 @@ func (a *app) sendSessionLocked(from *Session, args sendArgs) (any, error) {
 	if !validSendArgs(args) {
 		return nil, errors.New("Supply sessionId, nonempty UTF-8 instruction (at most 128 KiB), and operationId (at most 200 bytes).")
 	}
+	if a.state.DeletedOperations["send/"+from.ID+"/"+args.OperationID] {
+		return nil, errors.New("The destination of this accepted operation was deleted. Do not resend it.")
+	}
 	if args.SourceUserEventID != "" && !graphUserEvent(&a.state, from.ID, args.SourceUserEventID) {
 		return nil, errors.New("Optional sourceUserEventId must identify a real user message in the sender's conversation.")
 	}

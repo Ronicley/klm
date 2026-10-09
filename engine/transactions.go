@@ -149,6 +149,11 @@ func diffTransaction(before, after reflect.Value, path []string, patches *[]stat
 			}
 			return nil
 		}
+		// Deleting activations also deletes their append-only logs. Replace this
+		// collection atomically rather than comparing different owners' histories.
+		if after.Type() == reflect.TypeOf([]GraphActivation{}) && after.Len() < before.Len() {
+			return put()
+		}
 		if before.IsNil() || before.Len() != after.Len() {
 			n := after.Len()
 			*patches = append(*patches, statePatch{Path: path, Length: &n})

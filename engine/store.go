@@ -99,7 +99,9 @@ type TranscriptionProviderSettings struct {
 }
 
 type diskState struct {
-	Images              map[string]storedImage `json:"images,omitempty"`
+	DeletedSessions     map[string]deletedSession `json:"deletedSessions,omitempty"`
+	DeletedOperations   map[string]bool           `json:"deletedOperations,omitempty"`
+	Images              map[string]storedImage    `json:"images,omitempty"`
 	tx                  *stateTransaction
 	JournalFormat       int                      `json:"journalFormat,omitempty"`
 	AcceptedMessages    map[string]string        `json:"acceptedMessages,omitempty"`

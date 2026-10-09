@@ -175,6 +175,9 @@ func runEngine(dir string) error {
 	if err := validateGraphRecordsCached(&a.state, a.graphValidation); err != nil {
 		return err
 	}
+	if err := a.cleanupDeletedSessions(""); err != nil {
+		log.Printf("deleted session cleanup pending: %v", err)
+	}
 	go a.expireConsultations()
 	a.mu.Lock()
 	a.scheduleLinkedLocked()
