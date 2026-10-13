@@ -61,11 +61,19 @@ to this project modal, not global Settings.
 
 Each project can have multiple independent GitHub connections, with their own name,
 secret, stable ID, endpoint, enabled state and explicit event retention. The UI
-provides Add webhook, Edit, enable/disable, Copy URL, Refresh, paginated listing and
-confirmed removal. Removal deletes the connection and all its stored events,
+provides Add and paginated rows showing name, retention, time since the
+last accepted receipt (or Never) and an enable/disable toggle. The visible list
+updates these timestamps and reloads its loaded rows every 30 seconds, pausing
+while hidden or during editing/mutations.
+Selecting a row opens read-only labels/text with Copy URL and an Edit action;
+editing exposes configuration and enabled state. Details also provide confirmed
+removal. Removal deletes the connection and all its stored events,
 pending entries and releases. Secrets are required, entered by the user and never
-returned by the API; the form permits copying the entered value and discards it
-after saving or closing. Changing a secret clears its previous ping verification.
+returned by the API. The creation form generates a random 256-bit secret using
+Web Crypto; an inline reload button generates a replacement. The value remains
+editable and copyable and is discarded after saving or closing. Editing an existing
+connection requires opting into Change secret before replacing its credential.
+Changing a secret clears its previous ping verification.
 
 Copy URL uses the configured engine base plus `/api/webhooks/github/{webhookId}`.
 The local engine uses port **7331**, or **17331** in development, rather than the
@@ -76,7 +84,7 @@ able to reach it: any HTTPS proxy/tunnel setup and public URL substitution in Gi
 are the user's responsibility. KLM does not manage a tunnel, public URL field,
 GitHub registration, OAuth or PAT. An ingress-only proxy should forward just the
 required receiving path, preserving body bytes and GitHub headers, without exposing
-engine administration. After a durably accepted signed `ping`, Refresh shows
+engine administration. After a durably accepted signed `ping`, the connection detail shows
 **Verified** with `lastPingAt`; this is historical receipt verification, not an
 online status. GitHub redelivery after an outage or uncertain response is manual;
 automatic GitHub retries are not assumed.

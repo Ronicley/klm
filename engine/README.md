@@ -93,14 +93,22 @@ In the client, open **Project settings** from the sessions sidebar. **General**
 edits the name/icon, displays the fixed directory and confirms project removal;
 **Webhooks** manages multiple independent GitHub connections for that project.
 The rail's Edit/Remove menu and Add project remain separate entry points. Global
-Settings has no Webhooks section. Cards provide enable/disable, Edit, Copy URL,
-Refresh, Last received and Verified/Not verified; Load more fetches another page.
+Settings has no Webhooks section. List rows show connection name and retention,
+with an enable/disable toggle;
+Load more fetches another page. Each row shows time since the last accepted event,
+or Never; the visible list updates every 30 seconds without a Refresh button,
+preserving the loaded page size and pausing during detail/edit views and mutations.
+Clicking a row opens
+read-only details with Copy URL, Last received, Verified/Not verified and confirmed
+removal. Edit switches to the form, including enabled state and credential changes;
+Cancel returns to read mode. New connections also open in read mode after creation.
 There is no webhook history/payload screen or feed/automation consumer yet.
 
 #### Manual GitHub setup
 
-1. Choose **Add webhook**, enter a name (1–60 characters), an explicit retention
-   and a distinct high-entropy random secret for this connection. The secret must
+1. Choose **Add → GitHub**, enter a name (1–60 characters) and an explicit
+   retention. The form generates a random 256-bit secret using Web Crypto; the
+   reload icon inside its input generates another. You can also edit it. The secret must
    contain 16–512 UTF-8 bytes without control characters; it is not trimmed or
    normalized. **Copy secret** copies only the value currently entered. Store it
    separately before saving: the form discards it on save/close, and the API only
@@ -119,11 +127,13 @@ There is no webhook history/payload screen or feed/automation consumer yet.
    and use its public URL with the same receiving path in GitHub. KLM neither
    provisions that infrastructure nor registers GitHub webhooks; no public URL
    field, GitHub App/OAuth or PAT is part of this feature.
-4. After GitHub sends a signed `ping`, click **Refresh**. **Verified** shows the
+4. After GitHub sends a signed `ping`, return to the Webhooks list and reopen the
+   connection. **Verified** shows the
    durable `lastPingAt`; **Last received** shows the latest durably accepted event.
    Configuration creation alone does not verify receipt. These timestamps are
-   historical, not a connectivity monitor; there is no background verification
-   polling. After changing a secret in KLM and GitHub, send a new ping delivery to
+   historical, not a connectivity monitor; list updates query accepted receipt
+   metadata rather than testing network connectivity. After changing a secret in
+   KLM and GitHub, send a new ping delivery to
    verify the replacement. Redelivering an already retained ping is a duplicate
    and does not update verification.
 5. If a delivery fails or its response is uncertain, inspect GitHub's Recent
