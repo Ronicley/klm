@@ -205,7 +205,7 @@ function incomingConsultationIds(session: Session) {
 
 function visibleConversationEvents(session: Session) {
   const incoming = incomingConsultationIds(session);
-  return session.events.filter(event => !event.consultationId || !incoming.has(event.consultationId));
+  return session.events.filter(event => event.data?.reverted !== true && (!event.consultationId || !incoming.has(event.consultationId)));
 }
 
 function ConsultationActivity({ event, output, sessionId, onSnapshot }: { event: EngineEvent; output: EngineEvent[]; sessionId: string; onSnapshot: (session: SessionResponse) => void }) {
@@ -270,6 +270,9 @@ export function ConversationEvents({ session, subagents, onSnapshot, onEventChan
     const next = await request<EngineEvent>(`/api/sessions/${encodeURIComponent(session.id)}/events/${encodeURIComponent(event.id)}`, 'PATCH', { favorite: value });
     onEventChange?.(session.id, next);
   }
+  async function revert(event: EngineEvent, text?: string) {
+    onSnapshot(await request<SessionResponse>(`/api/sessions/${encodeURIComponent(session.id)}/events/${encodeURIComponent(event.id)}/revert`, 'POST', text === undefined ? {} : { text }));
+  }
   useEffect(() => {
     if (!onAskSide) return;
     const readSelection = () => {
@@ -330,7 +333,7 @@ export function ConversationEvents({ session, subagents, onSnapshot, onEventChan
     <EventSequence events={visibleEvents} status={timelineStatus} updatedAt={session.updatedAt} showActiveWork={active} activeWorkStartedAt={activeWorkStartedAt} renderEvent={event => event.type === 'consultation'
       ? <ConsultationActivity event={event} output={grouped.get(String(event.data?.requestId)) ?? []} sessionId={session.id} onSnapshot={onSnapshot} />
       : event.type === 'subagent' ? <SubagentActivity event={event} session={subagents?.find(item => item.id === event.data?.childSessionId)} onOpen={onOpenSubagent} />
-      : <SessionEvent event={event} onFavorite={onEventChange && event.type === 'assistant' ? value => favorite(event, value) : undefined} />} />
+      : <SessionEvent event={event} onFavorite={onEventChange && event.type === 'assistant' ? value => favorite(event, value) : undefined} onRevert={event.type === 'user' || event.type === 'agent_prompt' || event.type === 'assistant' ? text => revert(event, text) : undefined} />} />
     {selection && onAskSide && <Button size="sm" className="selection-action" style={{ left: selection.left, top: selection.top }} onPointerDown={event => event.preventDefault()} onClick={() => {
       onAskSide(selection.messageId, selection.passage); setSelection(null); window.getSelection()?.removeAllRanges();
     }}>Ask side agent</Button>}

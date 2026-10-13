@@ -121,6 +121,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/events", a.chatSessionHandler(a.events))
 	mux.HandleFunc("GET /api/updates", a.updates)
 	mux.HandleFunc("PATCH /api/sessions/{id}/events/{eventID}", a.chatSessionHandler(a.patchEvent))
+	mux.HandleFunc("POST /api/sessions/{id}/events/{eventID}/revert", a.chatSessionHandler(a.revertEvent))
 	mux.HandleFunc("POST /api/sessions/{id}/stop", a.chatSessionHandler(a.stop))
 	mux.HandleFunc("POST /api/sessions/{id}/permissions/{permissionID}", a.permissionDecision)
 	mux.HandleFunc("PATCH /api/sessions/{id}/permissions", a.chatSessionHandler(a.updatePermissionSettings))
@@ -810,6 +811,107 @@ func (a *app) patchEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := a.state.session(id).Events[index]
+	a.mu.Unlock()
+	respond(w, 200, response)
+}
+
+func (a *app) revertEvent(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Text *string `json:"text"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	a.mu.Lock()
+	id, eventID := r.PathValue("id"), r.PathValue("eventID")
+	s := a.state.session(id)
+	if s == nil {
+		a.mu.Unlock()
+		fail(w, 404, "Session not found.")
+		return
+	}
+	if a.runs[id] != nil || s.Status == "running" {
+		a.mu.Unlock()
+		fail(w, 409, "Stop the current turn before reverting a message.")
+		return
+	}
+	index := -1
+	for i := range s.Events {
+		if s.Events[i].ID == eventID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		a.mu.Unlock()
+		fail(w, 404, "Message not found.")
+		return
+	}
+	if s.Events[index].Data != nil && s.Events[index].Data["reverted"] == true {
+		a.mu.Unlock()
+		fail(w, 409, "Message is already reverted.")
+		return
+	}
+	edited := body.Text != nil
+	if edited {
+		if s.Events[index].Type != "user" && s.Events[index].Type != "agent_prompt" {
+			a.mu.Unlock()
+			fail(w, 400, "Only user messages can be edited before continuing.")
+			return
+		}
+		if strings.TrimSpace(*body.Text) == "" || len(*body.Text) > 128<<10 || !utf8.ValidString(*body.Text) || strings.ContainsRune(*body.Text, 0) {
+			a.mu.Unlock()
+			fail(w, 400, "Edited text must be UTF-8, at most 128 KiB, without NUL characters.")
+			return
+		}
+	}
+	folder, available := a.state.conversationDirectory(s)
+	if !available {
+		a.mu.Unlock()
+		fail(w, 404, "Project not found.")
+		return
+	}
+	messageID := newID()
+	nativePath := filepath.Join(a.dir, "sessions", id+".jsonl")
+	if s.Harness == "pi" {
+		nativePath = filepath.Join(a.dir, "sessions", id+"-"+newID()+".jsonl")
+	}
+	if err := a.commitLocked(func(d *diskState) {
+		next := d.session(id)
+		for _, q := range next.Queue {
+			delete(d.QueuePayloads, q.ID)
+			delete(d.AcceptedMessages, id+"/"+q.ID)
+		}
+		next.Queue = nil
+		for i := index; i < len(next.Events); i++ {
+			e := next.Events[i]
+			data := map[string]any{}
+			for key, value := range e.Data {
+				data[key] = value
+			}
+			data["reverted"] = true
+			e.Data = data
+			d.setEvent(next, i, e)
+		}
+		delete(d.Native, id)
+		d.Native[id] = nativeSession{Path: nativePath}
+		next.ResolvedModel, next.ResolvedEffort, next.Usage = "", "", nil
+		if edited {
+			q := QueuedMessage{ID: messageID, Text: *body.Text, Mode: "queue", Status: "queued"}
+			next.Queue = append(next.Queue, q)
+			if d.QueuePayloads == nil {
+				d.QueuePayloads = map[string]queuedPayload{}
+			}
+			d.QueuePayloads[messageID] = queuedPayload{Submission: submission{Text: *body.Text}, Harness: next.Harness, Directory: folder}
+		}
+		next.Status, next.Permissions, next.Questions, next.UpdatedAt = "idle", nil, nil, now()
+	}); err != nil {
+		a.mu.Unlock()
+		fail(w, 503, err.Error())
+		return
+	}
+	a.scheduleMessagesLocked()
+	response := a.currentSessionUpdateLocked(id)
 	a.mu.Unlock()
 	respond(w, 200, response)
 }

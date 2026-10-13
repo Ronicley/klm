@@ -1,4 +1,4 @@
-import { Atom, Check, Copy, FileText, Star } from 'lucide-react';
+import { Atom, Check, Copy, FilePenLine, FileText, RotateCcw, Star } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -71,11 +71,13 @@ export const InlineMarkdownContent = memo(function InlineMarkdownContent({ text 
   return <Markdown remarkPlugins={markdownPlugins} components={inlineMarkdownComponents} skipHtml>{text}</Markdown>;
 });
 
-export function ChatMessage({ message, onFavorite, senderLabel }: { message: Message; onFavorite?: (favorite: boolean) => Promise<void>; senderLabel?: string }) {
+export function ChatMessage({ message, onFavorite, onRevert, senderLabel, editable = false }: { message: Message; onFavorite?: (favorite: boolean) => Promise<void>; onRevert?: (text?: string) => Promise<void>; senderLabel?: string; editable?: boolean }) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
   const [favoriting, setFavoriting] = useState(false);
   const [favoriteError, setFavoriteError] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  const [revertError, setRevertError] = useState(false);
   async function copy() {
     try { await navigator.clipboard.writeText(message.text); setCopied(true); setCopyError(false); }
     catch { setCopyError(true); }
@@ -87,6 +89,13 @@ export function ChatMessage({ message, onFavorite, senderLabel }: { message: Mes
     catch { setFavoriteError(true); }
     finally { setFavoriting(false); }
   }
+  async function revert(text?: string) {
+    if (!onRevert || reverting) return;
+    setReverting(true); setRevertError(false);
+    try { await onRevert(text); }
+    catch { setRevertError(true); }
+    finally { setReverting(false); }
+  }
   const streaming = message.role === 'assistant' && message.status === 'running';
   const canFavorite = message.role === 'assistant' && (!message.status || message.status === 'completed') && !!onFavorite;
   return <article data-message-id={message.id} className={`message message--${message.role}`} aria-label={senderLabel ?? `${message.role === 'user' ? 'Your' : 'Agent'} message`}>
@@ -95,9 +104,10 @@ export function ChatMessage({ message, onFavorite, senderLabel }: { message: Mes
       {message.thought && <details className="thought"><summary><Atom /><strong>Think</strong><span>·</span><span className="thought-preview">{message.thought}</span></summary><p>{message.thought}</p></details>}
       {message.role === 'assistant' ? <MarkdownContent text={message.text} className="message-text" /> : <p className="message-text"><MentionText text={message.text} mentions={message.mentions} preparation={message.mentionPreparation} /></p>}
       <FileAttachments files={message.files} />
-      {!streaming && <div className="message-actions"><IconButton label={copied ? 'Copied' : 'Copy message'} onClick={copy}>{copied ? <Check /> : <Copy />}</IconButton>{canFavorite && <IconButton label={message.favorite ? 'Remove from favorites' : 'Add to favorites'} aria-pressed={!!message.favorite} disabled={favoriting} onClick={() => void favorite()}><Star /></IconButton>}</div>}
+      {!streaming && <div className="message-actions"><IconButton label={copied ? 'Copied' : 'Copy message'} onClick={copy}>{copied ? <Check /> : <Copy />}</IconButton>{onRevert && <IconButton label="Revert message" disabled={reverting} onClick={() => { if (window.confirm('Revert this message and everything after it?')) void revert(); }}><RotateCcw /></IconButton>}{onRevert && editable && <IconButton label="Edit and continue" disabled={reverting} onClick={() => { const text = window.prompt('Edit message and continue from here', message.text); if (text !== null) void revert(text); }}><FilePenLine /></IconButton>}{canFavorite && <IconButton label={message.favorite ? 'Remove from favorites' : 'Add to favorites'} aria-pressed={!!message.favorite} disabled={favoriting} onClick={() => void favorite()}><Star /></IconButton>}</div>}
       {copyError && <p role="status" className="small muted">Clipboard unavailable. Select the message to copy it.</p>}
       {favoriteError && <p role="alert" className="small muted">Could not update the favorite. Try again.</p>}
+      {revertError && <p role="alert" className="small muted">Could not revert the message. Stop the turn and try again.</p>}
     </div>
   </article>;
 }
