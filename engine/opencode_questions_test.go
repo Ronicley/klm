@@ -28,23 +28,23 @@ func TestOpenCodeSubagentQuestion(t *testing.T) {
 			p := &adapter{app: a, id: "main", turn: active, harness: "opencode", yolo: true}
 			posts := 0
 			h := &openCodeHTTP{base: "http://opencode.invalid", client: &http.Client{Transport: openCodeHistoryTransport(func(r *http.Request) (*http.Response, error) {
-				status, body := 200, "true"
-				if r.Method == http.MethodGet && r.URL.Path == "/session/native-child" {
-					body = `{"id":"native-child","parentID":"native-main"}`
+				status, body := 204, ""
+				if r.Method == http.MethodGet && r.URL.Path == "/api/session/native-child" {
+					status, body = 200, `{"data":{"id":"native-child","parentID":"native-main"}}`
 				} else {
 					posts++
-					wantPath := "/question/native-question/reply"
+					wantPath, wantMethod := "/api/session/native-child/form/native-question/reply", http.MethodPost
 					if action == "dismiss" {
-						wantPath = "/question/native-question/reject"
+						wantPath, wantMethod = "/api/session/native-child/form/native-question", http.MethodDelete
 					}
-					if r.Method != http.MethodPost || r.URL.Path != wantPath {
+					if r.Method != wantMethod || r.URL.Path != wantPath {
 						t.Fatalf("answer went to the wrong endpoint: %s %s", r.Method, r.URL.Path)
 					}
 					if action != "dismiss" {
 						var sent struct {
-							Answers [][]string `json:"answers"`
+							Answer map[string][]string `json:"answer"`
 						}
-						if err := json.NewDecoder(r.Body).Decode(&sent); err != nil || !reflect.DeepEqual(sent.Answers, [][]string{{"A", "B"}}) {
+						if err := json.NewDecoder(r.Body).Decode(&sent); err != nil || !reflect.DeepEqual(sent.Answer, map[string][]string{"choice": {"a", "b"}}) {
 							t.Fatalf("native choices changed: %+v (%v)", sent, err)
 						}
 					}
@@ -61,8 +61,8 @@ func TestOpenCodeSubagentQuestion(t *testing.T) {
 			questions := map[string]*atomic.Bool{}
 			err = p.requestOpenCodeQuestion(ctx, h, map[string]any{
 				"id": "native-question", "sessionID": "native-child",
-				"questions": []any{map[string]any{"question": "Which options?", "header": "Choice", "multiple": true, "custom": false,
-					"options": []any{map[string]any{"label": "A", "description": "First"}, map[string]any{"label": "B", "description": "Second"}}}},
+				"title": "Choice", "fields": []any{map[string]any{"key": "choice", "title": "Which options?", "type": "multiselect", "custom": false,
+					"options": []any{map[string]any{"value": "a", "label": "A", "description": "First"}, map[string]any{"value": "b", "label": "B", "description": "Second"}}}},
 			}, questions)
 			if err != nil {
 				t.Fatal(err)

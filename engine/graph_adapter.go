@@ -293,6 +293,13 @@ func (p *adapter) openCodeGraphGate(raw json.RawMessage) error {
 		b.pluginOnce.Do(func() { close(b.pluginReady) })
 		return nil
 	}
+	if request.Operation == "shell" {
+		if b.nativeSession == "" {
+			return errors.New("Unbound OpenCode shell admission.")
+		}
+		b.gateSeen = true
+		return nil
+	}
 	if request.Operation != "admit" || b.nativeSession == "" || request.SessionID == "" || request.CallID == "" || request.Tool == "" {
 		return errors.New("Unbound or invalid OpenCode tool admission.")
 	}

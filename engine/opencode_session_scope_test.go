@@ -14,12 +14,12 @@ func TestOpenCodeRequestOwnership(t *testing.T) {
 	requests := 0
 	h := &openCodeHTTP{base: "http://opencode.invalid", client: &http.Client{Transport: openCodeHistoryTransport(func(r *http.Request) (*http.Response, error) {
 		requests++
-		id := strings.TrimPrefix(r.URL.Path, "/session/")
+		id := strings.TrimPrefix(r.URL.Path, "/api/session/")
 		parent, ok := parents[id]
 		if !ok {
 			t.Fatalf("unexpected session lookup: %q", id)
 		}
-		body := fmt.Sprintf(`{"id":%q,"parentID":%q}`, id, parent)
+		body := fmt.Sprintf(`{"data":{"id":%q,"parentID":%q}}`, id, parent)
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}}
 	owned := map[string]bool{"root": true}

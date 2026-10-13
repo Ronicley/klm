@@ -54,7 +54,7 @@ func (p *adapter) openCodePermissionGate(ctx context.Context, raw json.RawMessag
 	if p.graphSealed() {
 		return false, errors.New("Graph activation is sealed.")
 	}
-	if p.internalOpenCodeTool(call.Tool) || slices.Contains([]string{"question", "todowrite", "todoread"}, call.Tool) {
+	if p.internalOpenCodeTool(call.Tool) || slices.Contains([]string{"question", "form", "todowrite", "todoread"}, call.Tool) {
 		return true, nil
 	}
 	key := call.SessionID + "/" + call.CallID
@@ -64,7 +64,7 @@ func (p *adapter) openCodePermissionGate(ctx context.Context, raw json.RawMessag
 		Patterns: []string{string(encoded)}, Command: str(call.Input, "command"), Path: call.Cwd,
 		Details: map[string]any{"toolName": call.Tool, "input": call.Input, "cwd": call.Cwd}}
 	req.mcpTool = p.isOpenCodeMCPTool(call.Tool)
-	if call.Tool == "bash" {
+	if call.Tool == "bash" || call.Tool == "shell" {
 		if workdir := str(call.Input, "workdir"); workdir != "" {
 			req.Path = workdir
 		}
@@ -118,6 +118,6 @@ func (p *adapter) openCodePermissionApproved(properties map[string]any) bool {
 	if tool == "" {
 		return false
 	}
-	return kind == tool || kind == "external_directory" && slices.Contains([]string{"read", "write", "edit", "apply_patch", "bash", "glob", "grep", "list", "skill"}, tool) ||
+	return kind == tool || kind == "external_directory" && slices.Contains([]string{"read", "write", "edit", "apply_patch", "bash", "shell", "glob", "grep", "list", "skill"}, tool) ||
 		kind == "edit" && slices.Contains([]string{"write", "edit", "apply_patch"}, tool)
 }

@@ -67,6 +67,12 @@ func (p *openCodeHistoryProjection) nonSpace() (byte, error) {
 }
 
 func openCodeDiffPreviewPath(path []string) bool {
+	if len(path) > 0 && path[0] == "data" {
+		path = path[1:]
+		if len(path) > 1 && path[1] == "content" {
+			path = append([]string{"[]", "parts"}, path[2:]...)
+		}
+	}
 	if len(path) != 6 && len(path) != 8 {
 		return false
 	}
@@ -144,9 +150,13 @@ func (p *openCodeHistoryProjection) value(path []string, depth int) error {
 	switch b {
 	case '"':
 		imageURL := len(path) == 4 && path[0] == "[]" && path[1] == "parts" && path[2] == "[]" && path[3] == "url"
-		raw, err := p.quoted(openCodeDiffPreviewPath(path) || imageURL)
+		imageData := len(path) == 5 && path[0] == "data" && path[1] == "[]" && path[2] == "files" && path[3] == "[]" && path[4] == "data"
+		raw, err := p.quoted(openCodeDiffPreviewPath(path) || imageURL || imageData)
 		if err != nil {
 			return err
+		}
+		if imageData {
+			raw, _ = json.Marshal("[File content retained by the harness.]")
 		}
 		if imageURL {
 			var url string

@@ -1,9 +1,7 @@
-// Owned, turn-scoped plugin. It runs in the same contained server as native tools.
-// No tool arguments, results, credentials or workspace data are logged here.
-const config = /** @type {{url: string, token: string}} */ (/*KLM_GRAPH_CONFIG*/{});
+// Owned, turn-scoped plugin. No workspace data or credentials are logged.
+const config = /*KLM_GRAPH_CONFIG*/{};
 
-export default async function () {
-  /** @param {{operation: string, sessionID?: string, tool?: string, callID?: string}} request */
+async function graphPlugin(ctx) {
   async function gate(request) {
     const response = await fetch(config.url, {
       method: "POST",
@@ -17,30 +15,21 @@ export default async function () {
       throw new Error("KLM graph activation does not permit further tool execution.");
     }
   }
-  // Throwing from the before hook aborts execution before item.execute / MCP call.
-  /** @param {{tool: string, sessionID: string, callID: string}} input */
-  const before = async (input) => {
+  const correlation = (event) => ({ sessionID: event.sessionID, callID: event.id, tool: event.tool });
+  await ctx.tool.hook("execute.before", async (event) => {
+    const request = correlation(event);
     try {
-      await gate({ ...input, operation: "admit" });
+      await gate({ ...request, operation: "admit" });
     } catch (error) {
-      // If admission was recorded but its HTTP reply was lost, this hook still
-      // throws before native execution. Best-effort retract that admission.
-      try { await gate({ ...input, operation: "not_started" }); } catch {}
+      try { await gate({ ...request, operation: "not_started" }); } catch {}
       throw error;
     }
-  };
+  });
+  await ctx.tool.hook("execute.after", async (event) => {
+    // V2 reports both success and failure after the executor has settled.
+    await gate({ ...correlation(event), operation: "response" });
+  });
+  // V2 shell hooks have no session/call IDs; tool admission owns correlation.
+  await ctx.shell.hook("create.before", async () => { await gate({ operation: "shell" }); });
   await gate({ operation: "ready" });
-  return {
-    "tool.execute.before": before,
-    // OpenCode 1.18.30 only calls after on a returned value. It does NOT call it
-    // when a tool throws (including MCP isError). Those cases are reconciled by
-    // the engine's native error events and retain uncertainty without evidence.
-    "tool.execute.after": async (/** @type {{tool: string, sessionID: string, callID: string}} */ input) => {
-      await gate({ ...input, operation: "response" });
-    },
-    // The native shell endpoint also has a gate, independent of its permission path.
-    "shell.env": async (/** @type {{sessionID?: string, callID?: string}} */ input) => {
-      await gate({ operation: "admit", sessionID: input.sessionID, callID: input.callID, tool: "shell" });
-    },
-  };
 }

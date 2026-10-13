@@ -435,15 +435,15 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 	transport := &http.Transport{ResponseHeaderTimeout: 15 * time.Second}
 	defer transport.CloseIdleConnections()
 	h.client = &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("Redirect refused.") }}
-	cmd := exec.CommandContext(ctx, b.path, append(append([]string{}, b.args...), "serve", "--hostname", "127.0.0.1", "--port", "0", "--mdns=false")...)
+	cmd := exec.CommandContext(ctx, b.path, append(append([]string{}, b.args...), "serve", "--hostname", "127.0.0.1", "--port", "0")...)
 	cmd.Dir = cwd
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if !strings.EqualFold(key, "OPENCODE_SERVER_PASSWORD") && !strings.EqualFold(key, "OPENCODE_SERVER_USERNAME") {
+		if !strings.EqualFold(key, "OPENCODE_PASSWORD") && !strings.EqualFold(key, "OPENCODE_SERVER_PASSWORD") && !strings.EqualFold(key, "OPENCODE_SERVER_USERNAME") {
 			cmd.Env = append(cmd.Env, entry)
 		}
 	}
-	cmd.Env = append(cmd.Env, "OPENCODE_SERVER_USERNAME=opencode", "OPENCODE_SERVER_PASSWORD="+h.password)
+	cmd.Env = append(cmd.Env, "OPENCODE_PASSWORD="+h.password)
 	configureProcess(cmd)
 	cmd.Cancel = func() error { return killTree(cmd.Process) }
 	cmd.WaitDelay = 3 * time.Second
@@ -461,7 +461,7 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 4096), openCodeFrameLimit)
 		for scanner.Scan() {
-			if value, ok := strings.CutPrefix(strings.TrimSpace(scanner.Text()), "opencode server listening on "); ok {
+			if value, ok := strings.CutPrefix(strings.TrimSpace(scanner.Text()), "server listening on "); ok {
 				select {
 				case address <- value:
 				default:
@@ -484,70 +484,7 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	var providers struct {
-		All []struct {
-			ID      string         `json:"id"`
-			Name    string         `json:"name"`
-			Source  string         `json:"source"`
-			Options map[string]any `json:"options"`
-			Models  map[string]struct {
-				Name    string         `json:"name"`
-				Headers map[string]any `json:"headers"`
-				Options map[string]any `json:"options"`
-				API     struct {
-					URL string `json:"url"`
-				} `json:"api"`
-				Variants map[string]json.RawMessage `json:"variants"`
-			} `json:"models"`
-		} `json:"all"`
-		Connected []string          `json:"connected"`
-		Default   map[string]string `json:"default"`
-	}
-	if err = h.json(ctx, http.MethodGet, "/provider", nil, &providers); err != nil {
-		return nil, err
-	}
-	var config map[string]any
-	if err = h.json(ctx, http.MethodGet, "/config", nil, &config); err != nil {
-		return nil, err
-	}
-	c := &ModelCatalog{Models: []ModelOption{}, DefaultModel: str(config, "model"), EffortLabel: "Variant", providerOptions: map[string]map[string]any{}}
-	for _, p := range providers.All {
-		if !slices.Contains(providers.Connected, p.ID) {
-			continue
-		}
-		// Native "connected" also includes automatically available/free catalogs.
-		// Keep authenticated providers or an explicitly configured connection only.
-		configured := object(object(config["provider"])[p.ID]) != nil
-		authType := harnessAuthType("opencode", p.ID)
-		if p.Source != "api" && p.Source != "env" && !configured && authType == "configured" {
-			continue
-		}
-		c.ConnectedProviders = append(c.ConnectedProviders, ConnectedProvider{ID: p.ID, Name: p.Name, AuthType: authType})
-		if p.Options == nil {
-			p.Options = map[string]any{}
-		}
-		p.Options["_source"] = p.Source
-		c.providerOptions[p.ID] = p.Options
-		for id, m := range p.Models {
-			efforts := []string{}
-			for variant := range m.Variants {
-				efforts = append(efforts, variant)
-			}
-			sort.Strings(efforts)
-			c.Models = append(c.Models, ModelOption{ID: p.ID + "/" + id, Name: m.Name, Provider: p.ID, ProviderName: p.Name, Efforts: efforts, endpoint: m.API.URL, customAuth: hasAuthHeaders(m.Headers) || m.Options["apiKey"] != nil || m.Options["baseURL"] != nil})
-		}
-	}
-	// Respect the active agent's model/variant overrides as part of effective defaults.
-	agent := str(config, "default_agent")
-	if agent == "" {
-		agent = "build"
-	}
-	settings := object(object(config["agent"])[agent])
-	if model := str(settings, "model"); model != "" {
-		c.DefaultModel = model
-	}
-	c.DefaultEffort = str(settings, "variant")
-	return c, nil
+	return h.v2Catalog(ctx)
 }
 
 func (p *adapter) resolvedSelection(model, effort string) error {

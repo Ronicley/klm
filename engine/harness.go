@@ -64,7 +64,7 @@ func discoverHarnesses() ([]Harness, map[string]binary) {
 				}
 			} else if h.ID == "opencode" {
 				for _, root := range npmRoots {
-					candidates = append(candidates, filepath.Join(root, "opencode-ai", "bin", "opencode.exe"))
+					candidates = append(candidates, filepath.Join(root, "@opencode", "cli", "bin", "opencode.exe"))
 				}
 			} else if local := os.Getenv("LOCALAPPDATA"); local != "" {
 				candidates = append(candidates, filepath.Join(local, "Programs", "OpenAI", "Codex", "bin", "codex.exe"))

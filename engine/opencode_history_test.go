@@ -29,7 +29,7 @@ func TestOpenCodeHistoryPagination(t *testing.T) {
 	h.client = &http.Client{Transport: openCodeHistoryTransport(func(r *http.Request) (*http.Response, error) {
 		requests++
 		q := r.URL.Query()
-		if r.URL.Path != "/session/ses_test/message" || q.Get("directory") != h.directory {
+		if r.URL.Path != "/api/session/ses_test/message" || q.Get("location[directory]") != h.directory {
 			t.Fatalf("incorrect history request: %s", r.URL)
 		}
 		limit, err := strconv.Atoi(q.Get("limit"))
@@ -38,7 +38,7 @@ func TestOpenCodeHistoryPagination(t *testing.T) {
 		}
 		limits = append(limits, limit)
 		end := count
-		if cursor := q.Get("before"); cursor != "" {
+		if cursor := q.Get("cursor"); cursor != "" {
 			end, err = strconv.Atoi(strings.TrimPrefix(cursor, "older/"))
 			if err != nil {
 				t.Fatalf("invalid cursor: %q", cursor)
@@ -46,24 +46,23 @@ func TestOpenCodeHistoryPagination(t *testing.T) {
 		}
 		start := max(0, end-limit)
 		page := make([]map[string]any, 0, end-start)
-		for i := start; i < end; i++ {
+		for i := end - 1; i >= start; i-- {
 			id := fmt.Sprintf("msg_%03d", i)
 			page = append(page, map[string]any{
-				"info": map[string]any{"id": id, "sessionID": "ses_test", "role": "assistant"},
-				"parts": []any{
-					map[string]any{"id": id + "_text", "messageID": id, "sessionID": "ses_test", "type": "text", "text": padding},
-					map[string]any{"id": id + "_step", "messageID": id, "sessionID": "ses_test", "type": "step-finish", "tokens": map[string]any{"input": 1, "output": 2, "reasoning": 0, "cache": map[string]any{"read": 0, "write": 0}}},
-				},
+				"id": id, "type": "assistant", "time": map[string]any{"created": i, "completed": i + 1},
+				"tokens":  map[string]any{"input": 1, "output": 2, "reasoning": 0, "cache": map[string]any{"read": 0, "write": 0}},
+				"content": []any{map[string]any{"type": "text", "text": padding}},
 			})
 		}
-		data, err := json.Marshal(page)
+		next := ""
+		if start > 0 {
+			next = fmt.Sprintf("older/%d", start)
+		}
+		data, err := json.Marshal(map[string]any{"data": page, "cursor": map[string]any{"next": next}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		headers := http.Header{}
-		if start > 0 {
-			headers.Set("X-Next-Cursor", fmt.Sprintf("older/%d", start))
-		}
 		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(string(data)))}, nil
 	})}
 	usage := &openCodeUsage{messages: map[string]map[string]any{}, steps: map[string]map[string]map[string]any{}, windows: map[string]*int64{}}
@@ -114,9 +113,8 @@ func TestOpenCodeHistoryRepeatedCursor(t *testing.T) {
 	requests := 0
 	h := &openCodeHTTP{base: "http://opencode.invalid", client: &http.Client{Transport: openCodeHistoryTransport(func(r *http.Request) (*http.Response, error) {
 		requests++
-		body := fmt.Sprintf(`[{"info":{"id":"msg_%d","sessionID":"ses_test"},"parts":[]}]`, requests)
+		body := fmt.Sprintf(`{"data":[{"id":"msg_%d","type":"user"}],"cursor":{"next":"same-cursor"}}`, requests)
 		headers := http.Header{}
-		headers.Set("X-Next-Cursor", "same-cursor")
 		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}}
 	err := h.walkMessages(context.Background(), "ses_test", nil, func(map[string]any) error { return nil })

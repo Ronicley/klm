@@ -28,11 +28,11 @@ func TestOpenCodeHistoryLargeDiffMetadata(t *testing.T) {
 	// Generate 44 MiB incrementally, matching the observed metadata.diff and
 	// metadata.files[].patch shape without allocating those strings in the test.
 	body := io.MultiReader(
-		strings.NewReader(`[{"info":{"id":"msg_big","sessionID":"ses_test","role":"assistant"},"parts":[{"id":"part_tool","messageID":"msg_big","sessionID":"ses_test","type":"tool","tool":"apply_patch","callID":"call_test","state":{"status":"completed","input":{"patchText":"small patch"},"output":"Applied changes.","metadata":{"diff":"`),
+		strings.NewReader(`{"data":[{"id":"msg_big","type":"assistant","tokens":{"input":1,"output":2,"reasoning":0,"cache":{"read":0,"write":0}},"content":[{"id":"call_test","type":"tool","name":"apply_patch","state":{"status":"completed","input":{"patchText":"small patch"},"content":[{"type":"text","text":"Applied changes."}],"metadata":{"diff":"`),
 		&openCodeRepeatedBytes{22 << 20},
 		strings.NewReader(`","files":[{"filePath":"C:/project/file.txt","relativePath":"file.txt","type":"update","patch":"`),
 		&openCodeRepeatedBytes{22 << 20},
-		strings.NewReader(`","additions":3,"deletions":2}],"diagnostics":{},"truncated":false,"interrupted":true},"time":{"start":1,"end":2}}},{"id":"part_step","messageID":"msg_big","sessionID":"ses_test","type":"step-finish","tokens":{"input":1,"output":2,"reasoning":0,"cache":{"read":0,"write":0}}}]}]`),
+		strings.NewReader(`","additions":3,"deletions":2}],"diagnostics":{},"truncated":false,"interrupted":true}},"time":{"created":1,"completed":2}}]}],"cursor":{}}`),
 	)
 	requests, visited := 0, 0
 	h := &openCodeHTTP{base: "http://opencode.invalid", client: &http.Client{Transport: openCodeHistoryTransport(func(r *http.Request) (*http.Response, error) {
@@ -53,7 +53,7 @@ func TestOpenCodeHistoryLargeDiffMetadata(t *testing.T) {
 			str(object(state["input"]), "patchText") != "small patch" || str(state, "output") != "Applied changes." ||
 			str(file, "filePath") != "C:/project/file.txt" || file["additions"] != float64(3) || file["deletions"] != float64(2) ||
 			!truth(meta, "interrupted") || meta["truncated"] != false || object(meta["diagnostics"]) == nil ||
-			object(parts[1])["type"] != "step-finish" || object(object(parts[1])["tokens"])["output"] != float64(2) {
+			object(object(message["info"])["tokens"])["output"] != float64(2) {
 			t.Fatal("non-preview data changed")
 		}
 		encoded, err := json.Marshal(message)

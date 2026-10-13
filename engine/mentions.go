@@ -78,6 +78,17 @@ func (s submission) openCodeParts() []any {
 	return parts
 }
 
+func (s submission) openCodeV2Prompt() map[string]any {
+	files := []any{}
+	for _, value := range s.openCodeParts() {
+		part := object(value)
+		if str(part, "type") == "file" {
+			files = append(files, map[string]any{"uri": part["url"], "name": part["filename"]})
+		}
+	}
+	return map[string]any{"text": s.piText(), "files": files, "delivery": "steer"}
+}
+
 func (s submission) codexInput() []any {
 	input := []any{map[string]any{"type": "text", "text": s.Text, "text_elements": []any{}}}
 	if s.Context != "" {

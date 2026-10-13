@@ -33,6 +33,9 @@ func omitNativeImageData(value any) {
 		if str(v, "type") == "image" {
 			delete(v, "data")
 		}
+		if strings.HasPrefix(str(v, "mime"), "image/") {
+			delete(v, "data")
+		}
 		if strings.HasPrefix(str(v, "url"), "data:image/") {
 			v["url"] = "[Image content retained by the harness.]"
 		}

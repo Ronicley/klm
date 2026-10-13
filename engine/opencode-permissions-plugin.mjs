@@ -1,36 +1,38 @@
-// Owned tool preflight. Native restrictions still apply outside YOLO mode.
 const permissionConfig = /*KLM_PERMISSION_CONFIG*/{};
-export default async function (context) {
-  const hooks = await graphPlugin(context);
-  return {
-    ...hooks,
-    "tool.execute.before": async (input, output) => {
+
+export default {
+  id: "klm.policy",
+  async setup(ctx) {
+    await ctx.tool.hook("execute.before", async (event) => {
       const response = await fetch(permissionConfig.url, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + permissionConfig.token },
         body: JSON.stringify({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "klm/permission/opencode", params: {
-          sessionID: input.sessionID, toolCallId: input.callID, toolName: input.tool,
-          cwd: context.directory, input: output.args,
+          sessionID: event.sessionID, toolCallId: event.id, toolName: event.tool,
+          cwd: ctx.location.directory, input: event.input,
         } }),
       });
       if (!response.ok) throw new Error("KLM permission gate is unavailable.");
       const envelope = await response.json();
       if (envelope.error || envelope.result?.allowed !== true) throw new Error("Permission denied by KLM.");
-      // Admission happens after permission resolution; a sealed graph still denies.
-      await hooks["tool.execute.before"]?.(input, output);
-    },
-    config: async (config) => {
-      if (!permissionConfig.yolo) return;
-      config.permission = { "*": "allow" };
-      for (const agent of Object.values(config.agent ?? {})) {
-        agent.permission = { "*": "allow" };
-        if (agent.tools) {
-          for (const tool of Object.keys(agent.tools)) agent.tools[tool] = true;
+    });
+    if (permissionConfig.yolo) {
+      await ctx.agent.transform((editor) => {
+        for (const agent of editor.list()) {
+          editor.update(agent.id, (draft) => { draft.permissions = [{ action: "*", resource: "*", effect: "allow" }]; });
         }
-      }
-      if (config.tools) {
-        for (const tool of Object.keys(config.tools)) config.tools[tool] = true;
-      }
-    },
-  };
-}
+      });
+    }
+    await graphPlugin(ctx);
+    await ctx.rpc.register({
+      id: "klm.policy",
+      methods: {
+        inventory: {
+          input: { type: "object", additionalProperties: false },
+          output: { type: "object", properties: { tools: { type: "array", items: { type: "string" } } }, required: ["tools"], additionalProperties: false },
+        },
+      },
+      events: {},
+    }, { inventory: async () => ({ tools: (await ctx.tool.list()).map((tool) => tool.id) }) });
+  },
+};
