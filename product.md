@@ -105,8 +105,9 @@ existing releases retain their sequence and timestamp. Metadata/history and raw
 payload detail are available through project-scoped APIs. Released events use an
 independent persistent release sequence, with decimal-string `after`, `nextAfter`
 and `highWatermark` cursors. Reading does not consume events. SSE and in-memory wake
-signals are not durable webhook delivery. Consumer progress storage and integration
-with the KLM Agent timeline, sessions, agents or graphs are outside this slice.
+signals are not durable webhook delivery. The KLM Agent timeline now reads retained
+releases through a separate global, descending projection. Consumer progress storage
+and automatic integration with sessions, agents or graphs remain outside this slice.
 
 Retention starts at UTC engine receipt, not GitHub occurrence or internal release:
 **1 day**, **3 days**, **1 week**, **1 month**, **3 months**, **6 months**, **1 year**
@@ -142,9 +143,20 @@ resizing, with a 360px minimum per pane and a locally remembered split. Double-c
 restores the default proportions. Hovering or focusing the divider reveals a
 centered swap button that exchanges the panels while retaining their widths and
 content. Panel order is also remembered locally.
-The timeline currently uses local layout fixtures for PR, issue, pipeline and agent
-updates, with project icons, category/search filters, expandable details and local
-bookmarks. **Happening now** uses the live session inventory across active projects.
+The timeline displays real released GitHub deliveries across active projects, with
+project icons, GitHub provider, factual action/result, safe resource links, category
+and summary search, on-demand compact Details, and in-memory bookmarks. Feed settings
+starts with all 56 event families enabled; local preferences are scoped to browser
+origin and engine URL and affect display only. The push-ruleset bypass preference
+uses the documented request discriminator; its canonical header is still unconfirmed.
+No local fixtures or internal agent posts appear in the live timeline.
+When new posts arrive while reading below the top, the visible post keeps its
+position. A floating accent pill below the category bar shows an upward arrow and
+up to three distinct project icons (plus an overflow count). Clicking it scrolls
+to the top; reaching the top manually also clears the notice. Initial loads,
+older-page loads and filter changes do not announce new posts. Reduced-motion
+preferences disable smooth scrolling.
+**Happening now** uses the live session inventory across active projects.
 It includes normal top-level sessions with a running turn, a retained active runtime,
 pending permissions/questions, or a failed state, including independently spawned sessions,
 and excludes archived sessions, sessions in archived folders, removed projects,
@@ -167,9 +179,12 @@ centered hover/focus swap button, retaining its width and side locally. It start
 at 230px, with a 200px minimum and at least 320px left for the timeline; double-click
 resets the width. Timeline and sidebar scroll independently in the column layout.
 It moves above the feed in narrower split views, where this divider is hidden;
-compact windows switch between Chat and Activity. Only Happening now is live, using
-the existing engine state/update stream; the timeline remains a UI-only fixture,
-without external activity integrations or automatic agent monitoring.
+compact windows switch between Chat and Activity. Happening now uses the existing
+engine state/update stream. Activity polls while visible and refreshes on focus;
+refresh reloads its contiguous loaded window before replacing it, preserving the
+pagination boundary. Retention/deletion and removed projects limit availability;
+readers do not consume deliveries or extend retention. No automatic agent monitoring
+or event-triggered execution is included.
 
 Clicking a Happening now session opens its live chat as a shorter overlay above
 the KLM Agent composer, flush with the chat column's sides and bottom and rounded
@@ -268,8 +283,15 @@ agent provenance. None of these replies become human graph/spawn authorization.
 
 No Hermes, linked side agent for the general conversation, project file mentions,
 general graph invocation, automatic monitoring or completion notifications is included.
-The activity timeline remains a visual prototype; Happening now is engine-backed.
-Runtime behavior awaits human validation.
+The activity timeline and Happening now are engine-backed. The GitHub feed passed
+Go/TypeScript compilation and a disposable local HMAC → release → feed/Details smoke,
+including filtering, pagination and retained history after restart. The standalone
+simulator covers 56 families in 124 partial synthetic scenarios (55 confirmed headers,
+one explicitly synthetic bypass header). Targeted Playwright checks covered cards,
+settings/reload, filters/search, bookmarks, responsive layouts, refresh recovery and
+a 105-event arrival across multiple pages while preserving the reading position.
+Human UI acceptance, real external GitHub delivery, elapsed TTL and remaining
+lifecycle cases still await validation.
 
 ### Windows Delivery and Focus
 

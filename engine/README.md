@@ -102,7 +102,8 @@ Clicking a row opens
 read-only details with Copy URL, Last received, Verified/Not verified and confirmed
 removal. Edit switches to the form, including enabled state and credential changes;
 Cancel returns to read mode. New connections also open in read mode after creation.
-There is no webhook history/payload screen or feed/automation consumer yet.
+The KLM Agent Activity timeline projects released, retained GitHub deliveries.
+The connection editor has no raw-payload history screen or automation consumer.
 
 #### Manual GitHub setup
 
@@ -296,7 +297,102 @@ lose events to TTL, with no complete-history or expired-payload recovery guarant
 After an uncertain management mutation, Refresh before retrying; creation is not
 automatically retried after a transport failure.
 
-#### Effective limits and errors
+#### GitHub Activity projection
+
+The KLM Agent timeline reads releases directly, without a second event store,
+journal, ACK or durable consumer cursor. It never starts an agent or graph.
+
+| Method | Path | Contract |
+| --- | --- | --- |
+| GET | `/api/activity/github/catalog` | `{version:1,items:[{id,label,defaultEnabled,category}]}`; 56 initial options, all enabled |
+| GET | `/api/activity/github` | `limit=1..100` (default 50), `cursor`, `category`, `q` (max 200 chars), repeated `exclude` catalog IDs -> `{items,nextCursor?,hasMore,highWatermark,asOf}` |
+| GET | `/api/activity/github/{eventId}` | `{id,fields:[{label,value}],body?,entries?:[{text,url?}],truncated}`; 404 if unavailable |
+
+Categories are `PRs`, `Pipelines`, `Issues`, `Security`, `Repository`, `Other`;
+absent/`All` means all. Unknown categories/exclusions or invalid cursors return 400.
+Search is case-insensitive substring matching on displayed summary fields, not raw
+payload full-text. Filters apply **before** pagination. Unknown event types remain
+visible in Other, even if all known types are excluded. Ping is never feed activity.
+
+Items include project/connection/event identity, original eventType/action, catalogId
+when known, GitHub provider, category/tone/icon, actionLabel/summary/title/reference,
+optional branches/result/actor/repository and safe targetUrl/targetKind. Sequence,
+receipt/release times and optional expiry come from retained engine records. Sender
+does not imply agent authorship. The project owner/name comes from engine inventory.
+
+Order is **descending releaseSequence**. The opaque, strict, versioned base64url
+cursor binds the canonical filters, captured high watermark and exclusive lower
+sequence. All sequences are decimal strings, never JavaScript numbers. New releases
+appear on refresh; pagination stays under its original watermark. TTL/deletion may
+create gaps. Each query rechecks active projects, extant connections and unexpired
+releases; disabled connections retain history, removed projects hide it until restored.
+Concurrent deletion can finish an already captured read, as with existing webhook APIs.
+
+Parsing runs outside `app.mu`, using immutable payload references. A per-engine
+volatile cache holds compact normalized summaries only (10,000 entries/64 MiB limit),
+pruned against eligible records on reads; it never authorizes visibility or stores raw
+payloads. Project names are applied outside this cache. Summary text/URLs are bounded,
+and compact Details has a 64 KiB serialized ceiling with explicit truncation. Body
+text is literal, allowlisted by event family; secret-scanning secret values, deploy
+key material and hook configuration are excluded. URLs must be absolute HTTP(S)
+without userinfo/controls; missing resource links fall back to repository pages,
+otherwise references are nonclickable. No GitHub enrichment request is performed.
+
+The 56 preferences correspond to the supplied GitHub screenshot. There are **55
+confirmed canonical headers** plus stable catalog ID `push_ruleset_bypass`, matched
+for unknown headers through `exemption_request.request_type=push_ruleset_bypass`.
+This deliberately does not assert a canonical header that has not been verified.
+See `../GITHUB_ACTIVITY_FEED_IMPLEMENTATION_PLAN.md` for sources and availability.
+
+Feed settings uses localStorage
+`klm.agent.github-feed.preferences.v1:${encodeURIComponent(ENGINE_URL)}` with
+`{version:1,overrides:{catalogId:boolean}}`. This is display configuration per client
+origin/engine URL, independent of webhook subscriptions, retention and other readers.
+Explicit overrides survive future default changes. Storage failures are reported.
+Bookmarks remain in memory and never retain expired content.
+
+The visible client refreshes every 15 seconds and on focus/visibility return. It
+reloads all pages through the previous loaded lower boundary, then swaps atomically;
+it never appends an old cursor to a new top. Load more is serialized with refresh,
+query changes cancel stale requests, and errors preserve the last complete snapshot.
+Refresh preserves the visible reading anchor in desktop and compact scroll containers.
+New releases arriving below the top show a floating arrow/project-icon pill;
+clicking it returns to the top, and scrolling to the top manually also dismisses it.
+Project icons are deduplicated, with at most three displayed plus an overflow count.
+Initial loads, Load more and filter changes do not count as new arrivals; expired or
+removed events are excluded from the notice. Browser scroll anchoring is disabled
+in these containers so it does not compete with the explicit reading anchor.
+The client hides expired items using the engine clock offset and requests Details
+only when expanded. Internal agent posts/Needs attention remain future work.
+
+Standalone simulator: `node scripts/github-webhooks/simulate.mjs --list` and
+`--all --dry-run` from the repository root; see
+[`scripts/github-webhooks/README.md`](../scripts/github-webhooks/README.md).
+It signs exact bytes, supports external payloads, duplicate/invalid-signature modes,
+and has **124 partial synthetic scenarios covering all 56 catalog IDs**. Push ruleset
+bypass explicitly uses `klm_simulated_push_ruleset_bypass` until a real header is known.
+
+Implementation checks (2026-10-13): `go build -tags dev ./...`, `npx tsc -b`,
+simulator list/dry-run passed. A disposable overlay build on port 27331 (new data,
+two synthetic projects/connections) exercised all 124 scenarios, 202/200/401 behavior,
+ping exclusion, all catalog classifications, compact Details, PR/CI/comment semantics,
+descending pagination/watermark, category/search/exclusion, safe URL fallback,
+large JSON numbers, cross-connection delivery independence and restart retention
+of 128 visible occurrences. Targeted Playwright checks then covered 50/100/128-card
+pagination, provider/copy/Details/links, bookmarks across filters, all 56 settings,
+preference persistence after reload, search and empty states, and 1440/900/390px
+layouts. Adding 105 signed deliveries refreshed the mounted feed to 233 unique
+cards while preserving its reading anchor; deleting that disposable connection
+returned it to 128. A simulated refresh error kept the loaded cards and Retry
+recovered. PR readiness copy and synthetic closed-PR states were corrected and
+checked; the final Go overlay build and targeted browser assertions passed.
+Browser validation used a separate Playwright context, the existing Vite assets,
+and request redirection only inside that context to the disposable API. No real
+engine was restarted. Human UI acceptance, external GitHub delivery, elapsed TTL,
+and remaining lifecycle cases are still pending. No full suites or versioned
+integration tests were run.
+
+#### Ingress limits and errors
 
 | Resource | Limit / response |
 | --- | --- |

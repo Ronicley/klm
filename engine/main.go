@@ -33,6 +33,7 @@ type turn struct {
 }
 
 type app struct {
+	githubActivity    githubActivityCache
 	webhookWake       chan struct{}
 	webhookIngress    chan struct{}
 	webhookDeliveries map[webhookDeliveryKey]string

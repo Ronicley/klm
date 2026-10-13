@@ -1,23 +1,19 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { ArrowLeftRight, ArrowUpRight, Bookmark, Check, ChevronDown, CircleCheck, CircleDot, CircleX, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, MessageSquare, Radio, Search, TriangleAlert } from 'lucide-react';
+import { ArrowLeftRight, ArrowUp, ArrowUpRight, ChevronDown, MessageSquare, Radio, Search, Settings2, RefreshCw } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { TabNav } from '../../design-system/TabNav';
 import type { Project, Session } from '../../engine';
-import paperBoatIcon from '../projects/paper-boat-rail.png';
-import { activityKinds, mockActivity, type ActivityCategory, type ActivityKind, type ActivityPost } from './mockActivity';
+import type { ActivityCategory } from './githubActivityApi';
+import { GithubActivityCard } from './GithubActivityCard';
+import { ActivityFeedSettings } from './ActivityFeedSettings';
+import { useGithubActivityFeed } from './useGithubActivityFeed';
 import './klm-agent.css';
 
 type FeedProject = Pick<Project, 'name' | 'icon'>;
 type FeedFilter = 'All' | ActivityCategory;
 type SessionActions = { overlaySessionId?: string; onOpenOverlay: (session: Session) => void; onOpenProject: (session: Session) => void };
-const filters: FeedFilter[] = ['All', 'PRs', 'Pipelines', 'Agents', 'Issues'];
+const filters: FeedFilter[] = ['All', 'PRs', 'Pipelines', 'Issues', 'Security', 'Repository', 'Other'];
 const defaultChatRatio = 100 / 3;
-const fallbackProjects: FeedProject[] = [{ name: 'KLM', icon: paperBoatIcon }, { name: 'Cubiq', icon: '' }, { name: 'Workspace', icon: '' }];
-const eventIcons = {
-  'pr-opened': GitPullRequest, 'pr-merged': GitMerge, 'issue-assigned': CircleDot,
-  'pipeline-succeeded': CircleCheck, 'pipeline-failed': CircleX, attention: TriangleAlert,
-  'pipeline-running': Radio, 'agent-pr': GitPullRequest, 'agent-review': MessageSquare, 'agent-push': GitCommitHorizontal,
-} satisfies Record<ActivityKind, typeof GitPullRequest>;
 
 function WorkspaceDivider({ label, swapLabel, controls, value, minimum, maximum, valueText, dragScale, step, onChange, onReset, onSwap, className = '' }: {
   label: string; swapLabel: string; controls: string; value: number; minimum: number; maximum: number; valueText: string;
@@ -57,34 +53,6 @@ function ProjectAvatar({ project, small = false }: { project: FeedProject; small
   return <span className={`activity-avatar ${small ? 'activity-avatar--small' : ''}`} aria-hidden="true">
     {project.icon ? <img src={project.icon} alt="" /> : <span>{project.name.slice(0, 2).toUpperCase()}</span>}
   </span>;
-}
-
-function ActivityCard({ post, project }: { post: ActivityPost; project: FeedProject }) {
-  const [saved, setSaved] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const kind = activityKinds[post.kind];
-  const EventIcon = eventIcons[post.kind];
-  return <article className="activity-post" aria-label={`${project.name}: ${kind.label}`}>
-    <div className={`activity-event activity-tone--${kind.tone}`}><EventIcon aria-hidden="true" /><span>{kind.label}</span></div>
-    <div className="activity-post-layout">
-      <ProjectAvatar project={project} />
-      <div className="activity-post-content">
-        <div className="activity-byline"><strong>{project.name}</strong><span className="activity-actor">{post.actor}</span><span aria-hidden="true">·</span><span className="activity-time">{post.time}</span></div>
-        <p className="activity-post-title">{post.title}</p>
-        <p className="activity-post-body">{post.body}</p>
-        <div className={`activity-reference activity-tone--${kind.tone}`}>
-          <div className="activity-reference-heading"><EventIcon aria-hidden="true" /><strong>{post.reference}</strong>{post.kind === 'pipeline-succeeded' && <span className="activity-reference-result"><Check aria-hidden="true" />Passed</span>}{post.kind === 'attention' && <span className="activity-reference-result">Input needed</span>}</div>
-          {post.branch && <span className="activity-branch"><GitBranch aria-hidden="true" />{post.branch}</span>}
-          {post.progress !== undefined && <div className="activity-progress-row"><progress value={post.progress} max={100} aria-label={`${post.title} progress`} /><span>{post.progress}%</span></div>}
-        </div>
-        <div className="activity-post-actions">
-          <Button variant="ghost" size="sm" aria-expanded={expanded} aria-controls={`activity-detail-${post.id}`} onClick={() => setExpanded(value => !value)}><MessageSquare />{expanded ? 'Hide details' : 'Details'}</Button>
-          <IconButton label={saved ? 'Remove bookmark' : 'Bookmark update'} aria-pressed={saved} className={saved ? 'is-saved' : ''} onClick={() => setSaved(value => !value)}><Bookmark fill={saved ? 'currentColor' : 'none'} /></IconButton>
-        </div>
-        {expanded && <p id={`activity-detail-${post.id}`} className="activity-detail">{post.detail}</p>}
-      </div>
-    </div>
-  </article>;
 }
 
 function happeningStatus(session: Session) {
@@ -131,10 +99,19 @@ function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverlay, onO
   </aside>;
 }
 
-function ActivityFeed({ projects, sessions, ...actions }: { projects: Project[]; sessions: Session[] } & SessionActions) {
+function ActivityFeed({ projects, sessions, visible, ...actions }: { projects: Project[]; sessions: Session[]; visible: boolean } & SessionActions) {
   const [filter, setFilter] = useState<FeedFilter>('All');
   const [search, setSearch] = useState('');
   const grid = useRef<HTMLDivElement>(null);
+  const timeline = useRef<HTMLDivElement>(null);
+  const [settings, setSettings] = useState(false);
+  const [bookmarks, setBookmarks] = useState<Set<string>>(() => new Set());
+  const feed = useGithubActivityFeed(filter, search, projects, visible, timeline);
+  const projectsById = new Map(projects.map(project => [project.id, project]));
+  const newPostProjects = [...new Set(feed.newPosts.map(post => post.projectId))].flatMap(id => {
+    const project = projectsById.get(id);
+    return project ? [project] : [];
+  });
   const discoveryId = useId();
   const [available, setAvailable] = useState(0);
   const [savedWidth, setSavedWidth] = useState(() => {
@@ -166,28 +143,36 @@ function ActivityFeed({ projects, sessions, ...actions }: { projects: Project[];
     try { localStorage.setItem('klm.agent.discovery-swapped.v1', String(swapped)); }
     catch { /* Swapping still works without browser storage. */ }
   }, [swapped]);
-  const feedProjects = projects.length ? projects : fallbackProjects;
-  const query = search.trim().toLowerCase();
-  const posts = mockActivity.filter(post => (filter === 'All' || activityKinds[post.kind].categories.includes(filter)) &&
-    (!query || [post.title, post.body, post.actor, post.reference, post.branch, activityKinds[post.kind].label, feedProjects[post.project % feedProjects.length].name].join(' ').toLowerCase().includes(query)));
-
   return <section className="activity-feed" aria-label="Project activity">
-    <header className="activity-feed-heading"><div><h2>Activity</h2><span>Across your projects</span></div><span className="activity-project-count">{feedProjects.length} {feedProjects.length === 1 ? 'project' : 'projects'}</span></header>
+    <header className="activity-feed-heading"><div><h2>Activity</h2><span>Across your projects</span></div><div className="activity-feed-tools"><span className="activity-project-count">{projects.length} {projects.length === 1 ? 'project' : 'projects'}</span><IconButton label="Refresh activity" disabled={feed.busy || !feed.catalog} onClick={feed.refresh}><RefreshCw /></IconButton><IconButton label="Feed settings" disabled={!feed.catalog} onClick={() => setSettings(true)}><Settings2 /></IconButton></div></header>
+    {settings && feed.catalog && <ActivityFeedSettings items={feed.catalog.items} overrides={feed.overrides} error={feed.preferenceError} onChange={feed.savePreferences} onClose={() => setSettings(false)} />}
     <div className="activity-feed-scroll">
       <div ref={grid} className={`activity-feed-grid${swapped ? ' is-swapped' : ''}`} style={{ '--activity-sidebar-width': `${width}px` } as CSSProperties}>
-        <div className="activity-timeline">
+        <div className="activity-timeline" ref={timeline} tabIndex={-1}>
           <nav className="activity-filters" aria-label="Filter activity">{filters.map(value => <button type="button" key={value} aria-current={filter === value ? 'page' : undefined} className={filter === value ? 'is-active' : ''} onClick={() => setFilter(value)}>{value}</button>)}</nav>
+          <div className="activity-new-posts">
+            {newPostProjects.length > 0 && <Button variant="primary" className="activity-new-posts-button" aria-label={`Show ${feed.newPosts.length} new ${feed.newPosts.length === 1 ? 'post' : 'posts'}`} title={`New posts from ${newPostProjects.map(project => project.name).join(', ')}`} onClick={feed.showNewPosts}>
+              <ArrowUp aria-hidden="true" />
+              <span className="activity-new-posts-projects">{newPostProjects.slice(0, 3).map(project => <ProjectAvatar key={project.id} project={project} small />)}</span>
+              {newPostProjects.length > 3 && <span aria-hidden="true">+{newPostProjects.length - 3}</span>}
+            </Button>}
+          </div>
           <div className="activity-posts" aria-label={`${filter} updates`}>
-            {posts.map(post => <ActivityCard key={post.id} post={post} project={feedProjects[post.project % feedProjects.length]} />)}
-            {!posts.length && <div className="activity-empty"><Search aria-hidden="true" /><h3>No matching updates</h3><Button variant="ghost" onClick={() => { setSearch(''); setFilter('All'); }}>Clear filters</Button></div>}
-            {posts.length > 0 && <p className="activity-end">You’re all caught up</p>}
+            {(feed.error || feed.setupError) && <div className="activity-feedback" role="alert">{feed.error || feed.setupError}<Button size="sm" variant="ghost" disabled={feed.busy} onClick={feed.retry}>Retry</Button></div>}
+            {feed.preferenceError && !settings && <p className="activity-feedback" role="alert">{feed.preferenceError}</p>}
+            {feed.notice && <p className="activity-feedback" role="status">{feed.notice}</p>}
+            {feed.items.map(post => <GithubActivityCard key={post.id} post={post} project={projectsById.get(post.projectId)} now={feed.clock} onUnavailable={feed.unavailable} saved={bookmarks.has(post.id)} onBookmark={() => setBookmarks(current => { const next = new Set(current); if (next.has(post.id)) next.delete(post.id); else next.add(post.id); return next; })} />)}
+            {!feed.loaded && !feed.error && !feed.setupError && <p className="activity-end" role="status">Loading activity…</p>}
+            {feed.loaded && !feed.items.length && <div className="activity-empty"><Search aria-hidden="true" /><h3>{search || filter !== 'All' ? 'No matching updates' : 'No updates yet'}</h3>{(search || filter !== 'All') && <Button variant="ghost" onClick={() => { setSearch(''); setFilter('All'); }}>Clear filters</Button>}</div>}
+            {feed.hasMore && <div className="activity-end"><Button variant="ghost" disabled={feed.busy} onClick={feed.loadMore}>{feed.busy ? 'Loading…' : 'Load more'}</Button></div>}
+            {feed.loaded && !feed.hasMore && feed.items.length > 0 && <p className="activity-end">No more updates</p>}
           </div>
         </div>
         <WorkspaceDivider className="activity-divider" label="Resize timeline and Happening now" swapLabel="Swap timeline and Happening now" controls={discoveryId}
           value={width} minimum={200} maximum={maximum} valueText={`${Math.round(width)}px sidebar`} dragScale={available > 660 ? (swapped ? 1 : -1) : 0} step={24}
           onChange={setSavedWidth} onReset={() => setSavedWidth(230)} onSwap={() => setSwapped(value => !value)} />
         <div id={discoveryId} className="activity-discovery">
-          <label className="activity-search"><Search aria-hidden="true" /><input aria-label="Search activity" type="search" placeholder="Search activity" value={search} onChange={event => setSearch(event.target.value)} /></label>
+          <label className="activity-search"><Search aria-hidden="true" /><input aria-label="Search activity" type="search" maxLength={200} placeholder="Search activity" value={search} onChange={event => setSearch(event.target.value)} /></label>
           <HappeningNow projects={projects} sessions={sessions} {...actions} />
         </div>
       </div>
@@ -240,7 +225,7 @@ export function KlmAgentWorkspace({ enabled, projects, sessions, children, onClo
       <WorkspaceDivider label="Resize chat and activity" swapLabel="Swap chat and activity" controls={chatId}
         value={ratio} minimum={minimum} maximum={maximum} valueText={`${Math.round(ratio)}% chat`} dragScale={available > 800 ? 100 / available * (swapped ? -1 : 1) : 0} step={2}
         onChange={setSavedRatio} onReset={() => setSavedRatio(defaultChatRatio)} onSwap={() => setSwapped(value => !value)} />
-      <ActivityFeed projects={projects} sessions={sessions} {...actions} onOpenOverlay={session => { setMobilePane('chat'); actions.onOpenOverlay(session); }} />
+      <ActivityFeed projects={projects} sessions={sessions} visible={available > 800 || mobilePane === 'activity'} {...actions} onOpenOverlay={session => { setMobilePane('chat'); actions.onOpenOverlay(session); }} />
     </div>
   </div>;
 }
