@@ -63,7 +63,143 @@ assistant messages provide Copy and a durable Favorite toggle; like and dislike 
 not used. Failed or cancelled partial responses remain copyable but cannot be marked
 as favorites.
 
-### General Agent
+### Project Settings and GitHub Webhooks
+
+The **Project settings** button in the sessions sidebar opens a modal with
+**General** and **Webhooks** sections. General edits the project's name and icon,
+shows its fixed directory and provides confirmed project removal. Project creation
+and the rail's Edit/Remove menu retain their existing entry points. Webhooks belong
+to this project modal, not global Settings.
+
+Each project can have multiple independent GitHub connections, with their own name,
+secret, stable ID, endpoint, enabled state and explicit event retention. The UI
+provides Add and paginated rows showing name, retention, time since the
+last accepted receipt (or Never) and an enable/disable toggle. The visible list
+updates these timestamps and reloads its loaded rows every 30 seconds, pausing
+while hidden or during editing/mutations.
+Selecting a row opens read-only labels/text with Copy URL and an Edit action;
+editing exposes configuration and enabled state. Details also provide confirmed
+removal. Removal deletes the connection and all its stored events,
+pending entries and releases. Secrets are required, entered by the user and never
+returned by the API. The creation form generates a random 256-bit secret using
+Web Crypto; an inline reload button generates a replacement. The value remains
+editable and copyable and is discarded after saving or closing. Editing an existing
+connection requires opting into Change secret before replacing its credential.
+Changing a secret clears its previous ping verification.
+
+Copy URL uses the configured engine base plus `/api/webhooks/github/{webhookId}`.
+The local engine uses port **7331**, or **17331** in development, rather than the
+frontend's port. Existing remote bases, explicit ports and path prefixes are
+preserved. The user manually configures a GitHub repository or organization webhook
+with this receiving path, **application/json** and the same secret. GitHub must be
+able to reach it: any HTTPS proxy/tunnel setup and public URL substitution in GitHub
+are the user's responsibility. KLM does not manage a tunnel, public URL field,
+GitHub registration, OAuth or PAT. An ingress-only proxy should forward just the
+required receiving path, preserving body bytes and GitHub headers, without exposing
+engine administration. After a durably accepted signed `ping`, the connection detail shows
+**Verified** with `lastPingAt`; this is historical receipt verification, not an
+online status. GitHub redelivery after an outage or uncertain response is manual;
+automatic GitHub retries are not assumed.
+
+Reception requires HMAC-SHA256 over the exact raw body, a valid UTF-8 JSON object,
+and single signature, delivery and event headers. Original payload bytes, event
+type and optional action are preserved. HMAC authenticates the body, not the
+delivery/type headers. A connection plus `X-GitHub-Delivery` deduplicates while its
+event remains retained and unexpired; duplicates keep the same event ID and do not
+refresh receipt time, verification, TTL or sequences. After expiry or deletion,
+that delivery ID may be accepted again. New acceptance persists the event and
+pending entry together before returning 202; retained duplicates return 200.
+
+An engine worker releases accepted entries asynchronously into durable internal
+storage, independently of clients. **Emitted** means internally available, not
+processed by a feed, agent or automation. Pending entries resume after restart;
+existing releases retain their sequence and timestamp. Metadata/history and raw
+payload detail are available through project-scoped APIs. Released events use an
+independent persistent release sequence, with decimal-string `after`, `nextAfter`
+and `highWatermark` cursors. Reading does not consume events. SSE and in-memory wake
+signals are not durable webhook delivery. Consumer progress storage and integration
+with the KLM Agent timeline, sessions, agents or graphs are outside this slice.
+
+Retention starts at UTC engine receipt, not GitHub occurrence or internal release:
+**1 day**, **3 days**, **1 week**, **1 month**, **3 months**, **6 months**, **1 year**
+or **Indefinitely**. Days/weeks are 24/72/168 hours; months/years use calendar
+arithmetic clamped to the last valid day of the destination month. Retention changes
+affect only newly accepted events. Expiry also removes pending entries and releases;
+expired events are unavailable even before physical cleanup. Initial engine limits
+are 25 MiB per payload, two simultaneous ingress bodies, 100 connections per project,
+1,000 connections per engine, and 10,000 events or 256 MiB of raw retained payloads
+per engine. Ping, pending entries and removed projects count toward capacity;
+Indefinitely does not remove quotas. Pages default to 50 items, with a maximum of 100.
+
+Disabling a connection rejects new deliveries but continues releasing already
+accepted entries. Removing a project preserves its identity, connections, secrets,
+endpoints and retained events; new ingress and webhook management/reads become
+unavailable, pending release pauses, and TTL continues. Restoring the same registered
+directory restores its identity and resumes only still-valid pending entries.
+
+Backend/frontend implementation is delivered; owners reported a successful Go dev
+build and TypeScript check. A short isolated local API smoke verified signed ping
+acceptance, invalid-signature rejection, deduplication, durable release, original
+payload and retained release/deduplication after restart. UI, real GitHub reception,
+pending recovery, retention and full lifecycle still await human validation. Setup,
+API contracts and the manual acceptance route are documented in `engine/README.md`
+and `GITHUB_WEBHOOKS_IMPLEMENTATION_PLAN.md`.
+
+### KLM Agent
+
+The general agent is presented as **KLM Agent** in the client. Its view splits the
+available area between the existing chat and an X-inspired activity feed, initially
+one-third chat and two-thirds feed. The divider supports dragging and keyboard
+resizing, with a 360px minimum per pane and a locally remembered split. Double-click
+restores the default proportions. Hovering or focusing the divider reveals a
+centered swap button that exchanges the panels while retaining their widths and
+content. Panel order is also remembered locally.
+The timeline currently uses local layout fixtures for PR, issue, pipeline and agent
+updates, with project icons, category/search filters, expandable details and local
+bookmarks. **Happening now** uses the live session inventory across active projects.
+It includes normal top-level sessions with a running turn, a retained active runtime,
+pending permissions/questions, or a failed state, including independently spawned sessions,
+and excludes archived sessions, sessions in archived folders, removed projects,
+and general/side/subagent/graph-node conversations. Stopping a session or retaining
+an idle runtime does not close it, but an idle session without an active runtime or
+pending request is excluded. Cards show the real project icon, session title,
+and latest exposed reasoning title when available. Failed takes precedence over
+Needs attention (pending permissions/questions), then Working, then Idle; status
+dots reuse the sessions rail's runtime styles and reduced-motion behavior. Reasoning
+prefers an explicit title, otherwise the first meaningful text line, with simple
+Markdown formatting removed, whitespace collapsed and a 160-character limit. The
+subtitle is cleared when the turn ends. A new turn starts without a subtitle and
+only reasoning emitted during that turn can populate it; prior-turn reasoning is
+never replayed as the current subtitle.
+Sessions appear newest-created first so newly spawned sessions are visible immediately
+in the three-item collapsed list. Show more expands a scrollable list with a persistent
+Show less control, including when the active list shrinks, and an empty state appears
+when none are active. Its column has a separate draggable divider and
+centered hover/focus swap button, retaining its width and side locally. It starts
+at 230px, with a 200px minimum and at least 320px left for the timeline; double-click
+resets the width. Timeline and sidebar scroll independently in the column layout.
+It moves above the feed in narrower split views, where this divider is hidden;
+compact windows switch between Chat and Activity. Only Happening now is live, using
+the existing engine state/update stream; the timeline remains a UI-only fixture,
+without external activity integrations or automatic agent monitoring.
+
+Clicking a Happening now session opens its live chat as a shorter overlay above
+the KLM Agent composer, flush with the chat column's sides and bottom and rounded
+at its top corners. A translucent backdrop, light in light theme and dark in dark
+theme, covers the general conversation
+and its Chat header; the foreground overlay and composer remain undimmed. The
+overlay casts no shadow and its bottom blends into the composer area without a
+border. The composer, model/settings,
+queue, Stop and pending requests target the
+overlay's real project session. Drafts remain separate per session; closing the
+overlay returns the composer to KLM Agent without stopping either conversation.
+Clicking the translucent backdrop also closes the overlay and restores the general draft.
+Both chats remain subscribed while the overlay is open. Its header has Close and
+Open in project actions; the same project-navigation action appears on row hover
+or keyboard focus (always visible on touch). Navigation selects the owning project,
+expands the session's folder and opens that session's Chat tab. On compact screens,
+opening an overlay switches Activity to Chat. Archiving the overlaid session or its
+folder, or removing its project, closes the overlay.
 
 The KLM logo at the top of Project Rail opens one persistent general-agent
 conversation per engine. Its identity and history are independent of the selected
@@ -96,6 +232,23 @@ snapshot accompanies each general turn; changing it does not start another turn.
 Retained runtimes are distinguished from working turns; unknown context usage
 remains unknown.
 
+On the user's request, the general agent can register a project with `project_add`
+using a name (1 to 60 characters) and an absolute existing directory on the engine
+computer. This works before any project exists and uses the normal persistent
+registration and client inventory updates. It returns `projectId`, `name`, `path`
+and `outcome` (`created`, `existing` or `restored`), available immediately to project
+inventory and session creation options. An active matching project is unchanged;
+a removed match retains its ID, sessions/history and visual grouping, using the
+requested name and default icon. Multiple matching legacy records conflict with
+their IDs instead of choosing one. Duplicate detection and mutation share one lock;
+matching cleans paths and ignores case on Windows without resolving aliases,
+junctions or symlinks. Invalid names/paths and persistence failures return errors.
+The path is never inferred from a client, selected project or general workspace.
+Registration does not authorize sessions, graphs or file operations. This capability
+is exclusive to the general agent and independent of Data Sources; directory creation,
+cloning, Git initialization, dependency installation and project editing/removal are
+outside it. Manual project registration keeps its existing HTTP contract.
+
 The general agent can send visible, self-contained instructions to project chats
 and ask questions with correlated replies. It can rename/move visual grouping,
 atomically update model/effort/YOLO between turns, select a graph without executing
@@ -126,8 +279,9 @@ and retain native-session/project/global grant ownership, rollback and attribute
 agent provenance. None of these replies become human graph/spawn authorization.
 
 No Hermes, linked side agent for the general conversation, project file mentions,
-general graph invocation, automatic monitoring, completion notifications or new global
-dashboard is included. Runtime behavior awaits human validation.
+general graph invocation, automatic monitoring or completion notifications is included.
+The activity timeline remains a visual prototype; Happening now is engine-backed.
+Runtime behavior awaits human validation.
 
 ### Windows Delivery and Focus
 
@@ -156,8 +310,16 @@ engine. Opening another desktop shortcut restores the same instance.
 
 While Tauri is active, it serves the same built application on `0.0.0.0:7332`.
 The **Focus** header button, between **Session log** and **Side agent**, opens
-`http://localhost:7332` in the default browser. The browser retains the gradient
-and draggable central window and hides the redundant Focus button. Another device
+`http://localhost:7332` in the default browser. The browser opens with the gradient
+and draggable central window. In place of Focus, a Maximize window icon toggles an
+opaque, edge-to-edge layout that follows the browser viewport; Restore window returns
+to the floating layout, including its resized dimensions. The floating window can
+be resized by dragging any edge or corner, with the matching resize cursor and
+no visible resize icon. The invisible resize targets support arrow keys when
+focused. Minimum usable dimensions apply, but there is no maximum size or
+viewport-based resizing limit; oversized windows remain draggable.
+Resizing is unavailable in the maximized layout, narrow mobile layout and
+Flutter-hosted WebView. The toggle is absent in the Flutter-hosted WebView. Another device
 uses `http://IP-OF-ENGINE-COMPUTER:7332`; API and SSE use that same host on 7331.
 Ports remain fixed; collisions are reported instead of selecting another port.
 

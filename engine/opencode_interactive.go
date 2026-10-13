@@ -105,6 +105,40 @@ type openCodeSubagent struct {
 	infos   map[string]map[string]any
 	parts   map[string]map[string]any
 	usage   *openCodeUsage
+	taskKey string
+	tasks   map[string]string
+}
+
+func (child *openCodeSubagent) updateTask(p *adapter, key, status string) error {
+	if child.tasks == nil {
+		child.tasks = map[string]string{}
+	}
+	if child.tasks[key] == status {
+		return nil
+	}
+	active := status == "running" || status == "pending" || status == "started"
+	if active {
+		// A native child can serve several task calls. Reopening its session
+		// belongs to the new call, not to repeated updates of an older call.
+		if previous := child.tasks[key]; previous == "completed" || previous == "error" || previous == "cancelled" {
+			return nil
+		}
+		if err := p.startSubagent(child.adapter); err != nil {
+			return err
+		}
+		child.taskKey = key
+	} else if status == "completed" || status == "error" || status == "cancelled" {
+		// message.updated and final reconciliation replay old task parts.
+		// Their terminal state must never settle a newer invocation.
+		if child.taskKey == "" || child.taskKey == key {
+			if err := p.finishSubagentInvocation(child.adapter, status, p.keys[key]); err != nil {
+				return err
+			}
+			child.taskKey = key
+		}
+	}
+	child.tasks[key] = status
+	return nil
 }
 
 func (s *openCodeServer) Alive() bool {
@@ -824,6 +858,8 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 			return errors.New("OpenCode message part exceeded the 2 MiB limit.")
 		}
 		kind, title, body, status := str(part, "type"), "", str(part, "text"), "running"
+		key := "opencode/" + messageID + "/" + partID
+		var taskChild *openCodeSubagent
 		raw := map[string]any{"type": kind, "partID": partID, "messageID": messageID}
 		switch kind {
 		case "text", "reasoning":
@@ -877,11 +913,7 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 							}
 							children[nativeChildID] = &openCodeSubagent{adapter: child, infos: map[string]map[string]any{}, parts: map[string]map[string]any{}, usage: &openCodeUsage{messages: map[string]map[string]any{}, steps: map[string]map[string]map[string]any{}, windows: windows}}
 						}
-						if status == "completed" || status == "error" || status == "cancelled" {
-							if err := p.finishSubagent(child, status); err != nil {
-								return err
-							}
-						}
+						taskChild = children[nativeChildID]
 					}
 				}
 			} else if title == "bash" {
@@ -897,7 +929,13 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 		default:
 			return nil
 		}
-		return target.put("opencode/"+messageID+"/"+partID, kind, title, body, status, false, raw)
+		if err := target.put(key, kind, title, body, status, false, raw); err != nil {
+			return err
+		}
+		if taskChild != nil {
+			return taskChild.updateTask(p, key, status)
+		}
+		return nil
 	}
 
 	prompt := map[string]any{"parts": payload.openCodeParts()}

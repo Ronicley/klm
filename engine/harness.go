@@ -192,7 +192,7 @@ func (l *jsonLines) Write(p []byte) (int, error) {
 		}
 		lineLimit := l.lineLimit
 		if lineLimit == 0 {
-			lineLimit = 2 << 20
+			lineLimit = 4 << 20
 		}
 		if len(l.pending)+len(part) > lineLimit {
 			return 0, l.reject("Harness JSON line exceeded the transport limit.")
@@ -244,6 +244,10 @@ func (l *jsonLines) resetTurn() {
 func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd string, payload submission) {
 	defer a.wg.Done()
 	defer t.cancel()
+	a.mu.Lock()
+	reasoningStart := len(s.Events)
+	t.reasoningStart = &reasoningStart
+	a.mu.Unlock()
 	p := &adapter{app: a, turn: t, id: s.ID, harness: s.Harness, role: s.Role, yolo: s.YOLO, cwd: cwd,
 		keys: map[string]string{}, toolNames: map[string]string{}, commands: map[string]string{}, processesDrained: true}
 	var stopCancellation func() bool

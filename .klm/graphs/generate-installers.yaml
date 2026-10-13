@@ -16,4 +16,6 @@ choices:
             paths:
                 type: string
                 required: true
-        output: {}
+        output:
+            paths: '{{choice.paths}}'
+        terminal: true

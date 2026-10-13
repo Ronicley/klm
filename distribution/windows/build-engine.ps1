@@ -1,4 +1,4 @@
-param([string]$MakeNSIS, [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.1')
+param([string]$MakeNSIS, [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.3.0')
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 if (-not (Test-Path -LiteralPath (Join-Path $root 'engine\go.mod'))) { throw 'Engine source directory not found.' }

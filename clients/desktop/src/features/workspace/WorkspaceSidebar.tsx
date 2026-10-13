@@ -2,7 +2,6 @@ import { Archive, ArchiveRestore, Bot, Folder, FolderPlus, MoreHorizontal, Panel
 import { Fragment, useLayoutEffect, useRef, useState } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Menu, MenuItem } from '../../design-system/Menu';
-import { ProjectActionsMenu } from '../projects/ProjectActionsMenu';
 import type { Session, Project } from '../../engine';
 import { animateSortPositions, captureSortPositions, type SortPositions } from '../sortAnimation';
 
@@ -46,7 +45,7 @@ function sessionBeforeAt(container: HTMLElement, draggingId: string, clientY: nu
   return '';
 }
 
-export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onCreateFolder, onRename, onDelete, onPosition, onReorderFolder, onArchiveSession, onArchiveFolder, onClose, onAgents, onGraphs, onEditProject, onRemoveProject }: {
+export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onCreateFolder, onRename, onDelete, onPosition, onReorderFolder, onArchiveSession, onArchiveFolder, onClose, onAgents, onGraphs, onProjectSettings }: {
   project: Project; sessions: Session[]; activeId: string; collapsed: string[]; archivedCollapsed: boolean; onCollapsedChange: (folders: string[]) => void; onArchivedCollapsedChange: (collapsed: boolean) => void;
   onSelect: (id: string) => void; onNew: (folder?: string) => void; onCreateFolder: (name: string) => Promise<string | null>;
   onRename: (session: Session) => void; onPosition: (session: Session, folder: string, beforeId: string) => Promise<boolean>;
@@ -54,9 +53,8 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
   onDelete: (session: Session) => void;
   onArchiveSession: (session: Session, archived: boolean) => Promise<boolean>; onArchiveFolder: (folder: string, archived: boolean) => Promise<boolean>;
   onClose: () => void; activeSection: 'chat' | 'design' | 'agents' | 'graphs'; onAgents: () => void; onGraphs: () => void;
-  onEditProject: (project: Project) => void; onRemoveProject: (project: Project) => Promise<string | null>;
+  onProjectSettings: (project: Project) => void;
 }) {
-  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [sessionMenu, setSessionMenu] = useState('');
   const [folderMenu, setFolderMenu] = useState('');
   const [search, setSearch] = useState<string | null>(null);
@@ -137,7 +135,7 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
   }
 
   return <aside className="workspace-sidebar" aria-label="Sessions">
-    <div className="brand-row"><div className="project-sidebar-heading"><strong title={project.name}>{project.name}</strong><ProjectActionsMenu project={project} onEdit={onEditProject} onRemove={onRemoveProject} open={projectMenuOpen} onOpenChange={setProjectMenuOpen} side="bottom" trigger={props => <IconButton {...props} label="Project settings" className="project-settings-button"><Settings /></IconButton>} /></div><IconButton label="Close sessions" onClick={onClose}><PanelLeftClose /></IconButton></div>
+    <div className="brand-row"><div className="project-sidebar-heading"><strong title={project.name}>{project.name}</strong><IconButton label="Project settings" className="project-settings-button" onClick={() => onProjectSettings(project)}><Settings /></IconButton></div><IconButton label="Close sessions" onClick={onClose}><PanelLeftClose /></IconButton></div>
     <p className="project-folder-label" title={project.folder}><bdi dir="ltr">{project.folder}</bdi></p>
     <nav className="sidebar-navigation" aria-label="Project navigation">
       <Button variant="ghost" size="sm" onClick={() => onNew()}><SquarePen />New session</Button>

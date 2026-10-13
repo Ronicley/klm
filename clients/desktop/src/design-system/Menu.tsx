@@ -12,7 +12,7 @@ export function Menu({ label, open, onOpenChange, trigger, children, className =
   children: ReactNode;
   className?: string;
   side?: 'top' | 'bottom';
-  align?: 'start' | 'end';
+  align?: 'start' | 'center' | 'end';
   position?: { x: number; y: number };
   role?: 'dialog' | 'menu';
 }) {
@@ -40,7 +40,10 @@ export function Menu({ label, open, onOpenChange, trigger, children, className =
       const above = rect.top - bounds.height - gap;
       const below = rect.bottom + gap;
       const preferAbove = side === 'top' ? above >= 8 || below + bounds.height > innerHeight - 8 : below + bounds.height > innerHeight - 8 && above >= 8;
-      element.style.left = `${Math.max(8, Math.min(position?.x ?? (align === 'start' ? rect.left : rect.right - bounds.width), innerWidth - bounds.width - 8))}px`;
+      const left = align === 'center' ? rect.left + (rect.width - bounds.width) / 2 : align === 'start' ? rect.left : rect.right - bounds.width;
+      // Centered rail popovers may use the viewport edge to stay over their trigger.
+      const horizontalInset = align === 'center' ? 0 : 8;
+      element.style.left = `${Math.max(horizontalInset, Math.min(position?.x ?? left, innerWidth - bounds.width - horizontalInset))}px`;
       element.style.top = `${Math.max(8, Math.min(position?.y ?? (preferAbove ? above : below), innerHeight - bounds.height - 8))}px`;
       element.style.visibility = 'visible';
     };

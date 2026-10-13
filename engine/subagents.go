@@ -77,9 +77,36 @@ func (p *adapter) ensureSubagent(nativeID, title, model, effort string) (*adapte
 	return child, nil
 }
 
-func (p *adapter) finishSubagent(child *adapter, status string) error {
+func (p *adapter) startSubagent(child *adapter) error {
 	if child == nil {
 		return nil
+	}
+	child.app.mu.Lock()
+	defer child.app.mu.Unlock()
+	if s := child.app.state.session(child.id); s == nil || s.Status == "running" {
+		return nil
+	}
+	return child.app.commitLocked(func(d *diskState) {
+		if s := d.session(child.id); s != nil {
+			s.Status, s.UpdatedAt = "running", now()
+		}
+	})
+}
+
+func (p *adapter) finishSubagent(child *adapter, status string) error {
+	return p.finishSubagentInvocation(child, status, "")
+}
+
+func (p *adapter) finishSubagentInvocation(child *adapter, status, parentEventID string) error {
+	if child == nil {
+		return nil
+	}
+	// Completion must follow queued text, otherwise a delayed flush can put
+	// running events back into an already completed child session.
+	if child.stream != nil {
+		if err := child.stream.flush(nil); err != nil {
+			return err
+		}
 	}
 	sessionStatus := "idle"
 	if status == "error" || status == "failed" || status == "interrupted" {
@@ -93,7 +120,7 @@ func (p *adapter) finishSubagent(child *adapter, status string) error {
 			return
 		}
 		if s.Status == "error" && sessionStatus == "idle" {
-			syncSubagentParent(d, s, "error")
+			syncSubagentParentInvocation(d, s, "error", parentEventID)
 			return
 		}
 		s.Status, s.UpdatedAt = sessionStatus, now()
@@ -104,11 +131,15 @@ func (p *adapter) finishSubagent(child *adapter, status string) error {
 				d.setEvent(s, i, e)
 			}
 		}
-		syncSubagentParent(d, s, status)
+		syncSubagentParentInvocation(d, s, status, parentEventID)
 	})
 }
 
 func syncSubagentParent(d *diskState, child *Session, status string) {
+	syncSubagentParentInvocation(d, child, status, "")
+}
+
+func syncSubagentParentInvocation(d *diskState, child *Session, status, parentEventID string) {
 	if child == nil || child.Role != sessionRoleSubagent {
 		return
 	}
@@ -118,7 +149,9 @@ func syncSubagentParent(d *diskState, child *Session, status string) {
 	}
 	for i := range parent.Events {
 		value, _ := parent.Events[i].Data["childSessionId"].(string)
-		if parent.Events[i].Type == "subagent" && value == child.ID {
+		active := parent.Events[i].Status == "running" || parent.Events[i].Status == "pending" || parent.Events[i].Status == "started"
+		matchesInvocation := parentEventID != "" && parent.Events[i].ID == parentEventID || parentEventID == "" && active
+		if parent.Events[i].Type == "subagent" && value == child.ID && matchesInvocation {
 			e := parent.Events[i]
 			e.Status = status
 			d.setEvent(parent, i, e)

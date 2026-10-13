@@ -110,6 +110,17 @@ completion notifications. Agent-authored instructions never become human graph
 or spawn authorization. Its harness locks durably at first message acceptance,
 including queued input; model/effort remain normal turn settings.
 
+Only the general agent's private catalog exposes `project_add`. On the user's
+registration request it accepts a name and an absolute existing directory on the
+engine computer, including with no registered projects. Never infer the path from
+the client, selected project or general workspace. It returns created/existing/
+restored with a usable project ID, keeps active matches unchanged and restores
+removed identity/history/grouping; multiple matching records conflict with IDs.
+Registration is independent of Data Sources and does not authorize sessions,
+graphs or file work. Preserve manual HTTP registration, shared validation,
+lock-protected matching/mutation, commitLocked persistence and client notifications.
+Do not expose the tool to normal chats, side chats, graph nodes or subagents.
+
 Implement directly when the request is clear. Ask only when a missing decision
 materially blocks the work. Keep progress updates and final explanations concise.
 Preserve unrelated user changes. Do not commit or push unless explicitly asked.

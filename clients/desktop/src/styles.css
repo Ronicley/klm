@@ -1,9 +1,22 @@
 body { background-color: var(--color-canvas); background-image: var(--gradient-canvas); }
 #root { height: 100dvh; padding: 5dvh 4vw; display: flex; justify-content: center; align-items: center; overflow: hidden; }
-.app-shell { display: flex; width: 100%; height: 100%; max-width: 1600px; max-height: 1100px; overflow: hidden; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-window); position: relative; }
+.app-shell { display: flex; flex-shrink: 0; width: 100%; height: 100%; max-width: min(1600px, calc(100vw - 16px)); max-height: min(1100px, calc(100dvh - 16px)); overflow: hidden; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-window); position: relative; }
 .desktop-client body { background: var(--color-surface); }
 .desktop-client #root { padding: 0; }
 .desktop-client .app-shell { max-width: none; max-height: none; border: 0; border-radius: 0; box-shadow: none; }
+.app-shell[data-resized] { max-width: none; max-height: none; }
+/* Override floating geometry while maximized, preserving it for restoration. */
+.app-shell.is-maximized { position: fixed; inset: 0; left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; max-width: none; max-height: none; border: 0; border-radius: 0; box-shadow: none; }
+.focus-window-resize { position: absolute; z-index: 5; padding: 0; border: 0; background: transparent; touch-action: none; user-select: none; }
+.focus-window-resize:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.focus-window-resize[data-edge="n"], .focus-window-resize[data-edge="s"] { left: 14px; right: 14px; height: 6px; cursor: ns-resize; }
+.focus-window-resize[data-edge="e"], .focus-window-resize[data-edge="w"] { top: 14px; bottom: 14px; width: 6px; cursor: ew-resize; }
+.focus-window-resize[data-edge="n"], .focus-window-resize[data-edge="nw"], .focus-window-resize[data-edge="ne"] { top: 0; }
+.focus-window-resize[data-edge="s"], .focus-window-resize[data-edge="sw"], .focus-window-resize[data-edge="se"] { bottom: 0; }
+.focus-window-resize[data-edge="w"], .focus-window-resize[data-edge="nw"], .focus-window-resize[data-edge="sw"] { left: 0; }
+.focus-window-resize[data-edge="e"], .focus-window-resize[data-edge="ne"], .focus-window-resize[data-edge="se"] { right: 0; }
+.focus-window-resize[data-edge="nw"], .focus-window-resize[data-edge="se"] { width: 14px; height: 14px; cursor: nwse-resize; }
+.focus-window-resize[data-edge="ne"], .focus-window-resize[data-edge="sw"] { width: 14px; height: 14px; cursor: nesw-resize; }
 .workspace-sidebar { width: var(--sidebar-width); flex-shrink: 0; display: flex; flex-direction: column; background: var(--color-sidebar); border-right: 1px solid var(--color-border); }
 .brand-row { padding: 16px 12px 16px 16px; display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .brand { display: flex; align-items: center; gap: 7px; }
@@ -53,6 +66,7 @@ body { background-color: var(--color-canvas); background-image: var(--gradient-c
 .session-header { height: 56px; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; padding: 0 24px; gap: 12px; border-bottom: 1px solid var(--color-divider); }
 .session-header { cursor: grab; touch-action: none; user-select: none; }
 .app-shell[data-dragging] .session-header { cursor: grabbing; }
+.app-shell.is-maximized .session-header { cursor: auto; touch-action: auto; user-select: auto; }
 .header-leading, .header-actions { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .header-leading { flex: 1; }
 .header-actions { flex-shrink: 0; }
@@ -395,7 +409,7 @@ body { background-color: var(--color-canvas); background-image: var(--gradient-c
 .new-folder-form input { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); }
 .new-folder-form > div { display: flex; justify-content: space-between; margin-top: 8px; }
 .session-navigation { display: flex; align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--color-divider); }
-:root[data-theme="dark"] :is(.session-header, .session-navigation) { border-color: #292d36; }
+:root[data-theme="dark"] :is(.session-header, .session-navigation) { border-color: var(--color-border); }
 .session-navigation > .tab-nav { flex: 1; border-bottom: 0; padding: 0 8px; }
 .session-navigation > .select { margin: 4px 12px; max-width: 160px; font-size: 11px; }
 .storage-error { padding: 8px 16px; background: var(--color-accent-soft); color: var(--color-text); font-size: 12px; line-height: 1.5; }
@@ -478,7 +492,8 @@ body { background-color: var(--color-canvas); background-image: var(--gradient-c
   .session-navigation .tab { padding: 11px 10px; font-size: 12px; }
   .session-navigation > .select { margin-top: 0; }
   #root { padding: 0; }
-  .app-shell { border: 0; border-radius: 0; }
+  .app-shell { width: 100% !important; height: 100% !important; left: 0 !important; top: 0 !important; max-width: none; max-height: none; border: 0; border-radius: 0; }
+  .focus-window-resize { display: none; }
   .workspace-sidebar { display: none; }
   .sidebar-open .workspace-sidebar { display: flex; position: absolute; inset: 0 auto 0 0; z-index: 4; box-shadow: var(--shadow-window); }
   .sidebar-open .panel-backdrop { display: block; position: absolute; inset: 0; z-index: 3; border: 0; background: var(--color-overlay); }

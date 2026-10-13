@@ -30,7 +30,7 @@ function renderDiagram(source: string, theme: string): Promise<Diagram> {
       htmlLabels: false,
       flowchart: { htmlLabels: false, useMaxWidth: false },
       themeVariables: {
-        darkMode: theme === 'dark',
+        darkMode: theme.startsWith('dark:'),
         primaryColor: color('--color-accent-soft'),
         primaryTextColor: color('--color-text'),
         primaryBorderColor: color('--color-accent'),
@@ -98,14 +98,19 @@ function ExpandedFlowchart({ diagram, onClose }: { diagram: Diagram; onClose: ()
   </dialog>, document.body);
 }
 
+function currentDiagramTheme() {
+  const { theme = 'light', themeVariant = '' } = document.documentElement.dataset;
+  return `${theme}:${themeVariant}`;
+}
+
 export const Flowchart = memo(function Flowchart({ source }: { source: string }) {
-  const [theme, setTheme] = useState(() => document.documentElement.dataset.theme ?? 'light');
+  const [theme, setTheme] = useState(currentDiagramTheme);
   const [diagram, setDiagram] = useState<Diagram | null>(null);
   const [failedSource, setFailedSource] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
-    const observer = new MutationObserver(() => setTheme(document.documentElement.dataset.theme ?? 'light'));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    const observer = new MutationObserver(() => setTheme(currentDiagramTheme()));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-theme-variant'] });
     return () => observer.disconnect();
   }, []);
   useEffect(() => {

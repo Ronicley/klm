@@ -99,10 +99,18 @@ type TranscriptionProviderSettings struct {
 }
 
 type diskState struct {
-	DeletedSessions     map[string]deletedSession `json:"deletedSessions,omitempty"`
-	DeletedOperations   map[string]bool           `json:"deletedOperations,omitempty"`
-	Images              map[string]storedImage    `json:"images,omitempty"`
-	tx                  *stateTransaction
+	DeletedSessions   map[string]deletedSession `json:"deletedSessions,omitempty"`
+	DeletedOperations map[string]bool           `json:"deletedOperations,omitempty"`
+	Images            map[string]storedImage    `json:"images,omitempty"`
+	tx                *stateTransaction
+
+	WebhookConnections      map[string]WebhookConnection  `json:"webhookConnections,omitempty"`
+	WebhookEvents           map[string]WebhookStoredEvent `json:"webhookEvents,omitempty"`
+	WebhookPending          map[string]WebhookPending     `json:"webhookPending,omitempty"`
+	WebhookReleases         map[string]WebhookRelease     `json:"webhookReleases,omitempty"`
+	WebhookReceivedSequence uint64                        `json:"webhookReceivedSequence,omitempty"`
+	WebhookReleaseSequence  uint64                        `json:"webhookReleaseSequence,omitempty"`
+
 	JournalFormat       int                      `json:"journalFormat,omitempty"`
 	AcceptedMessages    map[string]string        `json:"acceptedMessages,omitempty"`
 	SessionSpawns       []SessionSpawn           `json:"sessionSpawns,omitempty"`
@@ -180,6 +188,7 @@ func loadState(dir string) (diskState, error) {
 		Transcription: TranscriptionSettings{Model: defaultTranscriptionModel, Vocabulary: []TranscriptionVocabularyEntry{}}}
 	b, err := os.ReadFile(filepath.Join(dir, "state.json"))
 	if errors.Is(err, os.ErrNotExist) {
+		initializeWebhookRecords(&d)
 		return d, nil
 	}
 	if err != nil {
@@ -300,6 +309,10 @@ func loadState(dir string) (diskState, error) {
 	if err := validateSessionSpawns(&d); err != nil {
 		return d, err
 	}
+	if err := validateWebhookRecords(&d); err != nil {
+		return d, err
+	}
+	initializeWebhookRecords(&d)
 	normalizeGraphWorkspaceRecords(&d)
 	if err := validateGraphRecords(&d); err != nil {
 		return d, err
@@ -316,6 +329,9 @@ func loadState(dir string) (diskState, error) {
 func saveState(dir string, d *diskState) error {
 	if d.Version != 2 {
 		return errors.New("refusing to write unsupported state version")
+	}
+	if err := validateWebhookRecords(d); err != nil {
+		return err
 	}
 	// Old binaries use DisallowUnknownFields and must refuse this storage rather
 	// than start without replaying the transaction/possibly sealed journal.

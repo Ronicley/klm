@@ -16,6 +16,7 @@ import (
 )
 
 type turn struct {
+	reasoningStart       *int          // Event boundary for this turn; protected by app.mu.
 	steerWake            chan struct{} // protected by app.mu
 	graphNotificationID  string
 	prompt               string // complete submission; graphConversationHooks prepends internal instructions
@@ -32,6 +33,11 @@ type turn struct {
 }
 
 type app struct {
+	webhookWake       chan struct{}
+	webhookIngress    chan struct{}
+	webhookDeliveries map[webhookDeliveryKey]string
+	webhookBytes      int64
+
 	authoringMu     sync.Mutex
 	mu              sync.Mutex
 	checkpointMu    sync.Mutex
@@ -170,6 +176,13 @@ func runEngine(dir string) error {
 		runs: map[string]*turn{}, runtimes: map[string]*sessionRuntime{}, graphRuns: map[string]*graphExecution{}, listeners: map[string]map[chan struct{}]bool{},
 		historyJournal: map[string]*sessionJournal{}, journalBase: state.GraphRevision, picker: make(chan struct{}, 1), ctx: ctx}
 	a.indexMessageIDsLocked()
+	a.webhookWake = make(chan struct{}, 1)
+	a.webhookIngress = make(chan struct{}, 2)
+	a.indexWebhooksLocked()
+	// Expired records disappear durably before any HTTP request is served.
+	if err := a.cleanExpiredWebhooks(); err != nil {
+		return err
+	}
 	// Pay snapshot validation/compilation once at startup, before serving commands.
 	a.graphValidation = map[string]validatedGraphSnapshot{}
 	if err := validateGraphRecordsCached(&a.state, a.graphValidation); err != nil {
@@ -188,6 +201,8 @@ func runEngine(dir string) error {
 		return err
 	}
 	defer control.Close()
+	a.wg.Add(1)
+	go func() { defer a.wg.Done(); a.webhookWorker() }()
 	a.wg.Add(1)
 	go func() { defer a.wg.Done(); a.checkpointStreamJournal() }()
 	server := &http.Server{Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second,

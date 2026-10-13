@@ -1,10 +1,11 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
-import { Download, Focus, GitBranch, PanelLeft, PanelRight } from 'lucide-react';
-import { IS_DESKTOP, openFocus, startWindowDrag } from './platform';
+import { Download, Focus, GitBranch, Maximize2, Minimize2, PanelLeft, PanelRight } from 'lucide-react';
+import { IS_DESKTOP, IS_MOBILE_HOST, openFocus, startWindowDrag } from './platform';
 import { Button, IconButton } from './design-system/Button';
 import { Badge } from './design-system/Badge';
 import { TabNav } from './design-system/TabNav';
 import { WorkspaceSidebar } from './features/workspace/WorkspaceSidebar';
+import { FocusWindowResizeHandles } from './features/workspace/FocusWindowResizeHandles';
 import { ProjectAuthoring } from './features/graphs/ProjectAuthoring';
 import { useAuthoringCatalog } from './features/graphs/catalog';
 import { graphListEntry } from './features/graphs/files';
@@ -15,6 +16,8 @@ import { DeleteSessionDialog } from './features/workspace/DeleteSessionDialog';
 import { SessionStatusBar } from './features/chat/SessionStatusBar';
 import { ModelPicker } from './features/chat/ModelPicker';
 import { GeneralHarnessPicker } from './features/chat/GeneralHarnessPicker';
+import { KlmAgentWorkspace } from './features/klm-agent/KlmAgentWorkspace';
+import { SessionOverlay } from './features/klm-agent/SessionOverlay';
 import { isSessionResponse, mergeSessions, prependHistory } from './features/chat/sessionState';
 import { ConversationHistory } from './features/chat/ConversationHistory';
 import { SubagentView } from './features/chat/SubagentView';
@@ -31,7 +34,9 @@ import { usePermissionAlerts } from './features/chat/usePermissionAlerts';
 import { DesignSystem } from './DesignSystem';
 import { ProjectRail } from './features/projects/ProjectRail';
 import { ProjectDialog } from './features/projects/ProjectDialog';
+import { ProjectSettingsDialog } from './features/projects/ProjectSettingsDialog';
 import { SettingsDialog } from './features/settings/SettingsDialog';
+import { BackgroundPicker } from './features/settings/BackgroundPicker';
 import { ENGINE_URL, EngineRequestError, getConversationGraph, mergeGraphState, selectConversationGraph, request, type ConversationGraphState, type EngineEvent, type EngineState, type EngineSnapshot, type EventPage, type Harness, type Project, type Session, type SessionResponse, type SessionMetadata, type SourceReference } from './engine';
 import { Select } from './design-system/Select';
 import paperBoatIcon from './features/projects/paper-boat-rail.png';
@@ -125,6 +130,7 @@ export function App() {
       document.removeEventListener('visibilitychange', refresh);
     };
   }, []);
+  const [focusMaximized, setFocusMaximized] = useState(false);
   async function focus() {
     try { await openFocus(); setFocusError(''); }
     catch (error) { setFocusError(error instanceof Error ? error.message : String(error)); }
@@ -157,6 +163,9 @@ export function App() {
   const { activeProjectId, selectedSessions, openSideSessions, collapsedFolders, collapsedArchivedProjects } = workspaceNavigation;
   const [addingProject, setAddingProject] = useState<string | null>(null);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [projectSettingsId, setProjectSettingsId] = useState('');
+  const settingsProject = projects.find(item => item.id === projectSettingsId);
+  useEffect(() => { if (projectSettingsId && !settingsProject) setProjectSettingsId(''); }, [projectSettingsId, settingsProject?.id]);
   const [creatingSession, setCreatingSession] = useState<{ projectId: string; workspace: string } | null>(null);
   const [renamingSession, setRenamingSession] = useState<Session | null>(null);
   const [deletingSession, setDeletingSession] = useState<Session | null>(null);
@@ -165,7 +174,15 @@ export function App() {
   const visibleProjectSessions = projectSessions.filter(item => !item.archived && !project?.archivedFolders.includes(item.workspace));
   const projectSession = visibleProjectSessions.find(item => item.id === selectedSessions[project?.id ?? '']) ?? visibleProjectSessions[0];
   const generalSession = sessions.find(item => item.role === 'general_agent');
-  const session = generalView ? generalSession : projectSession;
+  const [overlaySessionId, setOverlaySessionId] = useState('');
+  const overlaySession = generalView ? sessions.find(item => item.id === overlaySessionId && !item.role && !item.parentId && !item.archived && projects.some(owner => owner.id === item.projectId && !owner.archivedFolders.includes(item.workspace))) : undefined;
+  const overlayProject = projects.find(item => item.id === overlaySession?.projectId);
+  const session = generalView ? overlaySession ?? generalSession : projectSession;
+  const generalConversation = generalView && !overlaySession;
+  const conversationProject = overlaySession ? overlayProject : generalView ? undefined : project;
+  useEffect(() => {
+    if (overlaySessionId && !overlaySession) setOverlaySessionId('');
+  }, [overlaySessionId, overlaySession?.id]);
   const activeId = session?.id ?? '';
   useEffect(() => {
     setLocalMessages(current => {
@@ -186,7 +203,7 @@ export function App() {
   const awaitingPermission = !!session?.permissions?.length;
   const awaitingQuestion = !!session?.questions?.length;
   const createProject = projects.find(item => item.id === creatingSession?.projectId);
-  const { catalog, error: catalogError, loading: catalogLoading, reload: reloadCatalog } = useAuthoringCatalog(generalView ? '' : project?.id ?? '');
+  const { catalog, error: catalogError, loading: catalogLoading, reload: reloadCatalog } = useAuthoringCatalog(conversationProject?.id ?? '');
   const catalogGraphs = useMemo(() => catalog?.graphs.map(graphListEntry) ?? [], [catalog]);
   const [graphErrors, setGraphErrors] = useState<Record<string, string>>({});
   const [selectingGraphs, setSelectingGraphs] = useState<Record<string, boolean>>({});
@@ -221,14 +238,14 @@ export function App() {
   const [graphsVisit, setGraphsVisit] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const sideOpen = openSideSessions.includes(activeId);
-  const sideVisible = sideOpen && !generalView && view === 'chat' && !sidebarOpen && !creatingSession && !editingProject && addingProject === null;
+  const sideVisible = sideOpen && !generalView && view === 'chat' && !sidebarOpen && !creatingSession && !editingProject && !projectSettingsId && addingProject === null;
   const sideSession = sessions.find(item => item.parentId === activeId && item.role === 'side_agent');
   const [sideSources, setSideSources] = useState<Record<string, SourceReference[]>>({});
   const [sideErrors, setSideErrors] = useState<Record<string, string>>({});
   const openingSide = useRef(new Set<string>());
   const [drafts, setDrafts] = useState<Record<string, ComposerDraft>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const requestSurfaceFocused = windowFocused && !settingsOpen && !sidebarOpen && addingProject === null && !editingProject && !creatingSession && !renamingSession && !deletingSession;
+  const requestSurfaceFocused = windowFocused && !settingsOpen && !projectSettingsId && !sidebarOpen && addingProject === null && !editingProject && !creatingSession && !renamingSession && !deletingSession;
   useEffect(() => {
     const ids = new Set(engine.deletedSessionIds ?? []);
     if (!ids.size) return;
@@ -334,7 +351,7 @@ export function App() {
   }, []);
   // Hydrate/reconcile selection after CRUD, and poll even while the chat is idle.
   useEffect(() => {
-    if (!activeId || generalView) return;
+    if (!activeId || generalConversation) return;
     let active = true;
     let pending = false;
     async function refreshGraph() {
@@ -350,7 +367,7 @@ export function App() {
     void refreshGraph();
     const timer = window.setInterval(() => { if (stream.current?.readyState !== EventSource.OPEN) void refreshGraph(); }, 30000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [activeId, generalView, catalog, refreshVersion, applyGraph]);
+  }, [activeId, generalConversation, catalog, refreshVersion, applyGraph]);
   useEffect(() => {
     if (!selectedGraphId) setSessionTabs(current => current[activeId] === 'graph' ? { ...current, [activeId]: 'chat' } : current);
   }, [activeId, selectedGraphId]);
@@ -661,9 +678,29 @@ export function App() {
     navigation.current += 1;
     setWorkspaceNavigation(current => ({ ...current, activeProjectId: next.id })); setView('chat'); setSidebarOpen(false);
   }
+  function openSessionOverlay(target: Session) {
+    setOverlaySessionId(target.id);
+    setSessionTabs(current => ({ ...current, [target.id]: 'chat' }));
+  }
+  function openSessionInProject(target: Session) {
+    const owner = projects.find(item => item.id === target.projectId);
+    if (!owner || target.archived || owner.archivedFolders.includes(target.workspace)) return;
+    navigation.current += 1;
+    setWorkspaceNavigation(current => ({
+      ...current, activeProjectId: owner.id,
+      selectedSessions: { ...current.selectedSessions, [owner.id]: target.id },
+      collapsedFolders: { ...current.collapsedFolders, [owner.id]: (current.collapsedFolders[owner.id] ?? []).filter(folder => folder !== target.workspace) },
+    }));
+    setSessionTabs(current => ({ ...current, [target.id]: 'chat' }));
+    setOverlaySessionId(''); setSidebarOpen(false); setView('chat');
+  }
   function openProjectEditor(target: Project) {
     navigation.current += 1;
     setEditingProject(target); setSidebarOpen(false);
+  }
+  function openProjectSettings(target: Project) {
+    navigation.current += 1;
+    setProjectSettingsId(target.id); setSidebarOpen(false);
   }
   function openProjectPicker() {
     navigation.current += 1;
@@ -774,19 +811,21 @@ export function App() {
     tabItems.push({ value: `subagent:${id}`, label, closeLabel: `Close ${label}`, onClose: () => closeSubagent(id) });
   }
 
-  return <div ref={shell} className={`app-shell ${sidebarOpen ? 'sidebar-open' : ''} ${sideVisible && session ? 'side-agent-open' : ''}`}
+  return <><div ref={shell} className={`app-shell ${focusMaximized ? 'is-maximized' : ''} ${sidebarOpen ? 'sidebar-open' : ''} ${sideVisible && session ? 'side-agent-open' : ''}`}
     onPointerDown={event => {
       const target = event.target as HTMLElement;
       if (event.button !== 0 || !event.isPrimary || !target.closest('.session-header') || target.closest('button, a, input, select, textarea')) return;
       if (IS_DESKTOP) { void startWindowDrag().catch(error => setFocusError(errorMessage(error))); return; }
-      if (window.innerWidth <= 760) return;
+      if (focusMaximized || window.innerWidth <= 760) return;
       const element = event.currentTarget;
       const bounds = element.getBoundingClientRect();
       drag.current = {
         pointerId: event.pointerId, x: event.clientX, y: event.clientY,
         left: parseFloat(element.style.left) || 0, top: parseFloat(element.style.top) || 0,
-        minX: 8 - bounds.left, maxX: window.innerWidth - bounds.right - 8,
-        minY: 8 - bounds.top, maxY: window.innerHeight - bounds.bottom - 8,
+        minX: bounds.width > window.innerWidth - 16 ? 80 - bounds.right : 8 - bounds.left,
+        maxX: bounds.width > window.innerWidth - 16 ? window.innerWidth - bounds.left - 80 : window.innerWidth - bounds.right - 8,
+        minY: 8 - bounds.top,
+        maxY: bounds.height > window.innerHeight - 16 ? window.innerHeight - bounds.top - 56 : window.innerHeight - bounds.bottom - 8,
       };
       element.setPointerCapture(event.pointerId);
       element.dataset.dragging = 'true';
@@ -806,53 +845,58 @@ export function App() {
     onLostPointerCapture={() => { drag.current = null; if (shell.current) delete shell.current.dataset.dragging; }}
     onPointerCancel={() => { drag.current = null; if (shell.current) delete shell.current.dataset.dragging; }}
   >
-    <ProjectRail projects={projects} sessions={sessions} activeId={generalView ? '' : project?.id ?? ''} generalActive={generalView} onGeneralAgent={() => { navigation.current += 1; setSidebarOpen(false); setView('general'); }} onSelect={selectProject} onEdit={openProjectEditor} onRemove={target => removeProject(target.id)} onReorder={reorderProject} onAdd={() => void openProjectPicker()} onSettings={() => { setSidebarOpen(false); setSettingsOpen(true); }} />
+    <ProjectRail projects={projects} sessions={sessions} activeId={generalView ? '' : project?.id ?? ''} generalActive={generalView} onGeneralAgent={() => { navigation.current += 1; setOverlaySessionId(''); setSidebarOpen(false); setView('general'); }} onSelect={selectProject} onEdit={openProjectEditor} onRemove={target => removeProject(target.id)} onReorder={reorderProject} onAdd={() => void openProjectPicker()} onSettings={() => { setSidebarOpen(false); setSettingsOpen(true); }} />
     {!generalView && sidebarOpen && <button className="panel-backdrop" aria-label="Close side panel" onClick={() => setSidebarOpen(false)} />}
-    {!generalView && project && <WorkspaceSidebar key={`sidebar:${project.id}`} project={project} sessions={projectSessions} activeId={view === 'chat' ? activeId : ''} activeSection={view} collapsed={collapsedFolders[project.id] ?? []} archivedCollapsed={collapsedArchivedProjects.includes(project.id)} onCollapsedChange={folders => setWorkspaceNavigation(current => ({ ...current, collapsedFolders: { ...current.collapsedFolders, [project.id]: folders } }))} onArchivedCollapsedChange={collapsed => setWorkspaceNavigation(current => ({ ...current, collapsedArchivedProjects: collapsed ? [...new Set([...current.collapsedArchivedProjects, project.id])] : current.collapsedArchivedProjects.filter(id => id !== project.id) }))} onNew={newSession} onCreateFolder={createFolder} onRename={setRenamingSession} onDelete={setDeletingSession} onPosition={async (target, workspace, beforeId) => (await patchSession(target, { position: { workspace, beforeId } })) === null} onReorderFolder={reorderFolder} onArchiveSession={async (target, archived) => (await patchSession(target, { archived })) === null} onArchiveFolder={archiveFolder} onSelect={id => { navigation.current += 1; setWorkspaceNavigation(current => ({ ...current, selectedSessions: { ...current.selectedSessions, [project.id]: id } })); setView('chat'); setSidebarOpen(false); }} onClose={() => setSidebarOpen(false)} onAgents={() => { navigation.current += 1; setAgentsVisit(current => current + 1); setView('agents'); setSidebarOpen(false); }} onGraphs={() => { navigation.current += 1; setGraphsVisit(current => current + 1); setView('graphs'); setSidebarOpen(false); }} onEditProject={openProjectEditor} onRemoveProject={target => removeProject(target.id)} />}
+    {!generalView && project && <WorkspaceSidebar key={`sidebar:${project.id}`} project={project} sessions={projectSessions} activeId={view === 'chat' ? activeId : ''} activeSection={view} collapsed={collapsedFolders[project.id] ?? []} archivedCollapsed={collapsedArchivedProjects.includes(project.id)} onCollapsedChange={folders => setWorkspaceNavigation(current => ({ ...current, collapsedFolders: { ...current.collapsedFolders, [project.id]: folders } }))} onArchivedCollapsedChange={collapsed => setWorkspaceNavigation(current => ({ ...current, collapsedArchivedProjects: collapsed ? [...new Set([...current.collapsedArchivedProjects, project.id])] : current.collapsedArchivedProjects.filter(id => id !== project.id) }))} onNew={newSession} onCreateFolder={createFolder} onRename={setRenamingSession} onDelete={setDeletingSession} onPosition={async (target, workspace, beforeId) => (await patchSession(target, { position: { workspace, beforeId } })) === null} onReorderFolder={reorderFolder} onArchiveSession={async (target, archived) => (await patchSession(target, { archived })) === null} onArchiveFolder={archiveFolder} onSelect={id => { navigation.current += 1; setWorkspaceNavigation(current => ({ ...current, selectedSessions: { ...current.selectedSessions, [project.id]: id } })); setView('chat'); setSidebarOpen(false); }} onClose={() => setSidebarOpen(false)} onAgents={() => { navigation.current += 1; setAgentsVisit(current => current + 1); setView('agents'); setSidebarOpen(false); }} onGraphs={() => { navigation.current += 1; setGraphsVisit(current => current + 1); setView('graphs'); setSidebarOpen(false); }} onProjectSettings={openProjectSettings} />}
     <main className="main-panel">
-      <header className="session-header"><div id="workspace-header-leading" className="header-leading">{!generalView && project && <IconButton label="Open sessions" className="mobile-nav" onClick={() => setSidebarOpen(true)}><PanelLeft /></IconButton>}<h1>{generalView ? 'General agent' : view === 'chat' && session ? <button className="session-title-button" title="Rename session" onClick={() => setRenamingSession(session)}>{session.title}</button> : view === 'design' ? 'Design system' : view === 'agents' ? 'Agents' : view === 'graphs' ? 'Graphs' : project?.name ?? 'KLM'}</h1>{view === 'chat' && session && gitBranch && <span className="mode-label session-header-branch" title={gitBranch}><GitBranch aria-hidden="true" /><span>{gitBranch}</span></span>}</div><div id="workspace-header-actions" className="header-actions">
+      <header className="session-header"><div id="workspace-header-leading" className="header-leading">{!generalView && project && <IconButton label="Open sessions" className="mobile-nav" onClick={() => setSidebarOpen(true)}><PanelLeft /></IconButton>}<h1>{generalView ? 'KLM Agent' : view === 'chat' && session ? <button className="session-title-button" title="Rename session" onClick={() => setRenamingSession(session)}>{session.title}</button> : view === 'design' ? 'Design system' : view === 'agents' ? 'Agents' : view === 'graphs' ? 'Graphs' : project?.name ?? 'KLM'}</h1>{view === 'chat' && session && gitBranch && <span className="mode-label session-header-branch" title={gitBranch}><GitBranch aria-hidden="true" /><span>{gitBranch}</span></span>}</div><div id="workspace-header-actions" className="header-actions">
         {session && chatView && <Button size="sm" className="export-button" onClick={exportSession}>Session log<Download /></Button>}
-        {IS_DESKTOP && <IconButton label="Focus" onClick={() => void focus()}><Focus /></IconButton>}
+        {IS_DESKTOP ? <IconButton label="Focus" onClick={() => void focus()}><Focus /></IconButton> : !IS_MOBILE_HOST && <IconButton label={focusMaximized ? 'Restore window' : 'Maximize window'} aria-pressed={focusMaximized} onClick={() => setFocusMaximized(current => !current)}>{focusMaximized ? <Minimize2 /> : <Maximize2 />}</IconButton>}
         {session && view === 'chat' && <IconButton label={sideOpen ? 'Close side agent' : 'Open side agent'} aria-expanded={sideOpen} onClick={() => { setSideOpen(!sideOpen); setSidebarOpen(false); }}><PanelRight /></IconButton>}
       </div></header>
       {focusError && <div role="alert" className="storage-error">{focusError} <Button size="sm" onClick={() => void focus()}>Retry</Button></div>}
       {connectionError && <div role="alert" className="storage-error">{connectionError} <Button size="sm" onClick={() => setRefreshVersion(current => current + 1)}>Retry</Button></div>}
+      <KlmAgentWorkspace enabled={generalView} projects={projects} sessions={sessions} overlaySessionId={overlaySession?.id} onOpenOverlay={openSessionOverlay} onCloseOverlay={() => setOverlaySessionId('')} onOpenProject={openSessionInProject}>
       {(view === 'chat' || view === 'design') && <div className="session-navigation"><TabNav<SessionTab> value={view === 'design' ? 'chat' : activeTab} onChange={tab => { setView('chat'); setSessionTabs(current => ({ ...current, [activeId]: tab })); }} items={view === 'chat' ? tabItems : [{ value: 'chat', label: 'Chat' }]} />{view === 'chat' && project && session && <Select label="Move session to folder" value={session.workspace} disabled={pendingSessions[session.id] || !!connectionError} onChange={event => void patchSession(session, { workspace: event.target.value })}>{[...project.folders.filter(folder => !project.archivedFolders.includes(folder)), 'Ungrouped'].map(folder => <option key={folder} value={folder}>{folder}</option>)}</Select>}</div>}
-      {generalView && openSubagentIds.length > 0 && <div className="session-navigation"><TabNav<SessionTab> value={activeTab} onChange={tab => setSessionTabs(current => ({ ...current, [activeId]: tab }))} items={tabItems} /></div>}
-      {view === 'design' ? <DesignSystem /> : (view === 'agents' || view === 'graphs') && project ? <ProjectAuthoring key={`${project.id}:${view}:${agentsVisit}:${graphsVisit}`} projectId={project.id} area={view} /> : !loaded ? <div className="empty-chat"><h2>{connectionError ? 'Engine disconnected' : 'Connecting to engine...'}</h2></div> : generalView && !session ? <div className="empty-chat"><h2>{generalError || 'Opening general agent...'}</h2>{generalError && <Button onClick={() => setGeneralRetry(current => current + 1)}>Retry</Button>}</div> : !generalView && !project ? <div className="empty-chat"><h2>Add a project</h2><Button onClick={() => void openProjectPicker()}>Add project</Button></div> : !session ? <div className="empty-chat"><h2>Create a session</h2><Button onClick={() => newSession()} disabled={!!connectionError}>Create session</Button></div> : <>
-        {activeTab === 'chat' && <ConversationHistory session={session} subagents={sessions.filter(item => item.parentId === activeId && item.role === 'subagent')} working={working} label={generalView ? 'General conversation' : 'Conversation'} onSnapshot={receiveSession} onHistory={receiveHistory} onEventChange={receiveEvent} onAskSide={generalView ? undefined : askSide} onOpenSubagent={openSubagent} empty={<div className="empty-chat"><div className="empty-chat-brand" role="img" aria-label="KLM Harness"><img className="empty-chat-brand-icon" src={paperBoatIcon} alt="" /><span className="empty-chat-wordmark" aria-hidden="true"><span>K</span><span>L</span><span>M</span></span><Badge>Harness</Badge></div><h2>What would you like to work on?</h2></div>} />}
+      {view === 'design' ? <DesignSystem /> : (view === 'agents' || view === 'graphs') && project ? <ProjectAuthoring key={`${project.id}:${view}:${agentsVisit}:${graphsVisit}`} projectId={project.id} area={view} /> : !loaded ? <div className="empty-chat"><h2>{connectionError ? 'Engine disconnected' : 'Connecting to engine...'}</h2></div> : generalView && !session ? <div className="empty-chat"><h2>{generalError || 'Opening KLM Agent...'}</h2>{generalError && <Button onClick={() => setGeneralRetry(current => current + 1)}>Retry</Button>}</div> : !generalView && !project ? <div className="empty-chat"><h2>Add a project</h2><Button onClick={() => void openProjectPicker()}>Add project</Button></div> : !session ? <div className="empty-chat"><h2>Create a session</h2><Button onClick={() => newSession()} disabled={!!connectionError}>Create session</Button></div> : <>
+        <SessionOverlay session={overlaySession} project={overlayProject} onClose={() => setOverlaySessionId('')} onOpenProject={openSessionInProject}
+          background={overlaySession && generalSession ? <ConversationHistory session={generalSession} working={generalSession.status === 'running'} label="KLM Agent background conversation" onSnapshot={receiveSession} onHistory={receiveHistory} /> : null}>
+        {generalView && (openSubagentIds.length > 0 || overlaySession && selectedGraphId) && <div className="session-navigation"><TabNav<SessionTab> value={activeTab} onChange={tab => setSessionTabs(current => ({ ...current, [activeId]: tab }))} items={tabItems} /></div>}
+        {activeTab === 'chat' && <ConversationHistory key={session.id} session={session} subagents={sessions.filter(item => item.parentId === activeId && item.role === 'subagent')} working={working} label={overlaySession ? `${session.title} conversation` : generalConversation ? 'KLM Agent conversation' : 'Conversation'} onSnapshot={receiveSession} onHistory={receiveHistory} onEventChange={receiveEvent} onAskSide={generalView ? undefined : askSide} onOpenSubagent={openSubagent} empty={<div className="empty-chat"><div className="empty-chat-brand" role="img" aria-label={generalConversation ? 'KLM Agent' : 'KLM Harness'}><img className="empty-chat-brand-icon" src={paperBoatIcon} alt="" /><span className="empty-chat-wordmark" aria-hidden="true"><span>K</span><span>L</span><span>M</span></span><Badge>{generalConversation ? 'Agent' : 'Harness'}</Badge></div><h2>What would you like to work on?</h2></div>} />}
         {activeTab.startsWith('subagent:') && <SubagentView session={activeSubagent} onSnapshot={receiveSession} onHistory={receiveHistory} />}
-        {!generalView && (catalogError || !!catalog?.errors.length) && <div role="alert" className="storage-error">{catalogError || catalog?.errors.join(' ')} <Button size="sm" disabled={catalogLoading} onClick={() => void reloadCatalog().catch(() => {})}>Retry</Button></div>}
+        {!generalConversation && (catalogError || !!catalog?.errors.length) && <div role="alert" className="storage-error">{catalogError || catalog?.errors.join(' ')} <Button size="sm" disabled={catalogLoading} onClick={() => void reloadCatalog().catch(() => {})}>Retry</Button></div>}
         {graphErrors[session.id] && <div role="alert" className="storage-error">{graphErrors[session.id]} <Button size="sm" onClick={() => setRefreshVersion(current => current + 1)}>Retry</Button></div>}
         {selectedGraph ? <Suspense fallback={activeTab === 'graph' ? <section className="graph-view-loading" aria-label="Loading graph canvas" aria-busy="true" /> : null}><GraphView key={`${session.id}:${selectedGraphId}`} sessionId={session.id} graph={selectedGraph} agents={catalog?.agents ?? []} visible={activeTab === 'graph'} run={graphRunInProgress ? graphRun : undefined} requests={graphRequests} windowFocused={requestSurfaceFocused} parentFocused={requestSurfaceFocused && activeTab === 'chat'} onRequestTarget={setGraphPanelTarget} controlPending={!!graphRun && !!graphControls[graphRun.id]?.pending} controlError={graphRun ? graphControls[graphRun.id]?.error ?? '' : ''} onControl={control => { if (graphRun) void controlGraph(session.id, graphRun.id, control); }} /></Suspense> : activeTab === 'graph' && <section className="graph-view-loading" role="status">{catalogLoading ? 'Loading graph...' : 'Selected graph is unavailable.'} <Button size="sm" disabled={catalogLoading} onClick={() => void reloadCatalog().catch(() => {})}>Reload</Button></section>}
         {sessionErrors[session.id] && <div role="alert" className="storage-error">{sessionErrors[session.id]}</div>}
+        </SessionOverlay>
         <div className="composer-area" hidden={activeTab !== 'chat'}>
           {(awaitingPermission || awaitingQuestion || graphRequests.length > 0) && <div className="permission-queue">
-            {session.permissions?.map(permission => <PermissionCard key={permission.id} permission={permission} sessionId={session.id} projectName={generalView ? '' : project?.name ?? ''} onResolved={snapshot => setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [snapshot]) }))} />)}
+            {session.permissions?.map(permission => <PermissionCard key={permission.id} permission={permission} sessionId={session.id} projectName={conversationProject?.name ?? ''} onResolved={snapshot => setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [snapshot]) }))} />)}
             {session.questions?.map(question => <QuestionCard key={question.id} question={question} sessionId={session.id} onResolved={snapshot => setEngine(current => ({ ...current, sessions: mergeSessions(current.sessions, [snapshot]) }))} />)}
             <div ref={setGraphChatTarget} />
           </div>}
           <PendingSubmission items={localMessages[session.id] ?? []} onRestore={item => restoreLocal(session, item)} onRetry={item => submitLocal(session, item)} />
           <MessageQueue key={`queue/${session.id}`} session={session} disabled={!!connectionError || !!pendingSessions[session.id]} onSnapshot={receiveSession} />
-          {generalView && <GeneralHarnessPicker session={session} harnesses={harnesses} disabled={!!pendingSessions[session.id] || generalHarnessBlocked(session) || !!connectionError} onChange={harness => void updateSession(session, 'harness', { harness })} />}
+          {generalConversation && <GeneralHarnessPicker session={session} harnesses={harnesses} disabled={!!pendingSessions[session.id] || generalHarnessBlocked(session) || !!connectionError} onChange={harness => void updateSession(session, 'harness', { harness })} />}
           {generalView && !harnesses.some(harness => harness.id === session.harness && harness.available) && <p role="status" className="form-error">The selected harness is not installed.</p>}
           {graphRun?.active && <div className="chat-graph-progress" role="status" aria-atomic="true">
             <span className="chat-graph-progress-name">{graphRun.snapshot.definition.name || graphRun.graphId}</span>
             {(graphProgress.length ? graphProgress : [graphRun.status === 'starting' ? 'Starting' : graphRun.status === 'ending' ? 'Finishing' : graphRun.status === 'running' ? 'Running' : '']).filter(Boolean).map(progress => <span key={progress}>{progress}</span>)}
             <GraphRunControl run={graphRun} pending={!!graphControls[graphRun.id]?.pending} error={graphControls[graphRun.id]?.error ?? ''} onControl={control => void controlGraph(session.id, graphRun.id, control)} />
           </div>}
-          <MessageComposer key={session.id} projectId={session.projectId} draft={drafts[session.id] ?? { text: '', mentions: [] }} onDraftChange={draft => setDrafts(current => ({ ...current, [session.id]: draft }))} onSend={send} onTranscription={text => setDrafts(current => {
+          <MessageComposer key={session.id} placeholder={overlaySession ? `Message ${session.title}` : undefined} projectId={session.projectId} draft={drafts[session.id] ?? { text: '', mentions: [] }} onDraftChange={draft => setDrafts(current => ({ ...current, [session.id]: draft }))} onSend={send} onTranscription={text => setDrafts(current => {
             const draft = current[session.id] ?? { text: '', mentions: [] };
             const separator = !draft.text || draft.text.endsWith('\n\n') ? '' : draft.text.endsWith('\n') ? '\n' : '\n\n';
             return { ...current, [session.id]: { ...draft, text: `${draft.text}${separator}${text.trim()}` } };
-          })} disabled={!!pendingSessions[session.id] || generalView && !harnesses.some(harness => harness.id === session.harness && harness.available)} running={session.status === 'running'} onStop={() => void updateSession(session, 'stop', {})} graphControl={generalView ? undefined : <>
+          })} disabled={!!pendingSessions[session.id] || generalView && !harnesses.some(harness => harness.id === session.harness && harness.available)} running={session.status === 'running'} onStop={() => void updateSession(session, 'stop', {})} graphControl={generalConversation ? undefined : <>
             <GraphPicker key={`agent:${session.id}`} kind="agent" graphs={catalog?.agents ?? []} value={session.selectedAgentId ?? ''} disabled={!!pendingSessions[session.id] || working || !!session.queue?.length || !!connectionError} loading={catalogLoading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reloadCatalog().catch(() => {})} onChange={agentId => void chooseAgent(session, agentId)} />
             <GraphPicker key={session.id} graphs={catalogGraphs} value={selectedGraphId} selectedName={catalogSelectedGraph?.definition.name ?? selectedGraph?.definition.name} running={graphRunInProgress} disabled={!!selectingGraphs[session.id] || !!connectionError} loading={catalogLoading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reloadCatalog().catch(() => {})} onChange={graphId => void chooseGraph(session.id, graphId)} />
           </>} modelControl={<ModelPicker key={`${session.id}/${session.harness}`} session={session} disabled={!!pendingSessions[session.id] || working} optionsDisabled={!!pendingSessions[session.id] || !!connectionError} onSave={(model, effort) => applyModelSettings(session, model, effort)} onSnapshot={receiveSession} />} />
           <SessionStatusBar session={session} />
         </div>
-        <GraphRequestQueue key={session.id} requests={graphRequests} run={graphRun} graphs={catalog?.graphs ?? []} projectName={project?.name ?? ''} target={activeTab === 'chat' ? graphChatTarget : activeTab === 'graph' ? graphPanelTarget : null} onResolved={() => graphRequestResolved(session.id)} />
+        <GraphRequestQueue key={session.id} requests={graphRequests} run={graphRun} graphs={catalog?.graphs ?? []} projectName={conversationProject?.name ?? ''} target={activeTab === 'chat' ? graphChatTarget : activeTab === 'graph' ? graphPanelTarget : null} onResolved={() => graphRequestResolved(session.id)} />
       </>}
+      </KlmAgentWorkspace>
     </main>
     {sideVisible && project && session && <SideChatPanel key={session.id} session={sideSession} project={project} harnesses={harnesses}
       draft={drafts[`side:${session.id}`] ?? { text: '', mentions: [] }} sources={sideSources[session.id] ?? []} submissions={sideSession ? localMessages[sideSession.id] ?? [] : []} onRestoreSubmission={item => { if (sideSession) restoreLocal(sideSession, item, `side:${session.id}`); }} onRetrySubmission={item => { if (sideSession) submitLocal(sideSession, item); }}
@@ -863,11 +907,15 @@ export function App() {
       onSend={sendSide} onStop={() => { if (sideSession) void updateSession(sideSession, 'stop', {}); }}
       onHarness={harness => { if (sideSession) void updateSession(sideSession, 'harness', { harness }); }}
       onModel={(model, effort) => sideSession ? applyModelSettings(sideSession, model, effort) : Promise.resolve(false)} />}
+    {!IS_DESKTOP && !IS_MOBILE_HOST && !focusMaximized && <FocusWindowResizeHandles />}
     {addingProject !== null && <ProjectDialog initialFolder={addingProject} onSave={addProject} onClose={() => { navigation.current += 1; setAddingProject(null); }} />}
     {editingProject && <ProjectDialog key={`edit-project:${editingProject.id}`} initialFolder={editingProject.folder} project={editingProject} onSave={input => editProject(editingProject.id, input)} onClose={() => setEditingProject(null)} />}
+    {settingsProject && <ProjectSettingsDialog key={settingsProject.id} project={settingsProject} onSave={editProject} onRemove={removeProject} onClose={() => setProjectSettingsId('')} />}
     {creatingSession && createProject && <CreateSessionDialog project={createProject} harnesses={harnesses} workspace={creatingSession.workspace} onCreate={createSession} onClose={() => { navigation.current += 1; setCreatingSession(null); }} />}
     {renamingSession && <RenameSessionDialog key={renamingSession.id} session={renamingSession} onRename={title => patchSession(renamingSession, { title })} onClose={() => setRenamingSession(null)} />}
     {deletingSession && <DeleteSessionDialog key={deletingSession.id} session={deletingSession} onDelete={() => deleteSession(deletingSession)} onClose={() => setDeletingSession(null)} />}
     {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} onDesignSystem={() => { setSettingsOpen(false); setView('design'); }} />}
-  </div>;
+  </div>
+    {!IS_DESKTOP && !IS_MOBILE_HOST && <BackgroundPicker hidden={focusMaximized} />}
+  </>;
 }

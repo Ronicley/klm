@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +73,14 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/projects", a.createProject)
 	mux.HandleFunc("PATCH /api/projects/{id}", a.updateProject)
 	mux.HandleFunc("DELETE /api/projects/{id}", a.removeProject)
+	mux.HandleFunc("GET /api/projects/{id}/webhooks", a.listWebhooks)
+	mux.HandleFunc("POST /api/projects/{id}/webhooks", a.createWebhook)
+	mux.HandleFunc("PATCH /api/projects/{id}/webhooks/{webhookId}", a.patchWebhook)
+	mux.HandleFunc("DELETE /api/projects/{id}/webhooks/{webhookId}", a.deleteWebhook)
+	mux.HandleFunc("GET /api/projects/{id}/webhooks/{webhookId}/events", a.listWebhookEvents)
+	mux.HandleFunc("GET /api/projects/{id}/webhooks/{webhookId}/events/{eventId}", a.getWebhookEvent)
+	mux.HandleFunc("GET /api/projects/{id}/webhook-events", a.listWebhookReleases)
+	mux.HandleFunc("POST /api/webhooks/github/{webhookId}", a.receiveGithubWebhook)
 	mux.HandleFunc("POST /api/projects/{id}/folders", a.createFolder)
 	mux.HandleFunc("PATCH /api/projects/{id}/folders", a.patchFolder)
 	mux.HandleFunc("GET /api/projects/{id}/paths", a.projectPaths)
@@ -134,10 +141,17 @@ func (a *app) routes() http.Handler {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			_, pattern := mux.Handler(r)
+			// Signed ingress owns its raw-body/media/admission validation.
+			if pattern == "POST /api/webhooks/github/{webhookId}" {
+				mux.ServeHTTP(w, r)
+				return
+			}
+			webhookDelete := pattern == "DELETE /api/projects/{id}/webhooks/{webhookId}"
 			transcriptionUpload := r.Method == http.MethodPost && r.URL.Path == "/api/transcriptions"
 			messageUpload := r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/sessions/") && strings.HasSuffix(r.URL.Path, "/messages")
 			kind, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-			if (!transcriptionUpload && (err != nil || (kind != "application/json" && !(messageUpload && kind == "multipart/form-data")))) ||
+			if (!transcriptionUpload && !webhookDelete && (err != nil || (kind != "application/json" && !(messageUpload && kind == "multipart/form-data")))) ||
 				(transcriptionUpload && (err != nil || kind != "multipart/form-data")) {
 				if transcriptionUpload {
 					fail(w, 415, "Transcriptions require multipart/form-data.")
@@ -335,36 +349,21 @@ func (a *app) createProject(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	name, ok := cleanLabel(body.Name, 60)
-	if !ok {
-		fail(w, 400, "Project name must contain 1 to 60 characters.")
-		return
-	}
-	folder, err := existingDirectory(body.Folder)
+	p, err := prepareProject(body.Name, body.Folder, body.Icon)
 	if err != nil {
 		fail(w, 400, err.Error())
 		return
 	}
-	if !validIcon(body.Icon) {
-		fail(w, 400, "Icon must be a PNG data URL, at most 128 KiB and 1024 by 1024 pixels.")
-		return
-	}
-	p := Project{ID: newID(), Name: name, Folder: folder, Icon: body.Icon, Folders: []string{}, ArchivedFolders: []string{}}
 	a.mu.Lock()
-	for _, previous := range a.state.Projects {
-		sameFolder := previous.Folder == folder || (runtime.GOOS == "windows" && strings.EqualFold(previous.Folder, folder))
-		if previous.Removed && sameFolder {
-			p.ID, p.Folders, p.ArchivedFolders = previous.ID, previous.Folders, previous.ArchivedFolders
+	var previous *Project
+	for i := range a.state.Projects {
+		candidate := &a.state.Projects[i]
+		if candidate.Removed && sameProjectFolder(candidate.Folder, p.Folder) {
+			previous = candidate
 			break
 		}
 	}
-	err = a.commitLocked(func(d *diskState) {
-		if previous := d.project(p.ID); previous != nil {
-			*previous = p
-		} else {
-			d.Projects = append(d.Projects, p)
-		}
-	})
+	p, err = a.registerProjectLocked(p, previous)
 	a.mu.Unlock()
 	if err != nil {
 		fail(w, 503, err.Error())
