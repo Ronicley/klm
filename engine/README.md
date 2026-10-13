@@ -47,9 +47,11 @@ directories remain unchanged. The override is ignored by release builds. API and
 web ports remain fixed, so only one development engine can listen at a time.
 
 
-All mutation requests, including stop and directory picker, require
+JSON mutation requests, including stop and directory picker, require
 `Content-Type: application/json`. Stop and picker accept an empty body or `{}`.
-Other mutation bodies are a single JSON object; unknown fields are rejected.
+Other JSON mutation bodies are a single object; unknown fields are rejected.
+Transcription uploads use multipart; webhook deletion requires no body or content
+type. Signed GitHub ingress has its own raw JSON validation described below.
 Errors are non-2xx JSON objects: `{"error":"message"}`.
 
 | Method | Path | Body / response |
@@ -84,6 +86,274 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 
 Adding the same directory again restores a removed project's identity, folders,
 and session history with the name and icon chosen in the add dialog.
+
+### Project GitHub webhooks
+
+In the client, open **Project settings** from the sessions sidebar. **General**
+edits the name/icon, displays the fixed directory and confirms project removal;
+**Webhooks** manages multiple independent GitHub connections for that project.
+The rail's Edit/Remove menu and Add project remain separate entry points. Global
+Settings has no Webhooks section. Cards provide enable/disable, Edit, Copy URL,
+Refresh, Last received and Verified/Not verified; Load more fetches another page.
+There is no webhook history/payload screen or feed/automation consumer yet.
+
+#### Manual GitHub setup
+
+1. Choose **Add webhook**, enter a name (1–60 characters), an explicit retention
+   and a distinct high-entropy random secret for this connection. The secret must
+   contain 16–512 UTF-8 bytes without control characters; it is not trimmed or
+   normalized. **Copy secret** copies only the value currently entered. Store it
+   separately before saving: the form discards it on save/close, and the API only
+   returns `secretConfigured`, never the stored secret.
+2. **Copy URL** combines the configured `ENGINE_URL` with the connection's stable
+   `endpointPath`. Locally this is
+   `http://localhost:7331/api/webhooks/github/WEBHOOK_ID`, or
+   `http://localhost:17331/api/webhooks/github/WEBHOOK_ID` for a dev engine. Replace
+   the placeholder with the actual ID. Ports 7332/17332 serve the frontend, not
+   webhook ingress. A configured remote base retains its scheme, port and prefix;
+   the URL is not derived from the browser origin or inbound Host header.
+3. In the GitHub repository or organization settings, manually add a webhook with
+   the reachable **Payload URL**, **Content type: application/json**, the same
+   **Secret**, the desired events and **Active** enabled. Localhost on your engine
+   computer is not reachable by GitHub. Set up your own HTTPS ingress proxy/tunnel
+   and use its public URL with the same receiving path in GitHub. KLM neither
+   provisions that infrastructure nor registers GitHub webhooks; no public URL
+   field, GitHub App/OAuth or PAT is part of this feature.
+4. After GitHub sends a signed `ping`, click **Refresh**. **Verified** shows the
+   durable `lastPingAt`; **Last received** shows the latest durably accepted event.
+   Configuration creation alone does not verify receipt. These timestamps are
+   historical, not a connectivity monitor; there is no background verification
+   polling. After changing a secret in KLM and GitHub, send a new ping delivery to
+   verify the replacement. Redelivering an already retained ping is a duplicate
+   and does not update verification.
+5. If a delivery fails or its response is uncertain, inspect GitHub's Recent
+   deliveries and **Redeliver** manually after restoring availability. GitHub does
+   not automatically redeliver failed webhooks. Within retention, retrying the same
+   delivery ID recovers the existing receipt without inserting another event.
+
+For example, an ingress-only HTTPS proxy should use this exact-path mapping for
+each connection (placeholders only):
+
+```text
+POST https://hooks.example.com/api/webhooks/github/WEBHOOK_ID
+  -> http://127.0.0.1:7331/api/webhooks/github/WEBHOOK_ID
+All other public paths and methods: reject; do not forward.
+```
+
+Use 17331 as the upstream port for development. Preserve the original body and
+`X-Hub-Signature-256`, `X-GitHub-Delivery`, `X-GitHub-Event` and Content-Type headers;
+do not parse/reserialize or compress the JSON. This mapping exposes no project,
+session or other administration route. HMAC protects ingress only, not the engine's
+existing unauthenticated personal-use administrative API. The private harness
+bridge stays authenticated and loopback-only.
+
+#### Reception, storage and release
+
+`POST /api/webhooks/github/{webhookId}` requires `application/json` (media-type
+parameters allowed) and no compression other than identity. Required single headers:
+
+- `X-Hub-Signature-256`: `sha256=` plus 64 hexadecimal digits, HMAC-SHA256 of the
+  exact raw body using this connection's secret, compared with `hmac.Equal`.
+- `X-GitHub-Delivery`: 1–128 ASCII characters without spaces/control characters.
+- `X-GitHub-Event`: 1–100 ASCII token characters; event types are not allowlisted.
+
+After signature verification, the body must be a valid UTF-8 JSON object. `action`
+may be absent or a string of at most 100 characters. The engine retains the exact
+original UTF-8 JSON as an immutable string, plus delivery ID, event type and action,
+without normalizing whitespace or numbers. The signature authenticates the body,
+not the event/delivery headers; no signature, cookies or arbitrary header dump is
+stored. Payload is untrusted data, not an instruction to execute.
+
+Event, pending entry, receipt sequence and connection timestamps commit together
+through the existing journal's durable Sync before a new delivery returns
+`202 {"accepted":true,"duplicate":false,"eventId":"..."}`. A retained, unexpired
+duplicate of `(webhookId,deliveryId)` returns
+`200 {"accepted":true,"duplicate":true,"eventId":"..."}` without changing TTL,
+timestamps, verification, sequence or queue. The same delivery ID on another
+connection is independent; after expiry/deletion it can be accepted as a new event.
+An unavailable/disabled connection is rejected before duplicate recovery.
+
+The worker starts with the engine, wakes on acceptance and checks pending storage
+every second. It releases eligible entries in receipt order, up to 100 per
+transaction, atomically removing pending references and adding release records.
+Release assigns a separate global `releaseSequence` and `emittedAt`; the raw event
+remains retained. `status: "emitted"` means durably available internally, not
+delivered to a feed, session, agent or graph. No consumer ACK, action retry or
+external automation runs. Wake signals and session/inventory SSE are not the
+durable webhook log. After restart, pending entries resume without a client;
+already committed releases keep their sequence/time. Storage failure does not
+publish successful acceptance; recovery requires restarting the engine and manual
+redelivery when appropriate.
+
+Secrets and payloads live in the engine data directory, not the project repository
+or client localStorage. Secrets are needed for HMAC and stored with the engine's
+private records; encryption at rest is not promised. Existing data without webhook
+fields loads as empty; validation runs at load, after journal replay and before
+save/checkpoint. Downgrading to a binary that rejects these fields is not supported.
+
+#### Retention and lifecycle
+
+Retention is explicitly selected on creation; there is no assumed default. UTC
+`receivedAt` is captured when body reading completes, before commit, and represents
+engine receipt rather than GitHub occurrence or worker emission. `expiresAt` is
+computed once from that receipt and stored with each event:
+
+| API value | UI label | From receivedAt (UTC) |
+| --- | --- | --- |
+| `1d` | 1 day | 24 hours |
+| `3d` | 3 days | 72 hours |
+| `1w` | 1 week | 168 hours |
+| `1mo` | 1 month | 1 calendar month |
+| `3mo` | 3 months | 3 calendar months |
+| `6mo` | 6 months | 6 calendar months |
+| `1y` | 1 year | 1 calendar year |
+| `forever` | Indefinitely | No expiresAt |
+
+Calendar arithmetic preserves the time of day and clamps to the destination
+month's last valid day: January 31 plus one month becomes February 28/29;
+February 29, 2024 plus one year becomes February 28, 2025. Editing retention affects
+only newly accepted events; duplicates and release do not recalculate expiry.
+`expiresAt <= now` is unavailable to reads/release even before cleanup. Cleanup
+removes expired events, pending/release records and deduplication indexes at startup
+before HTTP, then every minute in batches of 100, including removed projects.
+
+- **Disabled connection:** new deliveries return 409, but accepted pending entries
+  continue releasing. Re-enable uses the same endpoint and secret.
+- **Change secret:** omission keeps the current secret; empty/null is invalid.
+  A replacement clears `lastPingAt`, has no dual-key grace period and requires the
+  matching GitHub update. A request racing a secret change returns 409 rather than
+  committing with the old key.
+- **Remove webhook:** the UI requires **Remove webhook?** confirmation. A single
+  transaction deletes the connection and all its events, pending entries and
+  releases; the old URL returns 404. It does not remove the GitHub-side registration.
+- **Removed project:** logical project removal retains identity/history and webhook
+  configuration/events, rejects new ingress and webhook management/reads with 404,
+  pauses pending releases and continues TTL. Other projects continue releasing.
+  Existing active-session/graph removal conflicts remain. Adding the same directory
+  again restores the ProjectID, connection IDs, URLs, secrets and enabled flags;
+  the worker resumes only still-valid pending entries.
+
+Deletion is logical and immediately removes API access. Physical space is reclaimed
+by the existing healthy checkpoint/rotation cycle (five minutes); older journal or
+checkpoint bytes may persist until then. Secure erasure of bytes/backups is not
+promised.
+
+#### Webhook API and cursors
+
+Project IDs and connection/event IDs are opaque and should be URL-encoded. Every
+management/read route requires an active project and checks actual record ownership.
+Creation starts enabled; PATCH requires at least one supported field and cannot
+change ID, project or provider. Manager JSON decoding is strict.
+
+| Method | Path | Body / response |
+| --- | --- | --- |
+| GET | `/api/projects/{id}/webhooks` | `limit`, `cursor` -> `{items:WebhookConnection[],nextCursor?,hasMore}` |
+| POST | `/api/projects/{id}/webhooks` | `{provider:"github",name,secret,retention}` -> 201 WebhookConnection |
+| PATCH | `/api/projects/{id}/webhooks/{webhookId}` | `{name?,enabled?,retention?,secret?}` -> 200 WebhookConnection |
+| DELETE | `/api/projects/{id}/webhooks/{webhookId}` | No body -> 200 `{removed:true}`; 404 if absent |
+| GET | `/api/projects/{id}/webhooks/{webhookId}/events` | `limit`, `cursor` -> `{items:WebhookEventMetadata[],nextCursor?,hasMore}` |
+| GET | `/api/projects/{id}/webhooks/{webhookId}/events/{eventId}` | `{event:WebhookEventMetadata,payload:string}`; 404 if expired/deleted or outside scope |
+| GET | `/api/projects/{id}/webhook-events` | `after`, `limit` -> `{items:WebhookEventMetadata[],nextAfter:string,highWatermark:string,hasMore}`; released events only |
+| POST | `/api/webhooks/github/{webhookId}` | Original signed body/headers -> 202 new receipt or 200 duplicate |
+
+Connection DTOs include `id`, `projectId`, `provider`, `name`, `enabled`, `retention`,
+`secretConfigured`, `endpointPath`, `createdAt`, `updatedAt` and optional
+`lastReceivedAt`/`lastPingAt`. Metadata includes event/connection/project identity,
+`deliveryId`, `eventType`, optional `action`, `isPing`, `receivedAt`, optional
+`expiresAt`, `receivedSequence`, `status` (`pending` or `emitted`), optional
+`emittedAt`/`releaseSequence` and `payloadBytes`. Times are UTC RFC3339Nano; optional
+fields are omitted, and empty pages contain `[]`. List pages contain no payload.
+
+Pages default to 50 items; `limit` must be 1–100. Connection pages sort by creation
+time/ID ascending; event pages sort by received sequence descending. Their returned
+`nextCursor` is an opaque, versioned, scoped string (maximum 1 KiB), not an offset.
+Use it unchanged for the same project/connection.
+
+For releases, start with `after=0`, then pass the returned `nextAfter`. Receipt and
+release sequences, `after`, `nextAfter` and `highWatermark` are **decimal strings**;
+do not convert them to JavaScript numbers. Release order is ascending and `after`
+is exclusive. Each response captures the global release high watermark; if more
+retained project results remain, nextAfter is the last returned sequence. At the
+end, nextAfter equals highWatermark, even for an empty page. A future release of an
+older pending event gets a higher release sequence and remains discoverable.
+Invalid cursors or after beyond the current counter return 400.
+
+Reads neither consume events nor update a consumer position. Separate consumers
+can retain their own nextAfter independently; KLM has no consumer-progress table
+yet. Counters survive restart and do not reset on expiry/deletion. Cursors remain
+usable across deleted/expired rows, but gaps are normal: an overdue consumer may
+lose events to TTL, with no complete-history or expired-payload recovery guarantee.
+After an uncertain management mutation, Refresh before retrying; creation is not
+automatically retried after a transport failure.
+
+#### Effective limits and errors
+
+| Resource | Limit / response |
+| --- | --- |
+| Individual raw payload | 25 MiB; 413, including oversized chunked bodies |
+| Concurrent body read/hash/parse | 2 per engine; extra ingress returns 503 |
+| Connections | 100 per project, 1,000 per engine including removed projects; creation returns 409 at capacity |
+| Stored events/raw payloads | 10,000 events or 256 MiB per engine; new ingress returns 503 at capacity |
+| Pages | Default 50, maximum 100; invalid limit/cursor returns 400 |
+| Worker/expiry cleanup | Up to 100 events per transaction |
+| HTTP headers/timeouts | 16 KiB headers; 5s read-header, 15s read, 20s write, 60s idle |
+
+Ping, pending and released events, including removed projects, count toward global
+event/byte limits; expired rows occupy capacity until cleanup. Indefinitely is
+still bounded by quotas. No unexpired event is silently evicted. A retained
+duplicate passes the event/byte quota check without allocating space, but still
+requires an available/enabled connection, a valid signature and an ingress slot.
+Capacity/ingress-slot responses include `Retry-After: 5`; this does not schedule a
+GitHub retry. The engine holds state in memory and checkpoints it completely.
+
+Ingress errors use `{"error":"English message"}`: 400 invalid headers/JSON/UTF-8,
+401 signature, 404 absent/removed connection or project, 409 disabled/racing secret
+change, 413 oversized body, 415 content type/encoding, and 503 capacity/shutdown/
+storage failure. A timeout after durable acceptance may leave the sender uncertain;
+manual redelivery with the same ID handles this while the event is retained.
+
+#### Human acceptance (pending)
+
+Backend/frontend owners reported one successful `go build -tags dev ./...` in
+`engine` and one successful `npx tsc -b` in `clients/desktop`. Documentation was
+checked against current routes, DTOs, wrappers and component wiring. A short local
+API smoke used a dev executable and isolated disposable `KLM_DEV_DATA_DIR`: creation
+without secret exposure, rejection of a bad signature, signed ping acceptance,
+deduplication, release cursor, exact payload and ping verification passed. After
+stop/start, payload, release sequence/time and deduplication were preserved. The
+temporary engine was stopped afterwards. No full suite or UI/real GitHub validation
+was run; pending recovery, expiry, quotas and full lifecycle remain human checks.
+
+Use the dev engine with disposable data and the detailed checklist in
+[`GITHUB_WEBHOOKS_IMPLEMENTATION_PLAN.md`, section 10](../GITHUB_WEBHOOKS_IMPLEMENTATION_PLAN.md#10-aceitação-e-validação-humana-preparada).
+The primary manual route is:
+
+1. Open General/Webhooks from the sidebar; save name/icon and confirm Add project
+   and rail editing still work. Create two connections in one project and one in
+   another, with distinct secrets and URLs. Confirm global Settings has no Webhooks.
+2. Send a signed ping, Refresh and observe Verified; send a signed push and inspect
+   API metadata/raw payload. For local deliveries, HMAC exactly the UTF-8 bytes sent
+   and include all three required headers. Repeat the delivery ID: expect the same
+   eventId/TTL and one stored event; repeat it on a different connection: expect a
+   separate event. Do not commit real secrets or payload credentials.
+3. Read released events with after=0 then nextAfter; repeat independently to confirm
+   reads do not consume them. Restart and confirm retained releases keep their
+   sequence/time. Pending-at-restart recovery needs the controlled disposable-data
+   scenario in the plan; the normal worker may release too quickly to observe it.
+4. Change retention and compare old/new expiresAt; exercise calendar month/year
+   boundaries and expiry as specified in the plan, including pending expiry. There
+   is no public clock override; do not modify the live engine's state/journal.
+5. Disable/re-enable, rotate the secret and send a new ping, then confirm removal
+   deletes stored events and makes the old URL unavailable. Separately remove/
+   restore a project: same identity/configuration, pending paused while removed,
+   TTL still active and only valid pending entries resumed. Pending-state scenarios
+   require controlled disposable data rather than assuming a visible queue delay.
+6. On desktop, browser and compact WebView, check layout/scrolling, Tab/Shift+Tab,
+   keyboard activation, Escape/close and focus return, confirmation Cancel/Remove,
+   clipboard fallback, loading/errors, Refresh, pagination and late responses after
+   closing/changing project. Check release/dev/configured URL bases and real GitHub
+   delivery through the user's HTTPS mapping. No received event should populate the
+   fixture timeline or start a session, agent or graph.
 
 ### General conversation
 
@@ -1010,8 +1280,11 @@ execution, a full suite, or an adversarial review.
   snapshot; unconfirmed termination is reported as an error. There is no replay of
   the cancelled prompt. Force-killing the engine itself cannot run cleanup and
   may leave external children, which are not blindly killed by PID on restart.
+- Codex resumes threads with `excludeTurns: true` so the response omits the old
+  timeline already stored by KLM. Native conversation history and model context
+  remain intact; this does not compact the conversation or replay failed inputs.
 - Output is consumed concurrently from stdout and stderr. JSON lines are capped
-  at 2 MiB and total stdout at 32 MiB per turn; hitting a limit cancels the turn
+  at 4 MiB and total stdout at 32 MiB per turn; hitting a limit cancels the turn
   with an explicit error. Stderr is capped at 16 KiB and is never persisted,
   exposed, or logged. Exit failures report a bounded generic diagnostic instead.
 - Session history is durable and unbounded across turns. Full checkpoint/recovery

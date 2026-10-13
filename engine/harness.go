@@ -184,8 +184,8 @@ func (l *jsonLines) Write(p []byte) (int, error) {
 		if end >= 0 {
 			part = p[:end]
 		}
-		if len(l.pending)+len(part) > 2<<20 {
-			return 0, l.reject("Harness JSON line exceeded the 2 MiB limit.")
+		if len(l.pending)+len(part) > 4<<20 {
+			return 0, l.reject("Harness JSON line exceeded the 4 MiB limit.")
 		}
 		l.pending = append(l.pending, part...)
 		if end < 0 {
@@ -234,6 +234,10 @@ func (l *jsonLines) resetTurn() {
 func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd string, payload submission) {
 	defer a.wg.Done()
 	defer t.cancel()
+	a.mu.Lock()
+	reasoningStart := len(s.Events)
+	t.reasoningStart = &reasoningStart
+	a.mu.Unlock()
 	p := &adapter{app: a, turn: t, id: s.ID, harness: s.Harness, role: s.Role, yolo: s.YOLO, cwd: cwd,
 		keys: map[string]string{}, toolNames: map[string]string{}, commands: map[string]string{}, processesDrained: true}
 	var stopCancellation func() bool

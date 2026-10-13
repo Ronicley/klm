@@ -1,7 +1,8 @@
-import { LogOut, Moon, Plus, Settings, Sun } from 'lucide-react';
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { LogOut, Plus, Settings } from 'lucide-react';
+import { Fragment, useLayoutEffect, useRef, useState } from 'react';
 import { IconButton } from '../../design-system/Button';
 import { ProjectActionsMenu } from './ProjectActionsMenu';
+import { ThemePicker } from '../settings/ThemePicker';
 import type { Project, Session } from '../../engine';
 import { IS_MOBILE_HOST, returnToHosts } from '../../platform';
 import { animateSortPositions, captureSortPositions, type SortPositions } from '../sortAnimation';
@@ -47,19 +48,12 @@ export function ProjectRail({ projects, sessions, activeId, onSelect, onEdit, on
   const [dropBefore, setDropBefore] = useState<string | null>(null);
   const projectList = useRef<HTMLDivElement>(null);
   const projectPositions = useRef<SortPositions>(new Map());
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#111318' : '#f8f9fa');
-    try { localStorage.setItem('klm.theme', theme); }
-    catch { /* Theme switching still works when browser storage is unavailable. */ }
-  }, [theme]);
   useLayoutEffect(() => {
     if (projectList.current) animateSortPositions(projectList.current, '[data-project-sort-key]', 'projectSortKey', projectPositions.current);
   }, [dropBefore]);
   return <nav className="project-rail" aria-label="Projects">
     {/* The legacy marker makes installed mobile capture listeners skip this logo; only the footer assigns the home action. */}
-    <IconButton label="General agent" className={`rail-brand ${generalActive ? 'is-active' : ''}`} aria-current={generalActive ? 'page' : undefined} data-klm-general-navigation data-klm-host-navigation onClick={onGeneralAgent}>{IS_MOBILE_HOST ? <span className="brand-mark" aria-hidden="true" /> : <img className="rail-brand-icon" src={paperBoatIcon} alt="" />}</IconButton>
+    <IconButton label="KLM Agent" className={`rail-brand ${generalActive ? 'is-active' : ''}`} aria-current={generalActive ? 'page' : undefined} data-klm-general-navigation data-klm-host-navigation onClick={onGeneralAgent}>{IS_MOBILE_HOST ? <span className="brand-mark" aria-hidden="true" /> : <img className="rail-brand-icon" src={paperBoatIcon} alt="" />}</IconButton>
     <div ref={projectList} className="project-icons"
       onDragOver={event => {
         if (!dragging) return;
@@ -113,6 +107,6 @@ export function ProjectRail({ projects, sessions, activeId, onSelect, onEdit, on
     {dragging && dropBefore === '' ? <span className="project-drop-placeholder" aria-hidden="true" /> : null}
     </div>
     <IconButton label={adding ? 'Choosing project directory' : 'Add project'} className="add-project-button" disabled={adding} onClick={onAdd}><Plus /></IconButton>
-    <div className="project-rail-footer"><IconButton label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={() => setTheme(current => current === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun /> : <Moon />}</IconButton><IconButton label="Settings" onClick={onSettings}><Settings /></IconButton>{IS_MOBILE_HOST && <IconButton label="Back to hosts" data-klm-host-navigation onClick={returnToHosts}><LogOut /></IconButton>}</div>
+    <div className="project-rail-footer"><ThemePicker /><IconButton label="Settings" onClick={onSettings}><Settings /></IconButton>{IS_MOBILE_HOST && <IconButton label="Back to hosts" data-klm-host-navigation onClick={returnToHosts}><LogOut /></IconButton>}</div>
   </nav>;
 }

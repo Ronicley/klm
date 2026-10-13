@@ -172,6 +172,9 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 		method := "thread/start"
 		if native.ID != "" {
 			method, params["threadId"] = "thread/resume", native.ID
+			// KLM already stores the timeline; omit old turns from the response,
+			// while Codex still resumes the full native conversation context.
+			params["excludeTurns"] = true
 		}
 		if sessionModel != "" {
 			params["model"] = sessionModel

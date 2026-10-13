@@ -49,6 +49,7 @@ export type Session = {
   id: string;
   projectId: string;
   title: string;
+  latestReasoningTitle?: string;
   workspace: string;
   harness: Harness['id'];
   harnessLocked?: boolean;

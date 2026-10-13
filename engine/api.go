@@ -73,6 +73,14 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/projects", a.createProject)
 	mux.HandleFunc("PATCH /api/projects/{id}", a.updateProject)
 	mux.HandleFunc("DELETE /api/projects/{id}", a.removeProject)
+	mux.HandleFunc("GET /api/projects/{id}/webhooks", a.listWebhooks)
+	mux.HandleFunc("POST /api/projects/{id}/webhooks", a.createWebhook)
+	mux.HandleFunc("PATCH /api/projects/{id}/webhooks/{webhookId}", a.patchWebhook)
+	mux.HandleFunc("DELETE /api/projects/{id}/webhooks/{webhookId}", a.deleteWebhook)
+	mux.HandleFunc("GET /api/projects/{id}/webhooks/{webhookId}/events", a.listWebhookEvents)
+	mux.HandleFunc("GET /api/projects/{id}/webhooks/{webhookId}/events/{eventId}", a.getWebhookEvent)
+	mux.HandleFunc("GET /api/projects/{id}/webhook-events", a.listWebhookReleases)
+	mux.HandleFunc("POST /api/webhooks/github/{webhookId}", a.receiveGithubWebhook)
 	mux.HandleFunc("POST /api/projects/{id}/folders", a.createFolder)
 	mux.HandleFunc("PATCH /api/projects/{id}/folders", a.patchFolder)
 	mux.HandleFunc("GET /api/projects/{id}/paths", a.projectPaths)
@@ -128,9 +136,16 @@ func (a *app) routes() http.Handler {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			_, pattern := mux.Handler(r)
+			// Signed ingress owns its raw-body/media/admission validation.
+			if pattern == "POST /api/webhooks/github/{webhookId}" {
+				mux.ServeHTTP(w, r)
+				return
+			}
+			webhookDelete := pattern == "DELETE /api/projects/{id}/webhooks/{webhookId}"
 			transcriptionUpload := r.Method == http.MethodPost && r.URL.Path == "/api/transcriptions"
 			kind, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-			if (!transcriptionUpload && (err != nil || kind != "application/json")) ||
+			if (!transcriptionUpload && !webhookDelete && (err != nil || kind != "application/json")) ||
 				(transcriptionUpload && (err != nil || kind != "multipart/form-data")) {
 				if transcriptionUpload {
 					fail(w, 415, "Transcriptions require multipart/form-data.")

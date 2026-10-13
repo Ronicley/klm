@@ -15,33 +15,34 @@ const (
 )
 
 type SessionSummary struct {
-	Queue           []QueuedMessage         `json:"queue"`
-	Role            string                  `json:"role,omitempty"`
-	GraphRunID      string                  `json:"graphRunId,omitempty"`
-	GraphNodeID     string                  `json:"graphNodeId,omitempty"`
-	ExecutionCWD    string                  `json:"executionCwd,omitempty"`
-	SelectedGraphID string                  `json:"selectedGraphId,omitempty"`
-	Graph           *ConversationGraphState `json:"graph,omitempty"`
-	ParentID        string                  `json:"parentId,omitempty"`
-	ID              string                  `json:"id"`
-	ProjectID       string                  `json:"projectId"`
-	Title           string                  `json:"title"`
-	Workspace       string                  `json:"workspace"`
-	Harness         string                  `json:"harness"`
-	HarnessLocked   bool                    `json:"harnessLocked,omitempty"`
-	YOLO            bool                    `json:"yolo,omitempty"`
-	Model           string                  `json:"model,omitempty"`
-	Effort          string                  `json:"effort,omitempty"`
-	ResolvedModel   string                  `json:"resolvedModel,omitempty"`
-	ResolvedEffort  string                  `json:"resolvedEffort,omitempty"`
-	Status          string                  `json:"status"`
-	Archived        bool                    `json:"archived,omitempty"`
-	RuntimeActive   bool                    `json:"runtimeActive,omitempty"`
-	Permissions     []Permission            `json:"permissions,omitempty"`
-	Questions       []QuestionRequest       `json:"questions,omitempty"`
-	Usage           *SessionUsage           `json:"usage,omitempty"`
-	CreatedAt       string                  `json:"createdAt"`
-	UpdatedAt       string                  `json:"updatedAt"`
+	Queue                []QueuedMessage         `json:"queue"`
+	Role                 string                  `json:"role,omitempty"`
+	GraphRunID           string                  `json:"graphRunId,omitempty"`
+	GraphNodeID          string                  `json:"graphNodeId,omitempty"`
+	ExecutionCWD         string                  `json:"executionCwd,omitempty"`
+	SelectedGraphID      string                  `json:"selectedGraphId,omitempty"`
+	Graph                *ConversationGraphState `json:"graph,omitempty"`
+	ParentID             string                  `json:"parentId,omitempty"`
+	ID                   string                  `json:"id"`
+	ProjectID            string                  `json:"projectId"`
+	Title                string                  `json:"title"`
+	LatestReasoningTitle string                  `json:"latestReasoningTitle,omitempty"`
+	Workspace            string                  `json:"workspace"`
+	Harness              string                  `json:"harness"`
+	HarnessLocked        bool                    `json:"harnessLocked,omitempty"`
+	YOLO                 bool                    `json:"yolo,omitempty"`
+	Model                string                  `json:"model,omitempty"`
+	Effort               string                  `json:"effort,omitempty"`
+	ResolvedModel        string                  `json:"resolvedModel,omitempty"`
+	ResolvedEffort       string                  `json:"resolvedEffort,omitempty"`
+	Status               string                  `json:"status"`
+	Archived             bool                    `json:"archived,omitempty"`
+	RuntimeActive        bool                    `json:"runtimeActive,omitempty"`
+	Permissions          []Permission            `json:"permissions,omitempty"`
+	Questions            []QuestionRequest       `json:"questions,omitempty"`
+	Usage                *SessionUsage           `json:"usage,omitempty"`
+	CreatedAt            string                  `json:"createdAt"`
+	UpdatedAt            string                  `json:"updatedAt"`
 }
 
 type EventPage struct {
@@ -95,12 +96,57 @@ func sessionSummary(view *Session) SessionSummary {
 	}
 }
 
+// Derive a short title only from reasoning the harness exposed in the supplied
+// current-turn events. Empty streaming entries do not hide an earlier title.
+func latestReasoningTitle(events []Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		entry := events[i]
+		if entry.Type != "reasoning" {
+			continue
+		}
+		if title := reasoningTitleLine(entry.Title); title != "" {
+			return title
+		}
+		if title := reasoningTitleLine(entry.Text); title != "" {
+			return title
+		}
+	}
+	return ""
+}
+
+func reasoningTitleLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		// Strip simple Markdown heading and surrounding emphasis/code markers.
+		if strings.HasPrefix(line, "#") {
+			line = strings.TrimSpace(strings.Trim(line, "#"))
+		}
+		line = strings.TrimSpace(strings.Trim(line, "*_`"))
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > 160 {
+			return string(runes[:159]) + "…"
+		}
+		return line
+	}
+	return ""
+}
+
 func (a *app) sessionSummaryLocked(id string) *SessionSummary {
 	view := a.sessionViewLocked(id)
 	if view == nil {
 		return nil
 	}
 	summary := sessionSummary(view)
+	if active := a.runs[id]; view.Status == "running" && active != nil && active.reasoningStart != nil {
+		start := *active.reasoningStart
+		if start >= 0 && start <= len(view.Events) {
+			summary.LatestReasoningTitle = latestReasoningTitle(view.Events[start:])
+		}
+	}
 	return &summary
 }
 
