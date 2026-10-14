@@ -340,6 +340,14 @@ Ports remain fixed; collisions are reported instead of selecting another port.
 
 In the browser's floating Focus layout, right-clicking the gradient opens a
 **Widgets** cascading menu with checked toggles for **Happening now** and **Feed**.
+The background picker also accepts a local image in place of its gradient presets.
+Images cover the viewport while retaining their aspect ratio, cropping overflow
+around the center rather than stretching. Image mode exposes **Blur** (0–80px),
+**Mask** opacity (0–100%) and a mask color picker; the mask is a separate layer
+above the blurred photo. Images can be replaced, removed or reselected after
+switching to a gradient. The photo is stored in browser IndexedDB and adjustments
+in localStorage, so they survive refresh/tab closure on the same browser origin.
+Images are decoded before saving, limited to 20 MiB and never uploaded to the engine.
 Each widget has its own softly shadowed, draggable and edge-resizable container.
 The floating Happening now widget renders all matching sessions without Show more
 or a fixed item limit; its list uses the available height and scrolls on overflow.
