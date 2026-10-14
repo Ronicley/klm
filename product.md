@@ -171,8 +171,13 @@ Markdown formatting removed, whitespace collapsed and a 160-character limit. The
 subtitle is cleared when the turn ends. A new turn starts without a subtitle and
 only reasoning emitted during that turn can populate it; prior-turn reasoning is
 never replayed as the current subtitle.
-Sessions appear newest-created first so newly spawned sessions are visible immediately
-in the three-item collapsed list. Show more expands a scrollable list with a persistent
+Sessions initially appear newest-created first so newly spawned sessions are visible
+immediately in the three-item collapsed list. Users can drag cards to reorder them,
+with a visible insertion indicator, or use Alt + Arrow keys on a focused card.
+Manual ordering is remembered locally per browser origin and engine and shared
+between the KLM Agent list and the Focus widget. Newly appearing sessions without
+a saved position precede the saved order, newest first; streaming does not reorder
+cards. Dropping a card does not open its chat. Show more expands a scrollable list with a persistent
 Show less control, including when the active list shrinks, and an empty state appears
 when none are active. Its column has a separate draggable divider and
 centered hover/focus swap button, retaining its width and side locally. It starts
@@ -332,6 +337,53 @@ Resizing is unavailable in the maximized layout, narrow mobile layout and
 Flutter-hosted WebView. The toggle is absent in the Flutter-hosted WebView. Another device
 uses `http://IP-OF-ENGINE-COMPUTER:7332`; API and SSE use that same host on 7331.
 Ports remain fixed; collisions are reported instead of selecting another port.
+
+In the browser's floating Focus layout, right-clicking the gradient opens a
+**Widgets** cascading menu with checked toggles for **Happening now** and **Feed**.
+Each widget has its own softly shadowed, draggable and edge-resizable container.
+The floating Happening now widget renders all matching sessions without Show more
+or a fixed item limit; its list uses the available height and scrolls on overflow.
+Happening now initially sits at the upper left and Feed at the right, following
+the supplied visual reference. Position, dimensions and enabled widgets are saved
+locally per engine; toggling a widget off and on restores its geometry.
+The Focus layout survives refresh and closing/reopening the browser tab in the
+same browser origin and engine: open session windows (including KLM Agent), their
+opening order and foreground window, widget toggles, positions and sizes, and the
+main window's position, dimensions and minimized/maximized state. Saved session
+IDs are reconciled only after engine inventory loads, so a disconnected initial
+load does not discard the layout. Archived/unavailable sessions are omitted after
+reconciliation. Smaller viewports keep window headers reachable; entering a
+narrow layout does not overwrite the saved floating geometry.
+Clicking a Happening now row selects its project chat in the main window when
+that window is open. When the main window is minimized, the row opens or brings
+forward the session's chat-only floating window, keeping the main window minimized.
+The row's floating-window icon always opens or brings forward that same live
+session in an independent chat-only window within Focus, with its
+existing composer, draft, queue, requests and Stop. Closing this window does not
+stop the session. Session windows close when their session/folder is archived or
+their project is removed. Their geometry is retained locally for reopening.
+In Focus, the session navigation also has a floating-window icon to the left of the folder
+selector. It opens or brings forward that session's dedicated chat window and
+automatically minimizes the main window.
+
+The KLM Agent's Chat header and the minimized main-window bar also offer an
+**Open KLM Agent in floating window** icon. Both open or bring forward the same
+chat-only window for the engine's singleton general conversation. Its draft,
+history, model, harness selection/lock, queue, requests and Stop are shared with
+the main view. It remains available when switching projects or minimizing the
+main window. The general chat has no rename action or project graph selector;
+its Open in main window action returns to the KLM Agent view.
+
+A **Minimize window** button immediately before Maximize hides the main window
+while keeping its state, leaving a small bottom-centered bar with **Restore main
+window**. The bar offers the shared theme picker and Settings, usable without
+restoring the main window. Theme selection stays synchronized with Project Rail.
+Widgets remain available
+while the main window is minimized; maximizing hides the floating widgets until
+the main window is restored or minimized. These controls are absent on native
+desktop, the mobile host and narrow browser layouts. TypeScript validation covers
+compilation; visual layout, dragging/resizing and live interactions await human
+acceptance.
 
 Local development uses API **17331** and Tauri Focus/web **17332**, with Vite HMR
 on **5173**. Engine builds with the `dev` tag use a separate `engine-dev` data
@@ -537,6 +589,20 @@ originating session and cannot serve as a human authorization message in the new
 session. A durable operation ID prevents duplicate creation on retries. Creating
 a session does not subscribe the creator to its progress or completion; normal
 session controls and inventory show it to the user.
+
+The creation event in chat is a clickable card with the session title, harness
+icon/name, model and effort, without the internal session ID in its label. New
+events capture the creation settings; legacy events fall back to available session
+inventory. Default selections remain labeled Default instead of inventing resolved
+settings. The main chat navigates to the created session's project; a floating chat
+opens or brings forward a separate floating window for it. Archived/unavailable
+destinations remain visible but cannot be opened through the card.
+
+Opening a native subagent from a floating chat shows its existing read-only
+activity and status inside that same window, with a Back to parent-chat button.
+The main window remains in its current minimized/open state. The parent draft and
+chat remain mounted, both histories remain subscribed, and the selected subagent
+is saved with the Focus layout. Returning restores the parent chat's normal controls.
 
 Spawned sessions inherit the sender's current YOLO mode by default. An explicit
 `yolo:false` implements the user's request for a non-YOLO child before its first

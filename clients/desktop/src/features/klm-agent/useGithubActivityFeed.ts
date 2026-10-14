@@ -3,6 +3,8 @@ import { EngineRequestError, type Project } from '../../engine';
 import { activityPreferencesKey, readActivityPreferences, type ActivityOverrides } from './ActivityFeedSettings';
 import { compareActivitySequence, getActivityCatalog, getActivityPage, type ActivityCatalog, type GithubActivityPage } from './githubActivityApi';
 
+const preferencesChanged = 'klm:activity-preferences-changed';
+
 function feedScroller(timeline: HTMLDivElement | null) {
   if (!timeline) return null;
   return getComputedStyle(timeline).overflowY === 'visible' ? timeline.closest<HTMLElement>('.activity-feed-scroll') : timeline;
@@ -65,13 +67,20 @@ export function useGithubActivityFeed(category: string, search: string, projects
       if (event.key !== activityPreferencesKey && event.key !== null) return;
       try { setOverrides(readActivityPreferences()); setPreferenceError(''); } catch { setPreferenceError('Feed preferences could not be loaded.'); }
     };
-    window.addEventListener('storage', sync); return () => window.removeEventListener('storage', sync);
+    const localSync = (event: Event) => {
+      setOverrides((event as CustomEvent<ActivityOverrides>).detail);
+      setReady(true);
+    };
+    window.addEventListener('storage', sync);
+    window.addEventListener(preferencesChanged, localSync);
+    return () => { window.removeEventListener('storage', sync); window.removeEventListener(preferencesChanged, localSync); };
   }, []);
   const savePreferences = (next: ActivityOverrides) => {
     setOverrides(next);
     setReady(true); setSetupError('');
     try { localStorage.setItem(activityPreferencesKey, JSON.stringify({ version: 1, overrides: next })); setPreferenceError(''); }
     catch { setPreferenceError('Preferences could not be saved.'); }
+    window.dispatchEvent(new CustomEvent(preferencesChanged, { detail: next }));
   };
   const params = new URLSearchParams({ category, q: queryText, limit: '50' });
   for (const item of catalog?.items ?? []) if (!(overrides[item.id] ?? item.defaultEnabled)) params.append('exclude', item.id);

@@ -6,7 +6,7 @@ import { ThemePicker } from '../settings/ThemePicker';
 import type { Project, Session } from '../../engine';
 import { IS_MOBILE_HOST, returnToHosts } from '../../platform';
 import { animateSortPositions, captureSortPositions, type SortPositions } from '../sortAnimation';
-import paperBoatIcon from './paper-boat-rail.png';
+import klmIcon from './klm-icon.png';
 
 function projectRuntimeState(project: Project, sessions: Session[]) {
   let state = 'off';
@@ -53,7 +53,7 @@ export function ProjectRail({ projects, sessions, activeId, onSelect, onEdit, on
   }, [dropBefore]);
   return <nav className="project-rail" aria-label="Projects">
     {/* The legacy marker makes installed mobile capture listeners skip this logo; only the footer assigns the home action. */}
-    <IconButton label="KLM Agent" className={`rail-brand ${generalActive ? 'is-active' : ''}`} aria-current={generalActive ? 'page' : undefined} data-klm-general-navigation data-klm-host-navigation onClick={onGeneralAgent}>{IS_MOBILE_HOST ? <span className="brand-mark" aria-hidden="true" /> : <img className="rail-brand-icon" src={paperBoatIcon} alt="" />}</IconButton>
+    <IconButton label="KLM Agent" className={`rail-brand ${generalActive ? 'is-active' : ''}`} aria-current={generalActive ? 'page' : undefined} data-klm-general-navigation data-klm-host-navigation onClick={onGeneralAgent}><img className="rail-brand-icon" src={klmIcon} alt="" /></IconButton>
     <div ref={projectList} className="project-icons"
       onDragOver={event => {
         if (!dragging) return;

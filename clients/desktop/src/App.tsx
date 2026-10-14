@@ -1,11 +1,14 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Focus, GitBranch, Maximize2, Minimize2, PanelLeft, PanelRight } from 'lucide-react';
+import { Download, Focus, GitBranch, Maximize2, Minimize2, Minus, PanelLeft, PanelRight, PanelsTopLeft } from 'lucide-react';
 import { IS_DESKTOP, IS_MOBILE_HOST, openFocus, startWindowDrag } from './platform';
 import { Button, IconButton } from './design-system/Button';
 import { Badge } from './design-system/Badge';
 import { TabNav } from './design-system/TabNav';
 import { WorkspaceSidebar } from './features/workspace/WorkspaceSidebar';
 import { FocusWindowResizeHandles } from './features/workspace/FocusWindowResizeHandles';
+import { FocusWorkspace } from './features/workspace/FocusWorkspace';
+import { FocusSessionChat } from './features/workspace/FocusSessionChat';
+import { readFocusLayout, reachableMainGeometry, saveFocusLayout, type FocusLayout } from './features/workspace/focusLayout';
 import { ProjectAuthoring } from './features/graphs/ProjectAuthoring';
 import { useAuthoringCatalog } from './features/graphs/catalog';
 import { graphListEntry } from './features/graphs/files';
@@ -19,6 +22,7 @@ import { KlmAgentWorkspace } from './features/klm-agent/KlmAgentWorkspace';
 import { SessionOverlay } from './features/klm-agent/SessionOverlay';
 import { isSessionResponse, mergeSessions, prependHistory } from './features/chat/sessionState';
 import { ConversationHistory } from './features/chat/ConversationHistory';
+import { SessionNavigationProvider } from './features/chat/SessionNavigation';
 import { SubagentView } from './features/chat/SubagentView';
 import { GraphPicker } from './features/chat/GraphPicker';
 import { PermissionCard } from './features/chat/PermissionCard';
@@ -35,7 +39,7 @@ import { SettingsDialog } from './features/settings/SettingsDialog';
 import { BackgroundPicker } from './features/settings/BackgroundPicker';
 import { ENGINE_URL, EngineRequestError, getConversationGraph, mergeGraphState, selectConversationGraph, request, type ConversationGraphState, type EngineEvent, type EngineState, type EngineSnapshot, type EventPage, type Harness, type Project, type Session, type SessionResponse, type SessionMetadata, type SourceReference } from './engine';
 import { Select } from './design-system/Select';
-import paperBoatIcon from './features/projects/paper-boat-rail.png';
+import klmIcon from './features/projects/klm-icon.png';
 
 const GraphView = lazy(() => import('./features/graphs/GraphView').then(module => ({ default: module.GraphView })));
 type SessionTab = 'chat' | 'graph' | `subagent:${string}`;
@@ -100,7 +104,40 @@ export function App() {
   const [loaded, setLoaded] = useState(false);
   const [connectionError, setConnectionError] = useState('');
   const [focusError, setFocusError] = useState('');
-  const [focusMaximized, setFocusMaximized] = useState(false);
+  const [savedFocusLayout] = useState<FocusLayout>(() => !IS_DESKTOP && !IS_MOBILE_HOST ? readFocusLayout() : { maximized: false, minimized: false, front: 'main', sessionIds: [] });
+  const [focusMaximized, setFocusMaximized] = useState(savedFocusLayout.maximized);
+  const [focusMinimized, setFocusMinimized] = useState(savedFocusLayout.minimized);
+  const [focusFront, setFocusFront] = useState(savedFocusLayout.front);
+  const [focusMainGeometry, setFocusMainGeometry] = useState(savedFocusLayout.mainGeometry);
+  const [focusWide, setFocusWide] = useState(() => window.matchMedia('(min-width: 761px)').matches);
+  const [floatingSessionIds, setFloatingSessionIds] = useState<string[]>(savedFocusLayout.sessionIds);
+  const [unavailableFloatingIds, setUnavailableFloatingIds] = useState<string[]>([]);
+  const [floatingSubagentIds, setFloatingSubagentIds] = useState<Record<string, string>>(savedFocusLayout.subagentIds ?? {});
+  const focusEnabled = !IS_DESKTOP && !IS_MOBILE_HOST && focusWide;
+  const floatingSessions = floatingSessionIds.flatMap(id => {
+    const item = sessions.find(session => session.id === id);
+    return item && (item.role === 'general_agent' || !item.archived && !item.parentId && !item.role && projects.some(owner => owner.id === item.projectId && !owner.archivedFolders.includes(item.workspace))) ? [item] : [];
+  });
+  const [openingGeneralWindow, setOpeningGeneralWindow] = useState(false);
+  const openingGeneralWindowRef = useRef(false);
+  const [generalWindowError, setGeneralWindowError] = useState('');
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 761px)');
+    const resize = () => setFocusWide(media.matches);
+    media.addEventListener('change', resize);
+    return () => media.removeEventListener('change', resize);
+  }, []);
+  useEffect(() => {
+    if (!loaded) return;
+    const valid = new Set(floatingSessions.map(item => item.id));
+    const known = new Set(sessions.map(item => item.id));
+    const unavailable = (id: string) => !valid.has(id) && (known.has(id) || unavailableFloatingIds.includes(id));
+    if (floatingSessionIds.some(unavailable)) setFloatingSessionIds(ids => ids.filter(id => !unavailable(id)));
+  }, [loaded, floatingSessions, floatingSessionIds, sessions, unavailableFloatingIds]);
+  useEffect(() => {
+    if (!focusEnabled) return;
+    saveFocusLayout({ maximized: focusMaximized, minimized: focusMinimized, front: focusFront, sessionIds: floatingSessionIds, subagentIds: floatingSubagentIds, mainGeometry: focusMainGeometry });
+  }, [focusEnabled, focusMaximized, focusMinimized, focusFront, floatingSessionIds, floatingSubagentIds, focusMainGeometry]);
   async function focus() {
     try { await openFocus(); setFocusError(''); }
     catch (error) { setFocusError(error instanceof Error ? error.message : String(error)); }
@@ -119,6 +156,35 @@ export function App() {
   const stopVersions = useRef(new Map<string, number>());
   const pending = useRef(new Set<string>());
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const unhydratedFloatingIds = JSON.stringify(floatingSessionIds.filter(id => !sessions.some(item => item.id === id) && !unavailableFloatingIds.includes(id)));
+  useEffect(() => {
+    const ids = JSON.parse(unhydratedFloatingIds) as string[];
+    if (!loaded || !ids.length) return;
+    // Project inventory omits the general conversation. Hydrate saved IDs before
+    // deciding they are unavailable, without creating a new general conversation.
+    const controller = new AbortController();
+    let pending = false;
+    const hydrate = async () => {
+      if (pending) return;
+      pending = true;
+      await Promise.all(ids.map(async id => {
+        try {
+          const next = await request<SessionResponse>(`/api/sessions/${encodeURIComponent(id)}`, 'GET', undefined, 15000, controller.signal);
+          if (!controller.signal.aborted) receiveSession(next);
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          if (error instanceof EngineRequestError && error.status === 404) setUnavailableFloatingIds(current => [...new Set([...current, id])]);
+          else setConnectionError(errorMessage(error));
+        }
+      }));
+      pending = false;
+    };
+    void hydrate();
+    const retry = () => { void hydrate(); };
+    const timer = window.setInterval(retry, 30000);
+    window.addEventListener('focus', retry);
+    return () => { controller.abort(); window.clearInterval(timer); window.removeEventListener('focus', retry); };
+  }, [loaded, unhydratedFloatingIds, refreshVersion]);
   const [sessionMetadata, setSessionMetadata] = useState<SessionMetadata | null>(null);
   const metadataRequest = useRef(0);
   const projectRevision = useRef(0);
@@ -206,6 +272,29 @@ export function App() {
   const [drafts, setDrafts] = useState<Record<string, ComposerDraft>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
   const shell = useRef<HTMLDivElement>(null);
+  const readMainGeometry = useCallback(() => {
+    const element = shell.current;
+    if (!focusEnabled || focusMaximized || !element) return;
+    const bounds = element.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return;
+    return reachableMainGeometry({ left: parseFloat(element.style.left) || 0, top: parseFloat(element.style.top) || 0, width: bounds.width, height: bounds.height });
+  }, [focusEnabled, focusMaximized]);
+  function saveMainGeometry() {
+    const geometry = readMainGeometry();
+    if (geometry) {
+      if (shell.current) { shell.current.style.left = `${geometry.left}px`; shell.current.style.top = `${geometry.top}px`; }
+      setFocusMainGeometry(geometry);
+    }
+  }
+  useEffect(() => {
+    if (!focusEnabled) return;
+    // Capture an in-progress drag/resize too when the tab is hidden or closed.
+    const save = () => saveFocusLayout({ maximized: focusMaximized, minimized: focusMinimized, front: focusFront, sessionIds: floatingSessionIds, subagentIds: floatingSubagentIds, mainGeometry: readMainGeometry() ?? focusMainGeometry });
+    const onVisibility = () => { if (document.visibilityState === 'hidden') save(); };
+    window.addEventListener('pagehide', save);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => { window.removeEventListener('pagehide', save); document.removeEventListener('visibilitychange', onVisibility); };
+  }, [focusEnabled, focusMaximized, focusMinimized, focusFront, floatingSessionIds, floatingSubagentIds, focusMainGeometry, readMainGeometry]);
   const drag = useRef<{ pointerId: number; x: number; y: number; left: number; top: number; minX: number; maxX: number; minY: number; maxY: number } | null>(null);
   useEffect(() => {
     // Wait for engine data before persisting fallback selections; an initial
@@ -333,6 +422,14 @@ export function App() {
   if (activeId) streamSet.add(activeId);
   if (generalView && generalSession) streamSet.add(generalSession.id);
   if (sideVisible && sideSession) streamSet.add(sideSession.id);
+  floatingSessions.forEach(target => {
+    streamSet.add(target.id);
+    const childId = floatingSubagentIds[target.id];
+    if (childId) streamSet.add(childId);
+    target.events.forEach(event => {
+      if (event.type === 'subagent' && ['running', 'pending', 'started'].includes(event.status ?? 'running') && typeof event.data?.childSessionId === 'string') streamSet.add(event.data.childSessionId);
+    });
+  });
   session?.events.forEach(event => {
     const childSessionId = event.type === 'subagent' && ['running', 'pending', 'started'].includes(event.status ?? 'running') && typeof event.data?.childSessionId === 'string' ? event.data.childSessionId : '';
     if (childSessionId) streamSet.add(childSessionId);
@@ -365,16 +462,13 @@ export function App() {
   }, [streamIds, refreshVersion]);
 
   useEffect(() => {
-    const resetPosition = () => {
+    const keepPositionReachable = () => {
       drag.current = null;
-      if (shell.current) {
-        shell.current.style.left = '0px';
-        shell.current.style.top = '0px';
-        delete shell.current.dataset.dragging;
-      }
+      if (shell.current) delete shell.current.dataset.dragging;
+      setFocusMainGeometry(current => current ? reachableMainGeometry(current) : current);
     };
-    window.addEventListener('resize', resetPosition);
-    return () => window.removeEventListener('resize', resetPosition);
+    window.addEventListener('resize', keepPositionReachable);
+    return () => window.removeEventListener('resize', keepPositionReachable);
   }, []);
   useEffect(() => {
     const mobileSidebar = sidebarOpen && window.matchMedia('(max-width: 760px)').matches;
@@ -586,6 +680,13 @@ export function App() {
     setSessionTabs(current => ({ ...current, [target.id]: 'chat' }));
   }
   function openSessionInProject(target: Session) {
+    if (target.role === 'general_agent') {
+      navigation.current += 1;
+      setOverlaySessionId(''); setSidebarOpen(false); setView('general');
+      setSessionTabs(current => ({ ...current, [target.id]: 'chat' }));
+      setFocusMinimized(false); setFocusFront('main');
+      return;
+    }
     const owner = projects.find(item => item.id === target.projectId);
     if (!owner || target.archived || owner.archivedFolders.includes(target.workspace)) return;
     navigation.current += 1;
@@ -596,6 +697,28 @@ export function App() {
     }));
     setSessionTabs(current => ({ ...current, [target.id]: 'chat' }));
     setOverlaySessionId(''); setSidebarOpen(false); setView('chat');
+    setFocusMinimized(false); setFocusFront('main');
+  }
+  function openFloatingSession(target: Session) {
+    setFloatingSessionIds(ids => ids.includes(target.id) ? ids : [...ids, target.id]);
+    setFloatingSubagentIds(current => { if (!current[target.id]) return current; const next = { ...current }; delete next[target.id]; return next; });
+    setFocusMaximized(false);
+    setFocusFront(target.id);
+  }
+  async function openGeneralFloatingWindow() {
+    if (openingGeneralWindowRef.current) return;
+    setGeneralWindowError('');
+    if (generalSession) { openFloatingSession(generalSession); return; }
+    openingGeneralWindowRef.current = true;
+    setOpeningGeneralWindow(true);
+    try {
+      const next = await request<SessionResponse>('/api/general-session', 'POST', {});
+      receiveSession(next);
+      const target = 'summary' in next ? next.summary : next;
+      setFloatingSessionIds(ids => ids.includes(target.id) ? ids : [...ids, target.id]);
+      setFocusMaximized(false); setFocusFront(target.id);
+    } catch (error) { setGeneralWindowError(errorMessage(error)); }
+    finally { openingGeneralWindowRef.current = false; setOpeningGeneralWindow(false); }
   }
   function openProjectEditor(target: Project) {
     navigation.current += 1;
@@ -714,7 +837,9 @@ export function App() {
     tabItems.push({ value: `subagent:${id}`, label, closeLabel: `Close ${label}`, onClose: () => closeSubagent(id) });
   }
 
-  return <><div ref={shell} className={`app-shell ${focusMaximized ? 'is-maximized' : ''} ${sidebarOpen ? 'sidebar-open' : ''} ${sideVisible && session ? 'side-agent-open' : ''}`}
+  return <SessionNavigationProvider sessions={sessions} projects={projects} onOpenSession={openSessionInProject}><div ref={shell} className={`app-shell ${focusMaximized ? 'is-maximized' : ''} ${focusMinimized && focusEnabled ? 'is-minimized' : ''} ${sidebarOpen ? 'sidebar-open' : ''} ${sideVisible && session ? 'side-agent-open' : ''}`}
+    style={{ ...(focusEnabled ? focusMainGeometry : undefined), zIndex: focusFront === 'main' ? 3 : 1 }} data-resized={focusEnabled && focusMainGeometry ? true : undefined} inert={focusMinimized && focusEnabled}
+    onPointerDownCapture={() => setFocusFront('main')} onFocusCapture={() => setFocusFront('main')}
     onPointerDown={event => {
       const target = event.target as HTMLElement;
       if (event.button !== 0 || !event.isPrimary || !target.closest('.session-header') || target.closest('button, a, input, select, textarea')) return;
@@ -745,8 +870,8 @@ export function App() {
     onPointerUp={event => {
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     }}
-    onLostPointerCapture={() => { drag.current = null; if (shell.current) delete shell.current.dataset.dragging; }}
-    onPointerCancel={() => { drag.current = null; if (shell.current) delete shell.current.dataset.dragging; }}
+    onLostPointerCapture={() => { if (drag.current) saveMainGeometry(); drag.current = null; if (shell.current) delete shell.current.dataset.dragging; }}
+    onPointerCancel={() => { if (drag.current) saveMainGeometry(); drag.current = null; if (shell.current) delete shell.current.dataset.dragging; }}
   >
     <ProjectRail projects={projects} sessions={sessions} activeId={generalView ? '' : project?.id ?? ''} generalActive={generalView} onGeneralAgent={() => { navigation.current += 1; setOverlaySessionId(''); setSidebarOpen(false); setView('general'); }} onSelect={selectProject} onEdit={openProjectEditor} onRemove={target => removeProject(target.id)} onReorder={reorderProject} onAdd={() => void openProjectPicker()} onSettings={() => { setSidebarOpen(false); setSettingsOpen(true); }} />
     {!generalView && sidebarOpen && <button className="panel-backdrop" aria-label="Close side panel" onClick={() => setSidebarOpen(false)} />}
@@ -754,18 +879,20 @@ export function App() {
     <main className="main-panel">
       <header className="session-header"><div id="workspace-header-leading" className="header-leading">{!generalView && project && <IconButton label="Open sessions" className="mobile-nav" onClick={() => setSidebarOpen(true)}><PanelLeft /></IconButton>}<h1>{generalView ? 'KLM Agent' : view === 'chat' && session ? <button className="session-title-button" title="Rename session" onClick={() => setRenamingSession(session)}>{session.title}</button> : view === 'design' ? 'Design system' : view === 'agents' ? 'Agents' : view === 'graphs' ? 'Graphs' : project?.name ?? 'KLM'}</h1>{view === 'chat' && session && gitBranch && <span className="mode-label session-header-branch" title={gitBranch}><GitBranch aria-hidden="true" /><span>{gitBranch}</span></span>}</div><div id="workspace-header-actions" className="header-actions">
         {session && chatView && <Button size="sm" className="export-button" onClick={exportSession}>Session log<Download /></Button>}
+        {focusEnabled && <IconButton label="Minimize window" className="focus-minimize-button" onClick={() => setFocusMinimized(true)}><Minus /></IconButton>}
         {IS_DESKTOP ? <IconButton label="Focus" onClick={() => void focus()}><Focus /></IconButton> : !IS_MOBILE_HOST && <IconButton label={focusMaximized ? 'Restore window' : 'Maximize window'} aria-pressed={focusMaximized} onClick={() => setFocusMaximized(current => !current)}>{focusMaximized ? <Minimize2 /> : <Maximize2 />}</IconButton>}
         {session && view === 'chat' && <IconButton label={sideOpen ? 'Close side agent' : 'Open side agent'} aria-expanded={sideOpen} onClick={() => { setSideOpen(!sideOpen); setSidebarOpen(false); }}><PanelRight /></IconButton>}
       </div></header>
       {focusError && <div role="alert" className="storage-error">{focusError} <Button size="sm" onClick={() => void focus()}>Retry</Button></div>}
+      {generalWindowError && !focusMinimized && <div role="alert" className="storage-error">{generalWindowError} <Button size="sm" disabled={openingGeneralWindow} onClick={() => void openGeneralFloatingWindow()}>Retry</Button></div>}
       {connectionError && <div role="alert" className="storage-error">{connectionError} <Button size="sm" onClick={() => setRefreshVersion(current => current + 1)}>Retry</Button></div>}
-      <KlmAgentWorkspace enabled={generalView} projects={projects} sessions={sessions} overlaySessionId={overlaySession?.id} onOpenOverlay={openSessionOverlay} onCloseOverlay={() => setOverlaySessionId('')} onOpenProject={openSessionInProject}>
-      {(view === 'chat' || view === 'design') && <div className="session-navigation"><TabNav<SessionTab> value={view === 'design' ? 'chat' : activeTab} onChange={tab => { setView('chat'); setSessionTabs(current => ({ ...current, [activeId]: tab })); }} items={view === 'chat' ? tabItems : [{ value: 'chat', label: 'Chat' }]} />{view === 'chat' && project && session && <Select label="Move session to folder" value={session.workspace} disabled={pendingSessions[session.id] || !!connectionError} onChange={event => void patchSession(session, { workspace: event.target.value })}>{[...project.folders.filter(folder => !project.archivedFolders.includes(folder)), 'Ungrouped'].map(folder => <option key={folder} value={folder}>{folder}</option>)}</Select>}</div>}
+      <KlmAgentWorkspace enabled={generalView} visible={!focusMinimized || !focusEnabled} projects={projects} sessions={sessions} overlaySessionId={overlaySession?.id} onOpenOverlay={openSessionOverlay} onCloseOverlay={() => setOverlaySessionId('')} onOpenProject={openSessionInProject} onOpenFloatingChat={focusEnabled ? () => void openGeneralFloatingWindow() : undefined} openingFloatingChat={openingGeneralWindow}>
+      {(view === 'chat' || view === 'design') && <div className="session-navigation"><TabNav<SessionTab> value={view === 'design' ? 'chat' : activeTab} onChange={tab => { setView('chat'); setSessionTabs(current => ({ ...current, [activeId]: tab })); }} items={view === 'chat' ? tabItems : [{ value: 'chat', label: 'Chat' }]} />{view === 'chat' && project && session && <>{focusEnabled && <IconButton className="session-open-floating" label="Open session in floating window and minimize main window" onClick={() => { openFloatingSession(session); setFocusMinimized(true); }}><PanelsTopLeft /></IconButton>}<Select label="Move session to folder" value={session.workspace} disabled={pendingSessions[session.id] || !!connectionError} onChange={event => void patchSession(session, { workspace: event.target.value })}>{[...project.folders.filter(folder => !project.archivedFolders.includes(folder)), 'Ungrouped'].map(folder => <option key={folder} value={folder}>{folder}</option>)}</Select></>}</div>}
       {view === 'design' ? <DesignSystem /> : (view === 'agents' || view === 'graphs') && project ? <ProjectAuthoring key={`${project.id}:${view}:${agentsVisit}:${graphsVisit}`} projectId={project.id} area={view} /> : !loaded ? <div className="empty-chat"><h2>{connectionError ? 'Engine disconnected' : 'Connecting to engine...'}</h2></div> : generalView && !session ? <div className="empty-chat"><h2>{generalError || 'Opening KLM Agent...'}</h2>{generalError && <Button onClick={() => setGeneralRetry(current => current + 1)}>Retry</Button>}</div> : !generalView && !project ? <div className="empty-chat"><h2>Add a project</h2><Button onClick={() => void openProjectPicker()}>Add project</Button></div> : !session ? <div className="empty-chat"><h2>Create a session</h2><Button onClick={() => newSession()} disabled={!!connectionError}>Create session</Button></div> : <>
         <SessionOverlay session={overlaySession} project={overlayProject} onClose={() => setOverlaySessionId('')} onOpenProject={openSessionInProject}
           background={overlaySession && generalSession ? <ConversationHistory session={generalSession} working={generalSession.status === 'running'} label="KLM Agent background conversation" onSnapshot={receiveSession} onHistory={receiveHistory} /> : null}>
         {generalView && (openSubagentIds.length > 0 || overlaySession && selectedGraphId) && <div className="session-navigation"><TabNav<SessionTab> value={activeTab} onChange={tab => setSessionTabs(current => ({ ...current, [activeId]: tab }))} items={tabItems} /></div>}
-        {activeTab === 'chat' && <ConversationHistory key={session.id} session={session} subagents={sessions.filter(item => item.parentId === activeId && item.role === 'subagent')} working={working} label={overlaySession ? `${session.title} conversation` : generalConversation ? 'KLM Agent conversation' : 'Conversation'} onSnapshot={receiveSession} onHistory={receiveHistory} onEventChange={receiveEvent} onAskSide={generalView ? undefined : askSide} onOpenSubagent={openSubagent} empty={<div className="empty-chat"><div className="empty-chat-brand" role="img" aria-label={generalConversation ? 'KLM Agent' : 'KLM Harness'}><img className="empty-chat-brand-icon" src={paperBoatIcon} alt="" /><span className="empty-chat-wordmark" aria-hidden="true"><span>K</span><span>L</span><span>M</span></span><Badge>{generalConversation ? 'Agent' : 'Harness'}</Badge></div><h2>What would you like to work on?</h2></div>} />}
+        {activeTab === 'chat' && <ConversationHistory key={session.id} session={session} subagents={sessions.filter(item => item.parentId === activeId && item.role === 'subagent')} working={working} label={overlaySession ? `${session.title} conversation` : generalConversation ? 'KLM Agent conversation' : 'Conversation'} onSnapshot={receiveSession} onHistory={receiveHistory} onEventChange={receiveEvent} onAskSide={generalView ? undefined : askSide} onOpenSubagent={openSubagent} empty={<div className="empty-chat"><div className="empty-chat-brand" role="img" aria-label={generalConversation ? 'KLM Agent' : 'KLM Harness'}><img className="empty-chat-brand-icon" src={klmIcon} alt="" /><span className="empty-chat-wordmark" aria-hidden="true"><span>K</span><span>L</span><span>M</span></span><Badge>{generalConversation ? 'Agent' : 'Harness'}</Badge></div><h2>What would you like to work on?</h2></div>} />}
         {activeTab.startsWith('subagent:') && <SubagentView session={activeSubagent} onSnapshot={receiveSession} onHistory={receiveHistory} />}
         {!generalConversation && (catalogError || !!catalog?.errors.length) && <div role="alert" className="storage-error">{catalogError || catalog?.errors.join(' ')} <Button size="sm" disabled={catalogLoading} onClick={() => void reloadCatalog().catch(() => {})}>Retry</Button></div>}
         {graphErrors[session.id] && <div role="alert" className="storage-error">{graphErrors[session.id]} <Button size="sm" onClick={() => setRefreshVersion(current => current + 1)}>Retry</Button></div>}
@@ -811,14 +938,33 @@ export function App() {
       onSend={sendSide} onStop={() => { if (sideSession) void updateSession(sideSession, 'stop', {}); }}
       onHarness={harness => { if (sideSession) void updateSession(sideSession, 'harness', { harness }); }}
       onModel={(model, effort) => sideSession ? applyModelSettings(sideSession, model, effort) : Promise.resolve(false)} />}
-    {!IS_DESKTOP && !IS_MOBILE_HOST && !focusMaximized && <FocusWindowResizeHandles />}
+    {!IS_DESKTOP && !IS_MOBILE_HOST && !focusMaximized && <FocusWindowResizeHandles onResizeEnd={saveMainGeometry} />}
     {addingProject !== null && <ProjectDialog initialFolder={addingProject} onSave={addProject} onClose={() => { navigation.current += 1; setAddingProject(null); }} />}
     {editingProject && <ProjectDialog key={`edit-project:${editingProject.id}`} initialFolder={editingProject.folder} project={editingProject} onSave={input => editProject(editingProject.id, input)} onClose={() => setEditingProject(null)} />}
     {settingsProject && <ProjectSettingsDialog key={settingsProject.id} project={settingsProject} onSave={editProject} onRemove={removeProject} onClose={() => setProjectSettingsId('')} />}
     {creatingSession && createProject && <CreateSessionDialog project={createProject} harnesses={harnesses} workspace={creatingSession.workspace} onCreate={createSession} onClose={() => { navigation.current += 1; setCreatingSession(null); }} />}
-    {renamingSession && <RenameSessionDialog key={renamingSession.id} session={renamingSession} onRename={title => patchSession(renamingSession, { title })} onClose={() => setRenamingSession(null)} />}
-    {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} onDesignSystem={() => { setSettingsOpen(false); setView('design'); }} />}
   </div>
-    {!IS_DESKTOP && !IS_MOBILE_HOST && <BackgroundPicker hidden={focusMaximized} />}
-  </>;
+    {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} onDesignSystem={() => { setSettingsOpen(false); setView('design'); setFocusMinimized(false); setFocusFront('main'); }} />}
+    {renamingSession && <RenameSessionDialog key={renamingSession.id} session={renamingSession} onRename={title => patchSession(renamingSession, { title })} onClose={() => setRenamingSession(null)} />}
+    {!IS_DESKTOP && !IS_MOBILE_HOST && <><BackgroundPicker hidden={focusMaximized && !focusMinimized} />
+      <FocusWorkspace visible={focusEnabled && (!focusMaximized || focusMinimized)} projects={projects} sessions={sessions} floatingSessions={floatingSessions} front={focusFront} onActivate={setFocusFront}
+        onOpenMain={openSessionInProject} onOpenFloating={openFloatingSession} onCloseFloating={id => setFloatingSessionIds(ids => ids.filter(item => item !== id))} onRenameSession={setRenamingSession}
+        minimized={focusMinimized} onSettings={() => { setSidebarOpen(false); setSettingsOpen(true); }} onRestore={() => { setFocusMinimized(false); setFocusFront('main'); }}
+        onOpenGeneral={() => void openGeneralFloatingWindow()} openingGeneral={openingGeneralWindow} generalError={generalWindowError}
+        renderSession={target => <FocusSessionChat session={target} projectName={projects.find(owner => owner.id === target.projectId)?.name ?? ''} subagents={sessions.filter(item => item.parentId === target.id && item.role === 'subagent')}
+          draft={drafts[target.id] ?? { text: '', mentions: [] }} pending={!!pendingSessions[target.id]} disconnected={!!connectionError} error={sessionErrors[target.id] || graphErrors[target.id]}
+          submissions={localMessages[target.id] ?? []} onRestoreSubmission={item => restoreLocal(target, item)} onRetrySubmission={item => submitLocal(target, item)}
+          onSnapshot={receiveSession} onHistory={receiveHistory} onEventChange={receiveEvent}
+          onDraftChange={draft => setDrafts(current => ({ ...current, [target.id]: draft }))} onSend={(draft, mode) => sendMessage(target, draft, [], mode)} onStop={() => void updateSession(target, 'stop', {})}
+          onTranscription={text => setDrafts(current => { const draft = current[target.id] ?? { text: '', mentions: [] }; return { ...current, [target.id]: { ...draft, text: `${draft.text}${draft.text ? '\n\n' : ''}${text.trim()}` } }; })}
+          onModel={(model, effort) => applyModelSettings(target, model, effort)} onGraph={applyGraph} selectingGraph={!!selectingGraphs[target.id]}
+          generalControls={target.role === 'general_agent' ? <GeneralHarnessPicker session={target} harnesses={harnesses} disabled={!!pendingSessions[target.id] || generalHarnessBlocked(target) || !!connectionError} onChange={harness => void updateSession(target, 'harness', { harness })} /> : undefined}
+          harnessUnavailable={target.role === 'general_agent' && !harnesses.some(harness => harness.id === target.harness && harness.available)}
+          selectedGraphId={graphPreview[target.id] ?? target.graph?.selectedGraphId ?? target.selectedGraphId ?? ''} onSelectGraph={id => void chooseGraph(target.id, id)}
+          onOpenSession={openFloatingSession} activeSubagentId={floatingSubagentIds[target.id] ?? ''}
+          onOpenSubagent={id => setFloatingSubagentIds(current => ({ ...current, [target.id]: id }))}
+          onBackToSession={() => setFloatingSubagentIds(current => { const next = { ...current }; delete next[target.id]; return next; })} />}
+      />
+    </>}
+  </SessionNavigationProvider>;
 }

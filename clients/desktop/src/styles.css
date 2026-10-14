@@ -400,6 +400,7 @@ body { background-color: var(--color-canvas); background-image: var(--gradient-c
 :root[data-theme="dark"] :is(.session-header, .session-navigation) { border-color: var(--color-border); }
 .session-navigation > .tab-nav { flex: 1; border-bottom: 0; padding: 0 8px; }
 .session-navigation > .select { margin: 4px 12px; max-width: 160px; font-size: 11px; }
+.session-navigation > .session-open-floating { flex-shrink: 0; }
 .storage-error { padding: 8px 16px; background: var(--color-accent-soft); color: var(--color-text); font-size: 12px; line-height: 1.5; }
 .add-project-dialog { width: min(520px, calc(100% - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; }
 .project-field { display: block; margin: 20px 0 8px; font-size: 13px; font-weight: 600; }
@@ -434,6 +435,18 @@ body { background-color: var(--color-canvas); background-image: var(--gradient-c
 .event-error { display: flex; gap: 8px; flex-shrink: 0; color: var(--color-danger); font-size: 13px; padding: 12px; background: var(--color-danger-soft); border-radius: 8px; overflow-wrap: anywhere; }
 .event-error p { margin-top: 6px; white-space: pre-wrap; line-height: 1.5; }
 .event-status { color: var(--color-muted); font-size: 12px; flex-shrink: 0; }
+.session-spawn-event { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; width: 100%; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-subtle); color: var(--color-text); text-align: left; font-size: 12px; }
+.session-spawn-event:hover:not(:disabled) { border-color: var(--color-accent); background: var(--color-selected); }
+.session-spawn-event:disabled { cursor: default; }
+.session-spawn-title { min-width: 0; overflow-wrap: anywhere; }
+.session-spawn-title > span { color: var(--color-muted); }
+.session-spawn-title strong { font-weight: 600; }
+.session-spawn-metadata { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0; color: var(--color-muted); font-size: 11px; }
+.session-spawn-metadata > span { min-width: 0; overflow-wrap: anywhere; }
+.session-spawn-harness { display: inline-flex; align-items: center; gap: 5px; }
+.session-spawn-harness > span { display: inline-flex; }
+.session-spawn-harness svg { width: 14px; height: 14px; }
+.session-spawn-open { width: 15px; height: 15px; margin-left: auto; flex-shrink: 0; color: var(--color-muted); }
 .composer-error { padding: 0 16px 12px; }
 .permission-queue { max-height: 42dvh; overflow-y: auto; display: grid; gap: 12px; margin-bottom: 12px; }
 .permission-card { padding: 16px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-permission); font-size: 13px; }

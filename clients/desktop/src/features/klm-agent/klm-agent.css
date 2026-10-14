@@ -19,6 +19,7 @@
 .klm-agent-chat-heading { display: flex; align-items: center; gap: 8px; min-height: 72px; padding: 16px 24px; border-bottom: 1px solid var(--color-divider); flex-shrink: 0; }
 .klm-agent-chat-heading h2 { margin: 0; font-size: var(--text-md); font-weight: 600; }
 .klm-agent-chat-heading svg { width: 16px; color: var(--color-muted); }
+.klm-agent-open-floating { margin-left: auto; }
 .klm-agent-chat .chat-history { padding: 24px; }
 .klm-agent-chat .composer-area { padding: 0 20px 12px; }
 .klm-agent-chat .empty-chat-brand { flex-wrap: wrap; justify-content: center; }
@@ -126,6 +127,11 @@
 .activity-happening-heading h2 { margin: 0; color: var(--color-heading); font-size: 15px; font-weight: 700; letter-spacing: -.4px; }
 .activity-happening-heading > svg { width: 15px; height: 15px; color: var(--color-accent); }
 .activity-happening-item { position: relative; min-width: 0; }
+.activity-happening-item[draggable="true"] .activity-happening-open { cursor: grab; }
+.activity-happening-item.is-dragging { opacity: .45; }
+.activity-happening-item.drop-before::after, .activity-happening-item.drop-after::after { content: ''; position: absolute; left: 4px; right: 4px; height: 2px; border-radius: 2px; background: var(--color-accent); pointer-events: none; z-index: 1; }
+.activity-happening-item.drop-before::after { top: 0; }
+.activity-happening-item.drop-after::after { bottom: 0; }
 .activity-happening-open { display: block; width: 100%; padding: 13px 12px; border: 0; background: transparent; color: inherit; text-align: left; }
 .activity-happening-item:hover { background: var(--activity-hover); }
 .activity-happening-item.is-selected { background: var(--activity-selected); }
@@ -170,6 +176,10 @@
 .activity-settings-list input { accent-color: var(--color-accent); }
 
 @container activity-feed (max-width: 660px) {
+  .activity-happening:not(.activity-happening--floating) .activity-happening-item.drop-before::after,
+  .activity-happening:not(.activity-happening--floating) .activity-happening-item.drop-after::after { top: 4px; bottom: 4px; width: 2px; height: auto; }
+  .activity-happening:not(.activity-happening--floating) .activity-happening-item.drop-before::after { left: 0; right: auto; }
+  .activity-happening:not(.activity-happening--floating) .activity-happening-item.drop-after::after { right: 0; left: auto; }
   .activity-feed-scroll { overflow-y: auto; }
   .activity-feed-grid { display: flex; flex-direction: column; height: auto; min-height: 100%; }
   .activity-divider { display: none; }

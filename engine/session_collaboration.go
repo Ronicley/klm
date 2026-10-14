@@ -256,7 +256,8 @@ func (a *app) spawnSessionLocked(from *Session, args spawnArgs) (any, error) {
 		origin := d.session(from.ID)
 		e := event("session_spawn", "")
 		e.Title = "Created " + s.Title
-		e.Data = map[string]any{"sessionId": s.ID, "title": s.Title, "messageId": q.ID, "yolo": s.YOLO}
+		e.Data = map[string]any{"sessionId": s.ID, "title": s.Title, "messageId": q.ID, "yolo": s.YOLO,
+			"harness": s.Harness, "model": s.Model, "effort": s.Effort}
 		origin.Events = append(origin.Events, e)
 		origin.UpdatedAt = now()
 	}); err != nil {
