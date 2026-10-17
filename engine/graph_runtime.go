@@ -490,7 +490,7 @@ func (a *app) launchGraphAgent(g *graphExecution, run GraphRun, x GraphActivatio
 	}
 	err = a.graphChangeLocked(func(d *diskState) error {
 		if newSession {
-			d.Sessions = append(d.Sessions, Session{ID: sessionID, ProjectID: run.ProjectID, Title: compiled.Definition.Nodes[x.NodeID].Name, Workspace: "Ungrouped", Role: "graph_node", GraphRunID: run.ID, GraphNodeID: x.NodeID, ExecutionCWD: cwd, Harness: agent.Harness, Model: agent.Model, Effort: agent.Effort, Status: "idle", Events: []Event{}, CreatedAt: now(), UpdatedAt: now()})
+			d.Sessions = append(d.Sessions, Session{ID: sessionID, ProjectID: run.ProjectID, Title: compiled.Definition.Nodes[x.NodeID].Name, Workspace: "Ungrouped", Role: "graph_node", GraphRunID: run.ID, GraphNodeID: x.NodeID, ExecutionCWD: cwd, Harness: agent.Harness, Model: agent.Model, Effort: agent.Effort, YOLO: true, Status: "idle", Events: []Event{}, CreatedAt: now(), UpdatedAt: now()})
 			if agent.Harness == "pi" {
 				d.Native[sessionID] = nativeSession{Path: filepath.Join(a.dir, "sessions", sessionID+".jsonl")}
 			}
