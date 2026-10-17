@@ -381,8 +381,17 @@ func (p *adapter) finishTurnStateLocked(err error) error {
 			pauseMessageQueue(s, "Execution stopped. Send queued messages when ready.")
 		} else {
 			for i := range s.Queue {
-				if s.Queue[i].Status == "sending" {
+				if s.Queue[i].Status == "sending" || s.Queue[i].Status == "accepted" {
 					s.Queue[i].Status, s.Queue[i].Error = "uncertain", "Delivery was not confirmed. Check the conversation before sending again."
+				}
+			}
+		}
+		// Only a confirmed owned shutdown may release the explicitly selected
+		// replacement. Restart recovery and explicit Stop never replay it.
+		if t.restartMessageID != "" && t.stopErr == nil && !p.app.closing && t.ctx.Err() != nil {
+			for i := range s.Queue {
+				if s.Queue[i].ID == t.restartMessageID {
+					s.Queue[i].Status, s.Queue[i].Error = "queued", ""
 				}
 			}
 		}

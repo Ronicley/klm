@@ -505,13 +505,15 @@ export function App() {
       [...generalHarnessBlocks.current.values()].includes(target.id) ||
       !!localMessages[target.id]?.some(item => item.status === 'sending' || item.status === 'accepted' || item.status === 'uncertain');
   }
+  function interruptSubmissions(id: string) {
+    stopVersions.current.set(id, (stopVersions.current.get(id) ?? 0) + 1);
+    for (const item of submissionControllers.current.values()) if (item.sessionId === id) item.controller.abort();
+    submissionTails.current.delete(id);
+  }
   async function updateSession(target: Session, action: 'messages' | 'stop' | 'harness', body: (ComposerDraft & { sources?: SourceReference[]; mode?: SendMode }) | { harness: Harness['id'] } | Record<string, never>) {
     const id = target.id;
     if (action === 'harness' && target.role === 'general_agent' && generalHarnessBlocked(target)) return false;
-    if (action === 'stop') {
-      stopVersions.current.set(id, (stopVersions.current.get(id) ?? 0) + 1);
-      for (const item of submissionControllers.current.values()) if (item.sessionId === id) item.controller.abort();
-    }
+    if (action === 'stop') interruptSubmissions(id);
     if (action !== 'stop' && pending.current.has(id)) return false;
     if (action !== 'stop') pending.current.add(id);
     if (action !== 'stop') setPendingSessions(current => ({ ...current, [id]: true }));
@@ -568,12 +570,13 @@ export function App() {
     submissionRequests.current.add(id);
     if (target.role === 'general_agent') generalHarnessBlocks.current.set(id, target.id);
     setLocalMessages(current => ({ ...current, [target.id]: (current[target.id] ?? []).map(item => item.id === id ? { ...item, status: 'sending' } : item) }));
-    // Keep user sends FIFO even if earlier attachment preparation is slower.
-    // Only transport waits; each editor remains available for the next draft.
+    // Ordinary inputs keep their submission order. Send now bypasses slow
+    // requests and invalidates older local sends that have not reached HTTP.
+    if (mode === 'interrupt') interruptSubmissions(target.id);
     const previous = submissionTails.current.get(target.id) ?? Promise.resolve();
     const stopVersion = stopVersions.current.get(target.id) ?? 0;
     const task = previous.then(() => {
-      if ((stopVersions.current.get(target.id) ?? 0) !== stopVersion) throw new EngineRequestError('Message paused by Stop. Restore it when ready.', 409);
+      if ((stopVersions.current.get(target.id) ?? 0) !== stopVersion) throw new EngineRequestError('Message paused by an interruption. Restore it when ready.', 409);
       const controller = new AbortController();
       submissionControllers.current.set(id, { sessionId: target.id, controller });
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]);
@@ -595,7 +598,7 @@ export function App() {
       });
     submissionTails.current.set(target.id, task);
   }
-  function sendMessage(target: Session, draft: ComposerDraft, sources: SourceReference[], mode: SendMode = 'queue') {
+  function sendMessage(target: Session, draft: ComposerDraft, sources: SourceReference[], mode: SendMode = 'steer') {
     if (target.role === 'general_agent' && pending.current.has(target.id)) return false;
     const message: LocalSubmission = { id: clientMessageId(), draft, sources, mode, status: 'sending' };
     setLocalMessages(current => ({ ...current, [target.id]: [...(current[target.id] ?? []), message] }));
@@ -916,7 +919,7 @@ export function App() {
             })}
           </div>}
           <PendingSubmission items={localMessages[session.id] ?? []} onRestore={item => restoreLocal(session, item)} onRetry={item => submitLocal(session, item)} />
-          <MessageQueue key={`queue/${session.id}`} session={session} disabled={!!pendingSessions[session.id]} onSnapshot={receiveSession} />
+          <MessageQueue key={`queue/${session.id}`} session={session} disabled={!!pendingSessions[session.id]} onSnapshot={receiveSession} onInterrupt={interruptSubmissions} />
           {generalConversation && <GeneralHarnessPicker session={session} harnesses={harnesses} disabled={!!pendingSessions[session.id] || generalHarnessBlocked(session) || !!connectionError} onChange={harness => void updateSession(session, 'harness', { harness })} />}
           {generalView && !harnesses.some(harness => harness.id === session.harness && harness.available) && <p role="status" className="form-error">The selected harness is not installed.</p>}
           <MessageComposer key={session.id} placeholder={overlaySession ? `Message ${session.title}` : undefined} projectId={session.projectId} draft={drafts[session.id] ?? { text: '', mentions: [] }} onDraftChange={draft => setDrafts(current => ({ ...current, [session.id]: draft }))} onSend={send} onTranscription={text => setDrafts(current => {
@@ -929,7 +932,7 @@ export function App() {
       </>}
       </KlmAgentWorkspace>
     </main>
-    {sideVisible && project && session && <SideChatPanel key={session.id} session={sideSession} project={project} harnesses={harnesses}
+    {sideVisible && project && session && <SideChatPanel key={session.id} onInterrupt={interruptSubmissions} session={sideSession} project={project} harnesses={harnesses}
       draft={drafts[`side:${session.id}`] ?? { text: '', mentions: [] }} sources={sideSources[session.id] ?? []} submissions={sideSession ? localMessages[sideSession.id] ?? [] : []} onRestoreSubmission={item => { if (sideSession) restoreLocal(sideSession, item, `side:${session.id}`); }} onRetrySubmission={item => { if (sideSession) submitLocal(sideSession, item); }}
        error={sideSession ? sessionErrors[sideSession.id] ?? '' : sideErrors[session.id] ?? ''} disconnected={false} pending={!!sideSession && !!pendingSessions[sideSession.id]}
       onClose={() => setSideOpen(false)} onRetry={() => void ensureSide(session)} onSnapshot={receiveSession} onHistory={receiveHistory} onEventChange={receiveEvent}
@@ -951,7 +954,7 @@ export function App() {
         onOpenMain={openSessionInProject} onOpenFloating={openFloatingSession} onCloseFloating={id => setFloatingSessionIds(ids => ids.filter(item => item !== id))} onRenameSession={setRenamingSession}
         minimized={focusMinimized} onSettings={() => { setSidebarOpen(false); setSettingsOpen(true); }} onRestore={() => { setFocusMinimized(false); setFocusFront('main'); }}
         onOpenGeneral={() => void openGeneralFloatingWindow()} openingGeneral={openingGeneralWindow} generalError={generalWindowError}
-        renderSession={target => <FocusSessionChat session={target} projectName={projects.find(owner => owner.id === target.projectId)?.name ?? ''} subagents={sessions.filter(item => item.parentId === target.id && item.role === 'subagent')}
+        renderSession={target => <FocusSessionChat onInterrupt={interruptSubmissions} session={target} projectName={projects.find(owner => owner.id === target.projectId)?.name ?? ''} subagents={sessions.filter(item => item.parentId === target.id && item.role === 'subagent')}
           draft={drafts[target.id] ?? { text: '', mentions: [] }} pending={!!pendingSessions[target.id]} disconnected={!!connectionError} error={sessionErrors[target.id] || graphErrors[target.id]}
           submissions={localMessages[target.id] ?? []} onRestoreSubmission={item => restoreLocal(target, item)} onRetrySubmission={item => submitLocal(target, item)}
           onSnapshot={receiveSession} onHistory={receiveHistory} onEventChange={receiveEvent}

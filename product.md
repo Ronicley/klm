@@ -526,25 +526,38 @@ Selecting context does not change tool permissions or sandbox settings.
 ## Messages During Execution
 
 Main and side chats accept messages while a turn is active. Enter or the send
-button adds a message to a persistent FIFO queue for the next turn. **Send now**
-submits steering to the active harness at its supported interaction boundary;
-when idle it starts a turn. Queued items can be removed or sent ahead of the queue.
-Steering does not stop the turn or change its model, permissions, or sandbox.
+button submits **steering** for the next model interaction, after the current
+native assistant/tool cycle, rather than waiting for the entire task to finish.
+Pending messages are delivered together: the engine batches pending inputs;
+Pi and OpenCode claim them through native boundary hooks. A message submitted
+after that boundary belongs to the following interaction; text and tool calls
+already emitted in one assistant response are not interrupted by ordinary Enter.
 
-Pi uses native RPC steering; Codex uses `turn/steer` with the expected turn ID;
-OpenCode submits another prompt to its existing session loop. Harness acceptance
-is distinct from proof that the model has acted on the instruction. Pending
-permissions and questions retain their own reply controls.
+**Send now** interrupts the active chat and its owned native processes, then starts
+a replacement turn with the selected message only after shutdown is confirmed.
+When idle it starts that input immediately. Other pending inputs are preserved as
+paused or delivery-unconfirmed, not silently replayed into the replacement turn.
+Explicit Stop cancels a pending replacement. Interruption cannot undo completed
+tool effects and does not stop an independently running graph.
+
+Pi queues one combined native message without changing shared settings; Codex uses
+`turn/steer` with expected-turn and client-message identities. OpenCode persists a
+complete batched prompt and adds it to the current native model snapshot rather
+than depending on delayed SSE acknowledgements. Native acceptance is distinct
+from proof that the model acted on an input. Pi/Codex payloads remain durable until
+a correlated native message event; OpenCode waits for all persisted parts. Pending permissions/questions
+retain their own reply controls; ordinary steering does not answer them.
 
 The engine stores up to 32 pending messages per conversation, including prepared
-attachments. Accepted inputs enter chat history. Stop, execution failure, and
-engine restart pause unsent inputs. Unconfirmed native delivery is marked for
-manual recovery and is never automatically replayed. These controls affect the
-chat agent; they do not stop or steer an independently running graph node.
+attachments. Batch size is bounded by the native transport limit. Stop, execution
+failure, and engine restart pause unsent inputs; uncertain native delivery requires
+manual recovery and is never automatically replayed. Unsent inputs can be removed;
+Send now can select a pending input for interruption/replacement. Explicit API
+`queue` mode and agent-authored `session_send` retain end-of-task FIFO behavior.
 Stopping a chat cancels its turn and terminates its owned process container,
 including native subagents and local tool subprocesses, without waiting for a
 permission reply or a successful native abort. The stopped runtime is discarded;
-the next turn starts a new runtime and resumes the stored native conversation.
+the replacement resumes the stored native conversation in a new runtime.
 Runtime behavior across the three harnesses awaits human validation.
 
 ## Linked Side Agent Conversation

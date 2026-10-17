@@ -821,8 +821,11 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Mode != "" && body.Mode != "queue" && body.Mode != "steer" {
-		fail(w, 400, "Message mode must be queue or steer.")
+	if body.Mode == "" {
+		body.Mode = "steer"
+	}
+	if body.Mode != "queue" && body.Mode != "steer" && body.Mode != "interrupt" {
+		fail(w, 400, "Message mode must be queue, steer or interrupt.")
 		return
 	}
 	if body.ClientID != "" && (len(body.ClientID) > 128 || strings.IndexFunc(body.ClientID, func(r rune) bool {
@@ -921,6 +924,11 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "Message identity is already in use.")
 		return
 	}
+	if t := a.runs[id]; t != nil && t.ctx.Err() != nil {
+		a.mu.Unlock()
+		fail(w, 409, "Execution is still stopping. Retry the message when ready.")
+		return
+	}
 	if a.stopVersions[id] != stopVersion {
 		a.mu.Unlock()
 		fail(w, 409, "Message preparation interrupted by Stop. Send it again when ready.")
@@ -963,13 +971,24 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mode, status := body.Mode, "queued"
-	if mode == "" {
-		mode = "queue"
-	}
 	if mode == "steer" {
 		status = "steering"
 	}
 	q := QueuedMessage{ID: identity, Text: body.Text, Mode: mode, Status: status, Sources: body.Sources, Mentions: body.Mentions}
+	if mode == "steer" {
+		inputs := []submission{}
+		for _, pending := range steeringMessages(s) {
+			inputs = append(inputs, a.state.QueuePayloads[pending.ID].Submission)
+		}
+		inputs = append(inputs, payload)
+		batch := combineSubmissions(inputs)
+		batch.Text = guidance + "\n\n" + batch.Text
+		if err := validateSubmissionSize(batch, harness); err != nil {
+			a.mu.Unlock()
+			fail(w, 400, "Pending steering messages exceed the batch transport limit. Reduce the message or attachments.")
+			return
+		}
+	}
 	if err := a.commitLocked(func(d *diskState) {
 		if d.AcceptedMessages == nil {
 			d.AcceptedMessages = map[string]string{}
@@ -985,10 +1004,16 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 			d.QueuePayloads = map[string]queuedPayload{}
 		}
 		d.QueuePayloads[q.ID] = queuedPayload{Submission: payload, Harness: harness, Directory: folder}
+		if mode == "interrupt" {
+			prepareMessageInterrupt(d, id, q.ID, a.runs[id] != nil)
+		}
 	}); err != nil {
 		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
+	}
+	if mode == "interrupt" {
+		a.interruptForMessageLocked(id, q.ID)
 	}
 	a.wakeSteeringLocked(id)
 	a.scheduleMessagesLocked()
@@ -1032,12 +1057,13 @@ func (a *app) stopSessionLocked(id string, origin *SpawnOrigin) (*turn, error) {
 	t := a.runs[id]
 	// Cancellation must not depend on a successful history/queue write.
 	if t != nil {
+		t.restartMessageID = "" // Explicit Stop cancels a pending Send now continuation.
 		t.cancel()
 	}
 	if err := a.commitLocked(func(d *diskState) {
 		s := d.session(id)
 		for i := range s.Queue {
-			if s.Queue[i].Status == "queued" || s.Queue[i].Status == "steering" {
+			if s.Queue[i].Status == "queued" || s.Queue[i].Status == "steering" || s.Queue[i].Status == "interrupting" {
 				s.Queue[i].Status, s.Queue[i].Error = "paused", "Execution stopped. Send queued messages when ready."
 			}
 		}

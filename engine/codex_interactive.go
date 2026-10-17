@@ -163,6 +163,23 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 	choiceInterrupted := false
 	steering := p.steeringChannel()
 	steeringRequests := map[string]bool{}
+	steeringTimer := time.NewTimer(15 * time.Second)
+	steeringTimer.Stop()
+	defer steeringTimer.Stop()
+	var steeringDeadline <-chan time.Time
+	sendSteering := func() error {
+		q, payload, err := p.takeSteering()
+		if err != nil || q == nil {
+			return err
+		}
+		steeringRequests["klm-steer-"+q.ID] = true
+		if err := c.send(map[string]any{"id": "klm-steer-" + q.ID, "method": "turn/steer", "params": map[string]any{"threadId": c.threadID, "expectedTurnId": c.turnID, "clientUserMessageId": q.ID, "input": payload.codexInput()}}); err != nil {
+			return err
+		}
+		steeringTimer.Reset(15 * time.Second)
+		steeringDeadline = steeringTimer.C
+		return nil
+	}
 	approvalPolicy, sandbox, sandboxType := "on-request", "read-only", "readOnly"
 	if p.captureNativeYOLO() {
 		approvalPolicy, sandbox, sandboxType = "never", "danger-full-access", "dangerFullAccess"
@@ -187,11 +204,16 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 		}
 	}
 	for {
+		select {
+		case <-steeringDeadline:
+			return errors.New("Codex did not acknowledge the steering input before the delivery deadline.")
+		default:
+		}
 		if !choiceInterrupted && p.choiceToolSettled && !p.graphMCPPending() {
 			choiceStop = p.graphStop()
 		}
 		var inputReady <-chan struct{}
-		if phase == "" && c.turnID != "" && !p.completed {
+		if phase == "" && c.turnID != "" && !p.completed && len(steeringRequests) == 0 {
 			inputReady = steering
 		}
 		var frame map[string]any
@@ -201,15 +223,8 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 		if inputReady != nil {
 			select {
 			case <-inputReady:
-				q, payload, err := p.takeSteering()
-				if err != nil {
+				if err := sendSteering(); err != nil {
 					return err
-				}
-				if q != nil {
-					steeringRequests["klm-steer-"+q.ID] = true
-					if err := c.send(map[string]any{"id": "klm-steer-" + q.ID, "method": "turn/steer", "params": map[string]any{"threadId": c.threadID, "expectedTurnId": c.turnID, "input": payload.codexInput()}}); err != nil {
-						return err
-					}
 				}
 				continue
 			default:
@@ -228,17 +243,12 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			}
 			select {
 			case <-inputReady:
-				q, payload, err := p.takeSteering()
-				if err != nil {
+				if err := sendSteering(); err != nil {
 					return err
 				}
-				if q != nil {
-					steeringRequests["klm-steer-"+q.ID] = true
-					if err := c.send(map[string]any{"id": "klm-steer-" + q.ID, "method": "turn/steer", "params": map[string]any{"threadId": c.threadID, "expectedTurnId": c.turnID, "input": payload.codexInput()}}); err != nil {
-						return err
-					}
-				}
 				continue
+			case <-steeringDeadline:
+				return errors.New("Codex did not acknowledge the steering input before the delivery deadline.")
 			case <-choiceStop:
 				choiceStop = nil
 				if p.graphMCPPending() {
@@ -301,6 +311,8 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 				continue
 			}
 			delete(steeringRequests, id)
+			steeringTimer.Stop()
+			steeringDeadline = nil
 			failure := ""
 			if frame["error"] != nil {
 				failure = humanError(frame["error"])
@@ -310,7 +322,12 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			} else if str(object(frame["result"]), "turnId") != c.turnID {
 				return errors.New("Codex steering acknowledgement identified a different turn.")
 			}
-			if err := p.finishSteering(strings.TrimPrefix(id, "klm-steer-"), failure); err != nil {
+			queueID := strings.TrimPrefix(id, "klm-steer-")
+			if failure != "" {
+				if err := p.finishSteering(queueID, failure); err != nil {
+					return err
+				}
+			} else if err := p.acknowledgeSteering(queueID); err != nil {
 				return err
 			}
 			continue
@@ -690,6 +707,13 @@ func (c *codexInteractive) frame(frame map[string]any) error {
 			return errors.New("Codex returned an item without a valid identifier.")
 		}
 		c.items[id] = item
+		if str(item, "type") == "userMessage" {
+			if clientID := str(item, "clientId"); clientID != "" {
+				if err := c.p.finishSteering(clientID, ""); err != nil {
+					return err
+				}
+			}
+		}
 		if method == "item/completed" && str(item, "type") == "mcpToolCall" && str(item, "server") == "klm_linked" && str(item, "tool") == "graph_submit_choice" && item["error"] == nil && str(item, "status") != "failed" {
 			c.p.graphChoiceToolSettled(item["result"])
 		}

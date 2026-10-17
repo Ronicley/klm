@@ -2,8 +2,46 @@
 const permissionConfig = /*KLM_PERMISSION_CONFIG*/{};
 export default async function (context) {
   const hooks = await graphPlugin(context);
+  async function steeringRPC(method, params) {
+    const response = await fetch(permissionConfig.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + permissionConfig.token },
+      body: JSON.stringify({ jsonrpc: "2.0", id: crypto.randomUUID(), method, params }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error("KLM steering boundary is unavailable.");
+    const envelope = await response.json();
+    if (envelope.error || !envelope.result) throw new Error("KLM steering boundary failed.");
+    return envelope.result;
+  }
   return {
     ...hooks,
+    "experimental.chat.messages.transform": async (input, output) => {
+      await hooks["experimental.chat.messages.transform"]?.(input, output);
+      if (permissionConfig.graphNode) return;
+      const user = output.messages.findLast(message => message.info.role === "user");
+      if (!user) return;
+      const sessionID = user.info.sessionID;
+      const batch = await steeringRPC("klm/steering/take", { sessionID });
+      if (!batch.batchID) return;
+      // noReply waits for every native part to persist, unlike prompt_async's
+      // early HTTP response and message.updated's header-only SSE event.
+      const saved = await context.client.session.prompt({
+        path: { id: sessionID },
+        body: { noReply: true, parts: batch.parts, agent: user.info.agent,
+          model: user.info.model, variant: user.info.variant ?? user.info.model?.variant },
+        throwOnError: true, signal: AbortSignal.timeout(15000),
+      });
+      if (saved.data?.info?.role !== "user" || saved.data.info.sessionID !== sessionID ||
+          !Array.isArray(saved.data.parts) || saved.data.parts.length < batch.parts.length ||
+          saved.data.parts.some(part => part.sessionID !== sessionID || part.messageID !== saved.data.info.id)) {
+        throw new Error("OpenCode did not persist the complete steering input.");
+      }
+      // The loop already captured its snapshot. Include the complete persisted
+      // message in this very model call rather than waiting for SSE processing.
+      output.messages.push(saved.data);
+      await steeringRPC("klm/steering/consumed", { sessionID, batchID: batch.batchID });
+    },
     "tool.execute.before": async (input, output) => {
       const response = await fetch(permissionConfig.url, {
         method: "POST",

@@ -91,8 +91,10 @@ in the result retains that distinction. Slow cancellation or an interrupted repl
 may leave final state uncertain: read session_get before repeating a control.
 Use session_get to inspect the existing queue, session_queue_remove for an exact
 unsent item, and session_queue_send for its existing Send now operation. Send now
-steers a working turn at its supported boundary or promotes/starts an idle turn;
-acceptance does not prove the model acted. Sending items conflict. An uncertain
+interrupts a working chat and its owned processes, then starts a replacement turn
+with the selected message after confirmed shutdown; while idle it starts that input.
+Other pending inputs are paused, and independent graphs are not stopped.
+Acceptance does not prove the model acted. Sending items conflict. An uncertain
 item may already have been delivered: obtain the user's explicit recovery choice
 before passing retryUncertain:true, which creates a replacement ID and can duplicate
 the instruction. Never retry uncertain delivery automatically.

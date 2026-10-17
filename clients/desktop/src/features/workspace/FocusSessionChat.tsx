@@ -16,11 +16,12 @@ import { SessionNavigationProvider } from '../chat/SessionNavigation';
 import { useAuthoringCatalog } from '../graphs/catalog';
 import { graphListEntry } from '../graphs/files';
 
-export function FocusSessionChat({ session, projectName, subagents, draft, pending, disconnected, error, submissions, onRestoreSubmission, onRetrySubmission, onSnapshot, onHistory, onEventChange, onDraftChange, onTranscription, onSend, onStop, onModel, onGraph, onSelectGraph, selectingGraph, selectedGraphId, onOpenSubagent, activeSubagentId, onBackToSession, onOpenSession, generalControls, harnessUnavailable = false }: {
+export function FocusSessionChat({ session, projectName, subagents, draft, pending, disconnected, error, submissions, onRestoreSubmission, onRetrySubmission, onSnapshot, onHistory, onEventChange, onDraftChange, onTranscription, onSend, onStop, onInterrupt, onModel, onGraph, onSelectGraph, selectingGraph, selectedGraphId, onOpenSubagent, activeSubagentId, onBackToSession, onOpenSession, generalControls, harnessUnavailable = false }: {
   session: Session; projectName: string; subagents: Session[]; draft: ComposerDraft; pending: boolean; disconnected: boolean; error?: string;
   submissions: LocalSubmission[]; onRestoreSubmission: (item: LocalSubmission) => void; onRetrySubmission: (item: LocalSubmission) => void;
   onSnapshot: (snapshot: SessionResponse) => void; onHistory: (page: EventPage) => void; onEventChange: (id: string, event: EngineEvent) => void;
   onDraftChange: (draft: ComposerDraft) => void; onTranscription: (text: string) => void; onSend: (draft: ComposerDraft, mode?: SendMode) => boolean; onStop: () => void;
+  onInterrupt: (sessionId: string) => void;
   onModel: (model: string, effort: string) => Promise<boolean>; onGraph: (graph: ConversationGraphState) => void;
   onSelectGraph: (id: string) => void; selectingGraph: boolean; selectedGraphId: string; onOpenSubagent: (id: string) => void;
   generalControls?: ReactNode; harnessUnavailable?: boolean;
@@ -60,7 +61,7 @@ export function FocusSessionChat({ session, projectName, subagents, draft, pendi
         })}
       </div>}
       <PendingSubmission items={submissions} onRestore={onRestoreSubmission} onRetry={onRetrySubmission} />
-      <MessageQueue session={session} disabled={pending} onSnapshot={onSnapshot} />
+      <MessageQueue session={session} disabled={pending} onSnapshot={onSnapshot} onInterrupt={onInterrupt} />
       {general && generalControls}
       {harnessUnavailable && <p role="status" className="form-error">The selected harness is not installed.</p>}
       <MessageComposer projectId={general ? undefined : session.projectId} placeholder={`Message ${title}`} draft={draft} onDraftChange={onDraftChange} onSend={onSend} onStop={onStop} running={running} disabled={pending || harnessUnavailable}

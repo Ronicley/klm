@@ -201,6 +201,17 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 		tools := append([]map[string]any{}, b.tools...)
 		b.mu.RUnlock()
 		result = map[string]any{"tools": tools}
+	case "klm/steering/take", "klm/steering/consumed":
+		if p == nil || p.graphNode() || (p.harness != "pi" && p.harness != "opencode") || p.turn.ctx.Err() != nil {
+			fail(w, 409, "Harness turn is not active.")
+			return
+		}
+		value, err := p.steeringBoundary(message.Method, message.Params)
+		if err != nil {
+			respond(w, 200, map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32000, "message": err.Error()}})
+			return
+		}
+		result = value
 	case "klm/graph/gate":
 		if p == nil {
 			respond(w, 200, map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32000, "message": "Harness turn is not active."}})

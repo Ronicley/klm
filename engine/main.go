@@ -16,8 +16,10 @@ import (
 )
 
 type turn struct {
-	reasoningStart       *int          // Event boundary for this turn; protected by app.mu.
-	steerWake            chan struct{} // protected by app.mu
+	reasoningStart       *int                // Event boundary for this turn; protected by app.mu.
+	steerWake            chan struct{}       // protected by app.mu
+	steeringBatches      map[string][]string // Native request -> durable input IDs; protected by app.mu.
+	restartMessageID     string              // Send now continuation after confirmed shutdown; protected by app.mu.
 	graphNotificationID  string
 	prompt               string // complete submission; graphConversationHooks prepends internal instructions
 	consultationID       string

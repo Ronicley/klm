@@ -160,6 +160,9 @@ func (p *adapter) runPi(b binary, cwd, text string) (err error) {
 			if ctx.Err() != nil && !p.completed {
 				reusable = settlePiCancellation(proc)
 			}
+			// Never retain a native in-memory queue whose consumption is unknown.
+			// Otherwise a later ordinary prompt could silently replay paused input.
+			reusable = reusable && !p.hasUnconfirmedSteering()
 			if !reusable {
 				p.runtime.discardInteractive(proc)
 			}
@@ -195,8 +198,6 @@ func (p *adapter) runPi(b binary, cwd, text string) (err error) {
 	defer statsTimer.Stop()
 	var statsDeadline <-chan time.Time
 	ready, stateReceived, prompted := reused, false, false
-	steering := p.steeringChannel()
-	steeringRequests := map[string]bool{}
 reading:
 	for {
 		if err := ctx.Err(); err != nil {
@@ -219,27 +220,11 @@ reading:
 			timer.Stop()
 			startup = nil
 		}
-		var inputReady <-chan struct{}
-		if prompted && !p.completed {
-			inputReady = steering
-		}
 		var raw map[string]any
 		var ok bool
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-inputReady:
-			q, payload, err := p.takeSteering()
-			if err != nil {
-				return err
-			}
-			if q != nil {
-				steeringRequests["klm-steer-"+q.ID] = true
-				if err := proc.Send(map[string]any{"id": "klm-steer-" + q.ID, "type": "steer", "message": payload.piText()}); err != nil {
-					return err
-				}
-			}
-			continue
 		case <-statsDeadline:
 			return nil
 		case <-startup:
@@ -260,23 +245,6 @@ reading:
 		case "queue_update":
 			continue
 		case "response":
-			if id := str(raw, "id"); strings.HasPrefix(id, "klm-steer-") {
-				if !steeringRequests[id] {
-					continue
-				}
-				delete(steeringRequests, id)
-				failure := ""
-				if !truth(raw, "success") {
-					failure = humanError(raw["error"])
-					if failure == "" {
-						failure = "Pi did not accept this message. Send it again when ready."
-					}
-				}
-				if err := p.finishSteering(strings.TrimPrefix(id, "klm-steer-"), failure); err != nil {
-					return err
-				}
-				continue
-			}
 			if strings.HasPrefix(str(raw, "id"), "klm-stats-") {
 				if str(raw, "id") != latestStatsID {
 					continue
@@ -474,6 +442,12 @@ reading:
 			return errors.New("Pi reported a fatal error.")
 		default:
 			if !prompted {
+				continue
+			}
+			if message := object(raw["message"]); str(raw, "type") == "message_end" && (str(message, "role") == "user" || str(message, "customType") == "klm-steering") {
+				if err := p.finishPiSteering(contentText(message["content"])); err != nil {
+					return err
+				}
 				continue
 			}
 			if str(raw, "type") == "auto_compaction_start" {

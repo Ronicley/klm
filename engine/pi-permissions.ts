@@ -18,7 +18,7 @@ export default function (pi: ExtensionAPI) {
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
     if (!response.ok) throw new Error("Linked-agent bridge is unavailable.");
-    const envelope = await response.json() as { error?: unknown; result?: { content?: { type: "text"; text: string }[]; isError?: boolean; tools?: { name: string }[] } };
+    const envelope = await response.json() as { error?: unknown; result?: { batchID?: string; text?: string; content?: { type: "text"; text: string }[]; isError?: boolean; tools?: { name: string }[] } };
     if (envelope.error || !envelope.result) throw new Error("Invalid linked-agent bridge response.");
     return envelope.result;
   }
@@ -117,8 +117,23 @@ export default function (pi: ExtensionAPI) {
 
   // At turn_end every tool result in this batch has entered native history.
   // Abort here, never from inside graph_submit_choice with a pending tool result.
-  pi.on("turn_end", (_event, ctx) => {
-    if (sealed) ctx.abort();
+  pi.on("turn_end", async (_event, ctx) => {
+    if (sealed) { ctx.abort(); return; }
+    if (linkedConfig.graphNode || ctx.signal?.aborted) return;
+    // Pull one combined input at the native boundary, without mutating Pi's
+    // global steeringMode setting or racing an idle RPC steer command.
+    const batch = await linkedRPC("klm/steering/take", {}, ctx.signal);
+    if (batch.batchID && batch.text && !ctx.signal?.aborted) {
+      pi.sendUserMessage(batch.text, { deliverAs: "steer" });
+    }
+  });
+
+  pi.on("before_agent_start", async (_event, ctx) => {
+    if (linkedConfig.graphNode || ctx.signal?.aborted) return;
+    const batch = await linkedRPC("klm/steering/take", {}, ctx.signal);
+    if (batch.batchID && batch.text && !ctx.signal?.aborted) {
+      return { message: { customType: "klm-steering", content: batch.text, display: true } };
+    }
   });
 
   pi.on("session_start", async (_, ctx) => {

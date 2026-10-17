@@ -1611,16 +1611,26 @@ deleted. No harness work is started by the cleanup.
 
 ## Queued messages and steering (issue #4)
 
-`POST /api/sessions/{id}/messages` accepts optional `mode: "queue" | "steer"`.
-The default is `queue`: idle conversations start immediately; active conversations
-retain messages FIFO until their current turn finishes successfully. `steer`
-requests native delivery during the active turn. If that turn finishes before
-submission, the input is used for a new turn in the same native session.
+`POST /api/sessions/{id}/messages` accepts optional
+`mode: "steer" | "interrupt" | "queue"`. The default and normal composer Enter
+are `steer`: deliver at the next native model boundary, not after all work ends.
+All pending steering inputs are claimed as one submission with separate timeline
+entries. Pi and OpenCode claim at their native boundary hooks. If the
+turn finishes before dispatch, pending steering takes priority over follow-ups
+and starts together in the same native conversation. Explicit `queue` mode and
+agent-authored `session_send` keep end-of-task FIFO semantics.
+
+`interrupt` is the composer's **Send now**: durably accept the selected input,
+cancel the active chat and its owned process container, then start only that input
+after confirmed shutdown. Other pending items are paused/unconfirmed. Explicit
+Stop cancels a pending replacement; restart never automatically replays it.
+Already completed effects are not undone. Independent graphs are not stopped.
 
 Session summaries and SSE include `queue`, with item ID, text, mode, status, and
 recoverable error. `POST /api/sessions/{id}/queue/{messageID}/send` sends a pending
-item now; `DELETE /api/sessions/{id}/queue/{messageID}` removes an unsent item.
-Already-dispatching items cannot be removed. Queue actions retain the normal
+item with the same interrupt-and-replace semantics; `DELETE
+/api/sessions/{id}/queue/{messageID}` removes an unsent item. Dispatching,
+native-pending, and interrupting items cannot be removed. Queue actions retain the normal
 chat-session restrictions; graph-node and observed subagent sessions are excluded.
 
 Queue entries and prepared attachment payloads are saved before acknowledgement,
@@ -1629,17 +1639,27 @@ HTTP/SSE projections. Selected passages and mention metadata enter user history
 when the message is dispatched/accepted. Queue delivery retains the existing
 one-turn reservation and uses the native session, model settings and grant flow.
 
-Pi uses RPC `steer`; Codex uses `turn/steer` with `expectedTurnId`; OpenCode posts
-`prompt_async` and waits for the matching persisted user-message notification.
-Neither an early OpenCode HTTP response nor a lost native acknowledgement proves
-acceptance. Failed/stopped turns pause unsent messages. Restart pauses the queue;
-inputs with uncertain delivery are not automatically replayed. Explicitly sending
-an uncertain item creates a fresh correlation ID; users should check the native
-conversation before retrying. Accepted steering belongs to the harness and cannot
-be removed using the KLM queue.
+Pi's owned extension pulls one combined input at `before_agent_start` / `turn_end`,
+without changing shared Pi settings. Payloads remain durable until the correlated
+native user/custom-message event; a runtime with unconfirmed steering is discarded.
+Codex uses `turn/steer` with `expectedTurnId` and `clientUserMessageId`; its 15-second
+ACK only marks input accepted. A matching native `userMessage.clientId` confirms
+incorporation. OpenCode's message-transform hook pulls the batch, persists it with
+`noReply`, appends the complete result to the current model snapshot, then confirms
+consumption over the private bridge. Header-only SSE events never erase payloads.
+OpenCode still owns loop completion; its parent-message bookkeeping can cause an
+additional model iteration after a boundary-injected prompt. Validate response
+ordering with the installed harness before relying on this behavior.
+Interrupted native-pending items become `uncertain`. Explicitly sending an
+uncertain or native-pending item creates a fresh correlation ID; retry can duplicate
+an input already consumed. No uncertain delivery is automatically replayed.
+Composer and queue-row Send now share browser submission invalidation across
+main, side and floating chats, including unsent HTTP tails.
 
-Manual validation: queue several messages during a tool call; check FIFO and
-remove one; send a queued item now and a new steering message; repeat in main and
-side chats for Pi, Codex and OpenCode. Check attachments, questions/permissions,
-Stop, end-of-turn races, reload, restart, and delivery errors. No live harness
-validation or full test suite was run for this implementation.
+Manual validation: during a long review tool, press Enter three times; verify all
+pending instructions reach the next model interaction. Click Send now and verify
+the current tool/subagents stop and the selected input starts after shutdown.
+Repeat in main/side/floating chats with all three harnesses. Check attachments,
+pending questions/permissions, explicit Stop during restart, end-of-turn races,
+reload, engine restart, and delivery errors. Live harness behavior still requires
+human validation; no full suite was run.
