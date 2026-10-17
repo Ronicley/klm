@@ -158,10 +158,11 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 
 func (b *cappedBuffer) String() string { return string(b.data) }
 
+// Bound each in-flight line, not the lifetime volume of a streaming RPC process.
+// Delivery to the bounded Frames channel supplies backpressure in startInteractive.
 type jsonLines struct {
 	mu      sync.Mutex
 	pending []byte
-	total   int
 	err     error
 	consume func([]byte) error
 	cancel  func()
@@ -174,10 +175,6 @@ func (l *jsonLines) Write(p []byte) (int, error) {
 		return 0, l.err
 	}
 	n := len(p)
-	l.total += n
-	if l.total > 32<<20 {
-		return 0, l.reject("Harness output exceeded the 32 MiB per-turn limit.")
-	}
 	for len(p) > 0 {
 		end := bytes.IndexByte(p, '\n')
 		part := p
@@ -223,12 +220,6 @@ func (l *jsonLines) flushLocked() error {
 	}
 	l.pending = l.pending[:0]
 	return nil
-}
-
-func (l *jsonLines) resetTurn() {
-	l.mu.Lock()
-	l.total = 0
-	l.mu.Unlock()
 }
 
 func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd string, payload submission) {

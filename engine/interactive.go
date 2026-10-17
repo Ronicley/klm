@@ -19,7 +19,6 @@ type interactiveProcess struct {
 	mu     sync.Mutex
 	err    error
 	owner  *ownedProcess
-	lines  *jsonLines
 }
 
 func startInteractive(t *turn, b binary, args []string, cwd string, runtime *sessionRuntime) (*interactiveProcess, error) {
@@ -66,7 +65,6 @@ func startInteractive(t *turn, b binary, args []string, cwd string, runtime *ses
 			return ctx.Err()
 		}
 	}}
-	p.lines = lines
 	cmd.Stdout = lines
 	cmd.Stderr = &cappedBuffer{}
 	if err := cmd.Start(); err != nil {
@@ -124,5 +122,3 @@ func (p *interactiveProcess) Close() error {
 }
 
 func (p *interactiveProcess) Drained() bool { return p.owner.Drained() }
-
-func (p *interactiveProcess) ResetTurn() { p.lines.resetTurn() }

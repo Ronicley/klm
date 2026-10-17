@@ -1389,10 +1389,14 @@ execution, a full suite, or an adversarial review.
 - Codex resumes threads with `excludeTurns: true` so the response omits the old
   timeline already stored by KLM. Native conversation history and model context
   remain intact; this does not compact the conversation or replay failed inputs.
-- Output is consumed concurrently from stdout and stderr. JSON lines are capped
-  at 4 MiB and total stdout at 32 MiB per turn; hitting a limit cancels the turn
-  with an explicit error. Stderr is capped at 16 KiB and is never persisted,
-  exposed, or logged. Exit failures report a bounded generic diagnostic instead.
+- Output is consumed concurrently from stdout and stderr. Pi/Codex JSON lines
+  are capped at 4 MiB; an oversized line cancels the process with an explicit
+  error. Their RPC readers use a bounded 64-frame channel with backpressure,
+  without a cumulative stdout quota per turn or process. Long executions and
+  repeated tool snapshots therefore do not exhaust a lifetime byte budget.
+  OpenCode retains its separate SSE-frame and HTTP-response bounds. Stderr is
+  capped at 16 KiB and is never persisted, exposed, or logged. Exit failures
+  report a bounded diagnostic instead. These are transport bounds, not history quotas.
 - Session history is durable and unbounded across turns. Full checkpoint/recovery
   cost still grows with retained history, but is outside the live application mutex.
   There is no history retention/deletion API yet. Back up the data directory with

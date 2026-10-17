@@ -155,7 +155,6 @@ func (r *sessionRuntime) getInteractive(harness, model, effort, tools string) (*
 		if alive && current.harness == harness && current.model == model && current.effort == effort && current.tools == tools {
 			process := current.process
 			r.mu.Unlock()
-			process.ResetTurn()
 			return process, true
 		}
 		r.interactive = nil
