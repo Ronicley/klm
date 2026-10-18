@@ -1,5 +1,5 @@
 import { ChevronDown, RefreshCw, Check } from 'lucide-react';
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Menu, MenuItem } from '../../design-system/Menu';
 import { Slider } from '../../design-system/Slider';
@@ -17,9 +17,10 @@ function effortLabel(value: string) {
   return value === 'xhigh' ? 'Extra high' : value ? value[0].toUpperCase() + value.slice(1) : 'Default';
 }
 
-export function ModelPicker({ session, disabled, optionsDisabled = disabled, onSave, onSnapshot }: {
+export function ModelPicker({ session, disabled, optionsDisabled = disabled, onSave, onSnapshot, graphControl }: {
   session: Session; disabled: boolean; optionsDisabled?: boolean; onSave: (model: string, effort: string) => Promise<boolean>;
   onSnapshot?: (snapshot: SessionResponse) => void;
+  graphControl?: ReactNode;
 }) {
   const { catalog, loading, error, refresh, revalidate } = useModelCatalog(session.projectId, session.harness, session.id);
   const [menu, setMenu] = useState<'model' | 'effort' | null>(null);
@@ -89,7 +90,7 @@ export function ModelPicker({ session, disabled, optionsDisabled = disabled, onS
   }
 
   return <div className="model-picker-controls">
-    {onSnapshot && <SessionOptions session={session} disabled={optionsDisabled || saving} onSnapshot={onSnapshot} />}
+    {onSnapshot && <SessionOptions session={session} disabled={optionsDisabled || saving} onSnapshot={onSnapshot} graphControl={graphControl} />}
     <Menu label="Models" className="model-menu" open={menu === 'model'} onOpenChange={open => openMenu('model', open)} trigger={props => <Button {...props} variant="ghost" size="sm" className="model-picker-trigger" disabled={locked} aria-label="Choose model">
       <HarnessIcon harness={session.harness} /><span className="model-picker-name">{current?.name || currentModelId || (loading ? 'Loading model...' : 'Model unavailable')}</span><ChevronDown />
     </Button>}>

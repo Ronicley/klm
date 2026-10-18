@@ -4,6 +4,7 @@ import { Button, IconButton } from '../../design-system/Button';
 import { request, transcribeAudio, type FileMention, type ProjectPath } from '../../engine';
 import { mentionQuery } from './mentions';
 import { MentionEditor, type MentionEditorHandle } from './MentionEditor';
+import { IS_MOBILE_HOST } from '../../platform';
 
 export type SendMode = 'queue' | 'steer' | 'interrupt';
 
@@ -168,6 +169,8 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       }
     }
   }
+  const sendButton = <IconButton label={running ? 'Send on next turn' : 'Send message'} variant="soft" type="submit" disabled={!text.trim() || disabled} className="send-button">{running ? <ListPlus /> : <ArrowUp />}</IconButton>;
+  const mobileSendVisible = !!text.trim();
   return <form className="composer" aria-label="Message composer" onSubmit={event => { event.preventDefault(); send(); }}>
     {open && <div className="mention-picker">
       <ul id={listId} role="listbox" aria-label="Project files and folders">{paths.map((path, index) => {
@@ -199,6 +202,6 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       } else if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
     }} />
     {error && <p role="alert" className="form-error composer-error">{error}</p>}
-    <div className="composer-controls">{graphControl && <div className="composer-graph-control">{graphControl}</div>}<div className="composer-model-controls">{modelControl}{running && text.trim() && <Button size="sm" disabled={disabled} onClick={() => void send('interrupt')}>Send now</Button>}{running && onStop && <IconButton label="Stop response" variant="outline" onClick={onStop}><Square /></IconButton>}{onTranscription && <IconButton label={audioState === 'recording' ? 'Stop recording' : audioState === 'transcribing' ? 'Transcribing audio' : 'Record audio'} aria-pressed={audioState === 'recording'} variant={audioState === 'recording' ? 'danger-soft' : 'ghost'} disabled={(disabled && audioState === 'idle') || audioState === 'transcribing'} className={`audio-record-button ${audioState === 'recording' ? 'is-recording' : ''}`} onClick={() => void toggleRecording()}>{audioState === 'recording' ? <Square /> : audioState === 'transcribing' ? <LoaderCircle className="audio-spinner" /> : <Mic />}</IconButton>}<IconButton label={running ? 'Send on next turn' : 'Send message'} variant="soft" type="submit" disabled={!text.trim() || disabled} className="send-button">{running ? <ListPlus /> : <ArrowUp />}</IconButton></div></div>
+    <div className="composer-controls">{graphControl && <div className="composer-graph-control">{graphControl}</div>}<div className="composer-model-controls">{modelControl}{running && text.trim() && <Button size="sm" disabled={disabled} onClick={() => void send('interrupt')}>Send now</Button>}{running && onStop && <IconButton label="Stop response" variant="outline" onClick={onStop}><Square /></IconButton>}{onTranscription && <IconButton label={audioState === 'recording' ? 'Stop recording' : audioState === 'transcribing' ? 'Transcribing audio' : 'Record audio'} aria-pressed={audioState === 'recording'} variant={audioState === 'recording' ? 'danger-soft' : 'ghost'} disabled={(disabled && audioState === 'idle') || audioState === 'transcribing'} className={`audio-record-button ${audioState === 'recording' ? 'is-recording' : ''}`} onClick={() => void toggleRecording()}>{audioState === 'recording' ? <Square /> : audioState === 'transcribing' ? <LoaderCircle className="audio-spinner" /> : <Mic />}</IconButton>}{IS_MOBILE_HOST ? <span className={`mobile-send-slot ${mobileSendVisible ? 'is-visible' : ''}`} inert={!mobileSendVisible} aria-hidden={!mobileSendVisible}><span className="mobile-send-slide">{sendButton}</span></span> : sendButton}</div></div>
   </form>;
 }

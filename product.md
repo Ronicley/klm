@@ -494,6 +494,38 @@ start servers or relocate execution/files to the device. Native screens reuse
 KLM's visual language through Flutter equivalents of its colors, typography,
 inputs, buttons and cards.
 
+In the Flutter-hosted WebView, opening a project session hides both rails and
+lets its conversation fill the available screen. The header's **Back to sessions**
+button replaces **Open sessions** and returns to a navigation screen with Project
+Rail on the left and the project's sessions filling the remaining width. Selecting
+a project shows its sessions; selecting or creating a session opens its full-screen
+chat. Returning to navigation preserves the mounted conversation and its draft.
+This navigation uses the APK's existing `KlmMobile` bridge, independently of viewport
+size, and does not apply to native desktop or browser Focus.
+
+Mobile session tiles have larger touch targets and a subtitle below the title.
+Active sessions show the runtime LED followed by **Idle**, **Working**, **Failed**
+or **Needs attention**, with failure and pending requests taking precedence.
+Inactive and archived tiles show the time of the last user or assistant message:
+relative minutes/hours, **Yesterday**, days up to 29, then a full calendar date.
+Sessions without messages show **No messages yet**. Message recency comes from
+conversation messages, excluding tools, consultations and metadata changes, and
+relative labels refresh while the client is visible.
+
+In mobile chat composers, Send is hidden and takes no horizontal space while the
+draft contains no non-whitespace text. Typing reveals it with a short slide that
+moves the other controls left; clearing the draft collapses it again. Stop remains
+available during execution. Reduced-motion preferences disable the transition.
+
+On mobile, the composer's three-dot **Session options** button opens a modal bottom
+sheet containing the **YOLO mode** toggle and, for project chats that support it,
+the existing graph selector. The composer no longer displays the YOLO label or
+graph name; its three-dot button uses the warning-yellow color while YOLO is active.
+This button stays anchored to the composer's bottom-left corner, with its own
+reserved space as other controls move or wrap.
+The sheet closes through Close, backdrop tap or Escape. Desktop and browser Focus
+retain their existing options menu, YOLO label and composer graph selector.
+
 ## File and Folder References
 
 In both main and side chats, typing `@` opens project file/folder suggestions.

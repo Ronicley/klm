@@ -1,9 +1,11 @@
 import { Archive, ArchiveRestore, Bot, Folder, FolderPlus, MoreHorizontal, PanelLeftClose, Pencil, Plus, Search, Settings, SquarePen, Workflow, X } from 'lucide-react';
-import { Fragment, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Menu, MenuItem } from '../../design-system/Menu';
 import type { Session, Project } from '../../engine';
 import { animateSortPositions, captureSortPositions, type SortPositions } from '../sortAnimation';
+import { IS_MOBILE_HOST } from '../../platform';
+import { MobileSessionSubtitle } from './MobileSessionSubtitle';
 
 function sessionRuntimeState(session: Session) {
   if (session.status === 'error') return { state: 'error', label: 'Runtime error' };
@@ -48,6 +50,15 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
   onProjectSettings: (project: Project) => void;
 }) {
   const [sessionMenu, setSessionMenu] = useState('');
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!IS_MOBILE_HOST) return;
+    const refresh = () => { if (!document.hidden) setNow(Date.now()); };
+    const timer = window.setInterval(refresh, 60000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
+  }, []);
   const [folderMenu, setFolderMenu] = useState('');
   const [search, setSearch] = useState<string | null>(null);
   const [addingFolder, setAddingFolder] = useState(false);
@@ -114,7 +125,7 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
       }}
       onDragEnd={() => { setDragging(null); setFolderDropTarget(''); changeSessionDrop(null); setFolderDropBefore(null); }}>
       <button className={`session-item ${session.id === activeId ? 'is-active' : ''}`} disabled={archived} aria-current={session.id === activeId ? 'page' : undefined} onClick={() => onSelect(session.id)}>
-        <span>{session.title}</span>{!archived && <i className={`session-runtime-led is-${runtime.state}`} role="img" aria-label={runtime.label} title={runtime.label} />}
+        {IS_MOBILE_HOST ? <span className="mobile-session-copy"><span className="mobile-session-title">{session.title}</span><MobileSessionSubtitle session={session} now={now} archived={archived} /></span> : <><span>{session.title}</span>{!archived && <i className={`session-runtime-led is-${runtime.state}`} role="img" aria-label={runtime.label} title={runtime.label} />}</>}
       </button>
       {archived
         ? <IconButton label={`Restore ${session.title}`} disabled={!!busyAction} onClick={() => void runAction(`restore:${session.id}`, () => onArchiveSession(session, false), 'Could not restore the session. Try again.')}><ArchiveRestore /></IconButton>

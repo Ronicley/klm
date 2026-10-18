@@ -43,6 +43,7 @@ type SessionSummary struct {
 	Usage                *SessionUsage           `json:"usage,omitempty"`
 	CreatedAt            string                  `json:"createdAt"`
 	UpdatedAt            string                  `json:"updatedAt"`
+	LastMessageAt        string                  `json:"lastMessageAt,omitempty"`
 }
 
 type EventPage struct {
@@ -93,7 +94,22 @@ func sessionSummary(view *Session) SessionSummary {
 		Title: view.Title, Workspace: view.Workspace, Harness: view.Harness, HarnessLocked: view.HarnessLocked, YOLO: view.YOLO, Model: view.Model, Effort: view.Effort,
 		ResolvedModel: view.ResolvedModel, ResolvedEffort: view.ResolvedEffort, Status: view.Status, Archived: view.Archived, RuntimeActive: view.RuntimeActive,
 		Permissions: view.Permissions, Questions: view.Questions, Usage: view.Usage, CreatedAt: view.CreatedAt, UpdatedAt: view.UpdatedAt,
+		LastMessageAt: lastSessionMessageAt(view.Events),
 	}
+}
+
+// Metadata edits, tools and consultation activity do not change message recency.
+func lastSessionMessageAt(events []Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		entry := events[i]
+		if entry.ConsultationID != "" || entry.CreatedAt == "" {
+			continue
+		}
+		if entry.Type == "user" || entry.Type == "assistant" && strings.TrimSpace(entry.Text) != "" {
+			return entry.CreatedAt
+		}
+	}
+	return ""
 }
 
 // Derive a short title only from reasoning the harness exposed in the supplied
