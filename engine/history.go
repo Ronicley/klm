@@ -15,35 +15,36 @@ const (
 )
 
 type SessionSummary struct {
-	Queue                []QueuedMessage         `json:"queue"`
-	Role                 string                  `json:"role,omitempty"`
-	GraphRunID           string                  `json:"graphRunId,omitempty"`
-	GraphNodeID          string                  `json:"graphNodeId,omitempty"`
-	ExecutionCWD         string                  `json:"executionCwd,omitempty"`
-	SelectedGraphID      string                  `json:"selectedGraphId,omitempty"`
-	Graph                *ConversationGraphState `json:"graph,omitempty"`
-	ParentID             string                  `json:"parentId,omitempty"`
-	ID                   string                  `json:"id"`
-	ProjectID            string                  `json:"projectId"`
-	Title                string                  `json:"title"`
-	LatestReasoningTitle string                  `json:"latestReasoningTitle,omitempty"`
-	Workspace            string                  `json:"workspace"`
-	Harness              string                  `json:"harness"`
-	HarnessLocked        bool                    `json:"harnessLocked,omitempty"`
-	YOLO                 bool                    `json:"yolo,omitempty"`
-	Model                string                  `json:"model,omitempty"`
-	Effort               string                  `json:"effort,omitempty"`
-	ResolvedModel        string                  `json:"resolvedModel,omitempty"`
-	ResolvedEffort       string                  `json:"resolvedEffort,omitempty"`
-	Status               string                  `json:"status"`
-	Archived             bool                    `json:"archived,omitempty"`
-	RuntimeActive        bool                    `json:"runtimeActive,omitempty"`
-	Permissions          []Permission            `json:"permissions,omitempty"`
-	Questions            []QuestionRequest       `json:"questions,omitempty"`
-	Usage                *SessionUsage           `json:"usage,omitempty"`
-	CreatedAt            string                  `json:"createdAt"`
-	UpdatedAt            string                  `json:"updatedAt"`
-	LastMessageAt        string                  `json:"lastMessageAt,omitempty"`
+	Capabilities         ConversationCapabilities `json:"capabilities"`
+	Queue                []QueuedMessage          `json:"queue"`
+	Role                 string                   `json:"role,omitempty"`
+	GraphRunID           string                   `json:"graphRunId,omitempty"`
+	GraphNodeID          string                   `json:"graphNodeId,omitempty"`
+	ExecutionCWD         string                   `json:"executionCwd,omitempty"`
+	SelectedGraphID      string                   `json:"selectedGraphId,omitempty"`
+	Graph                *ConversationGraphState  `json:"graph,omitempty"`
+	ParentID             string                   `json:"parentId,omitempty"`
+	ID                   string                   `json:"id"`
+	ProjectID            string                   `json:"projectId"`
+	Title                string                   `json:"title"`
+	LatestReasoningTitle string                   `json:"latestReasoningTitle,omitempty"`
+	Workspace            string                   `json:"workspace"`
+	Harness              string                   `json:"harness"`
+	HarnessLocked        bool                     `json:"harnessLocked,omitempty"`
+	YOLO                 bool                     `json:"yolo,omitempty"`
+	Model                string                   `json:"model,omitempty"`
+	Effort               string                   `json:"effort,omitempty"`
+	ResolvedModel        string                   `json:"resolvedModel,omitempty"`
+	ResolvedEffort       string                   `json:"resolvedEffort,omitempty"`
+	Status               string                   `json:"status"`
+	Archived             bool                     `json:"archived,omitempty"`
+	RuntimeActive        bool                     `json:"runtimeActive,omitempty"`
+	Permissions          []Permission             `json:"permissions,omitempty"`
+	Questions            []QuestionRequest        `json:"questions,omitempty"`
+	Usage                *SessionUsage            `json:"usage,omitempty"`
+	CreatedAt            string                   `json:"createdAt"`
+	UpdatedAt            string                   `json:"updatedAt"`
+	LastMessageAt        string                   `json:"lastMessageAt,omitempty"`
 }
 
 type EventPage struct {
@@ -88,8 +89,9 @@ type sessionJournal struct {
 
 func sessionSummary(view *Session) SessionSummary {
 	return SessionSummary{
-		Queue: view.Queue,
-		Role:  view.Role, GraphRunID: view.GraphRunID, GraphNodeID: view.GraphNodeID, ExecutionCWD: view.ExecutionCWD,
+		Capabilities: view.Capabilities,
+		Queue:        view.Queue,
+		Role:         view.Role, GraphRunID: view.GraphRunID, GraphNodeID: view.GraphNodeID, ExecutionCWD: view.ExecutionCWD,
 		SelectedGraphID: view.SelectedGraphID, Graph: view.Graph, ParentID: view.ParentID, ID: view.ID, ProjectID: view.ProjectID,
 		Title: view.Title, Workspace: view.Workspace, Harness: view.Harness, HarnessLocked: view.HarnessLocked, YOLO: view.YOLO, Model: view.Model, Effort: view.Effort,
 		ResolvedModel: view.ResolvedModel, ResolvedEffort: view.ResolvedEffort, Status: view.Status, Archived: view.Archived, RuntimeActive: view.RuntimeActive,

@@ -287,7 +287,7 @@ export function App() {
   const [sideErrors, setSideErrors] = useState<Record<string, string>>({});
   const openingSide = useRef(new Set<string>());
   const [drafts, setDrafts] = useState<Record<string, ComposerDraft>>({});
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(() => new URLSearchParams(window.location.search).get('klm-library') === '1');
   const shell = useRef<HTMLDivElement>(null);
   const readMainGeometry = useCallback(() => {
     const element = shell.current;
@@ -1007,7 +1007,7 @@ export function App() {
         selectedGraphId={graphPreview[mobileChatSession.id] ?? mobileChatSession.graph?.selectedGraphId ?? mobileChatSession.selectedGraphId ?? ''} onSelectGraph={id => void chooseGraph(mobileChatSession.id, id)}
         onOpenSession={openSessionOverlay} activeSubagentId={sheet.subagentId ?? ''} onOpenSubagent={id => pushMobileChatSheet(mobileChatSession.id, id)} onBackToSession={() => closeMobileChatSheet(sheet.id)} />
     </BottomSheet>)}
-    {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} onDesignSystem={() => { setSettingsOpen(false); setView('design'); setFocusMinimized(false); setFocusFront('main'); }} />}
+    {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} onGeneralAgent={() => { navigation.current += 1; setSettingsOpen(false); setOverlaySessionId(''); setView('general'); setFocusMinimized(false); setFocusFront('main'); }} onDesignSystem={() => { setSettingsOpen(false); setView('design'); setFocusMinimized(false); setFocusFront('main'); }} />}
     {renamingSession && <RenameSessionDialog key={renamingSession.id} session={renamingSession} onRename={title => patchSession(renamingSession, { title })} onClose={() => setRenamingSession(null)} />}
     {!IS_DESKTOP && !IS_MOBILE_HOST && <><BackgroundPicker hidden={focusMaximized && !focusMinimized} />
       <FocusWorkspace visible={focusEnabled && (!focusMaximized || focusMinimized)} projects={projects} sessions={sessions} floatingSessions={floatingSessions} front={focusFront} onActivate={setFocusFront}

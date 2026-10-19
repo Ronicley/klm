@@ -2,10 +2,16 @@ import { useRef, useState } from 'react';
 import { MessageCircle } from 'lucide-react';
 import { Button } from '../../design-system/Button';
 import { request, type QuestionRequest, type SessionResponse } from '../../engine';
+import { MCPElicitationCard } from '../library/MCPElicitationCard';
 
 export function QuestionCard({ question, sessionId, origin, onResolved }: {
   question: QuestionRequest; sessionId: string; origin?: string; onResolved: (session: SessionResponse) => void;
 }) {
+  if (question.elicitation) return <MCPElicitationCard question={question} sessionId={sessionId} origin={origin} onResolved={onResolved} />;
+  return <NativeQuestionCard question={question} sessionId={sessionId} origin={origin} onResolved={onResolved} />;
+}
+
+function NativeQuestionCard({ question, sessionId, origin, onResolved }: { question: QuestionRequest; sessionId: string; origin?: string; onResolved: (session: SessionResponse) => void }) {
   const [responses, setResponses] = useState(() => question.items.map(() => ({ selected: [] as string[], custom: '' })));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');

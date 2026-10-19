@@ -1,9 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
+import { readFileSync } from "node:fs";
 
 const linkedConfig = /*KLM_LINKED_CONFIG*/{} as {
   url: string; token: string; graphNode?: boolean; toolTimeoutMs: number;
-  tools?: { name: string; description: string; inputSchema: TSchema }[];
+  tools?: { name: string; description: string; inputSchema: TSchema; external?: boolean }[];
 };
 
 // This gates agent-dispatched tools, not OS access or arbitrary extension code.
@@ -11,35 +12,41 @@ export default function (pi: ExtensionAPI) {
   let sealed = false;
   async function linkedRPC(method: string, params: unknown, signal?: AbortSignal, callId: string = crypto.randomUUID()) {
     // Readiness and graph gates retain their short timeout; tool calls can wait for a catalog.
-    const timeout = AbortSignal.timeout(method === "tools/call" ? linkedConfig.toolTimeoutMs : 10000);
+    const external = method === "tools/call" && (linkedConfig.tools ?? []).some(tool => tool.external && tool.name === (params as { name?: string }).name);
+    const timeout = AbortSignal.timeout(external ? 330000 : method === "tools/call" ? linkedConfig.toolTimeoutMs : 10000);
     const response = await fetch(linkedConfig.url, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + linkedConfig.token },
       body: JSON.stringify({ jsonrpc: "2.0", id: callId, method, params }),
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
     if (!response.ok) throw new Error("Linked-agent bridge is unavailable.");
-    const envelope = await response.json() as { error?: unknown; result?: { batchID?: string; text?: string; content?: { type: "text"; text: string }[]; isError?: boolean; tools?: { name: string }[] } };
+    const envelope = await response.json() as { error?: unknown; result?: { batchID?: string; text?: string; content?: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[]; structuredContent?: unknown; isError?: boolean; tools?: { name: string }[] } };
     if (envelope.error || !envelope.result) throw new Error("Invalid linked-agent bridge response.");
     return envelope.result;
   }
   const tools = [
-    ...(linkedConfig.tools ?? []).map(tool => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema })),
+    ...(linkedConfig.tools ?? []).map(tool => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema, external: tool.external === true })),
   ];
   for (const tool of tools) {
     pi.registerTool({
-      ...tool, label: tool.name.replaceAll("_", " "), executionMode: "sequential",
+      name: tool.name, description: tool.description, parameters: tool.parameters, label: tool.name.replaceAll("_", " "), executionMode: "sequential",
       async execute(toolCallId, params, signal) {
         if (sealed) throw new Error("Graph activation is sealed.");
         const result = await linkedRPC("tools/call", { name: tool.name, arguments: params }, signal, toolCallId);
-        if (result.isError) throw new Error(result.content?.[0]?.text ?? "Linked-agent request failed.");
+        if (result.isError && !tool.external) throw new Error(result.content?.find(block => block.type === "text")?.text ?? "Linked-agent request failed.");
         if (linkedConfig.graphNode && tool.name === "graph_submit_choice") {
-          const response = JSON.parse(result.content?.[0]?.text ?? "{}");
+          const response = JSON.parse(result.content?.find(block => block.type === "text")?.text ?? "{}");
           sealed = response.reserved === true;
         }
-        return { content: result.content ?? [], details: {} };
+        return { content: result.content ?? [], details: { structuredContent: result.structuredContent, mcpIsError: tool.external && result.isError === true } };
       },
     });
   }
+  pi.on("tool_result", async (event) => {
+    if (tools.some(tool => tool.external && tool.name === event.toolName) && (event.details as { mcpIsError?: boolean } | undefined)?.mcpIsError) {
+      return { content: event.content, details: event.details, isError: true };
+    }
+  });
   pi.registerTool({
     name: "ask_user",
     label: "Ask user",
@@ -90,7 +97,10 @@ export default function (pi: ExtensionAPI) {
       // The Choice's sequential execution mode serializes its entire tool batch.
       if (sealed) return { block: true, reason: "Graph activation is sealed.", terminate: true };
       if (linkedConfig.graphNode) await linkedRPC("klm/graph/gate", {}, ctx.signal);
-      if (event.toolName === "ask_user" || tools.some(tool => tool.name === event.toolName)) return;
+      // External tools use engine policy in their dispatch path, not this
+      // privileged internal-tool bypass. The gateway validates the allowlist.
+      if (event.toolName === "ask_user" || tools.some(tool => tool.name === event.toolName && !tool.external)) return;
+      if (tools.some(tool => tool.name === event.toolName && tool.external)) return;
       const signal = ctx.signal;
       if (ctx.mode !== "rpc" || !ctx.hasUI || !signal || signal.aborted) {
         return denied;
@@ -142,6 +152,8 @@ export default function (pi: ExtensionAPI) {
       if (!tools.every(tool => inventory.tools?.some(item => item.name === tool.name))) {
         throw new Error("Linked-agent tools are not ready.");
       }
+      const allowed = new Set(["read", "write", "edit", "bash", "powershell", "grep", "find", "ls", "ask_user", ...tools.map(tool => tool.name)]);
+      if (pi.getAllTools().some(tool => !allowed.has(tool.name))) throw new Error("Pi loaded unselected tools.");
       if (linkedConfig.graphNode) await linkedRPC("klm/graph/gate", {});
       ctx.ui.notify("klm.permissions.ready.v1", "info");
     }

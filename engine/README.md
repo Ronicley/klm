@@ -1078,6 +1078,141 @@ Validation and semantics:
   may skip intermediate snapshots, but the latest snapshot includes every stored
   event. Reconnect simply receives the latest state; no Last-Event-ID is needed.
 
+## Skills and MCP Library
+
+The shared client exposes **Settings → Library**. Install complete user-requested
+skills through KLM Agent's existing tools and its internal manager skill, then
+select them per conversation or agent. Installation does not activate a skill.
+
+- User root: the engine OS user's `~/.klm/skills`, shared by dev/release. For disposable
+  probes use an **absolute** `KLM_USER_SKILLS_DIR`. Do not use real library data for tests.
+- Internal root: `KLM_SKILLS_DIR` (authoritative), installed sibling `skills/`, then
+  the development `engine/skills`. Only `skill-library-manager` is explicitly
+  distributed to `general_agent`. An invalid override fails instead of falling back.
+- Bundled internal files are editable and shipped recursively with the engine.
+  Upgrades can replace bundled edits; use an external override for durable edits.
+  Uninstall never removes the user library or an override outside the installation.
+- Skill packages: one lowercase slug directory, UTF-8 SKILL.md, matching `name`,
+  nonempty description up to 1024 bytes, at most 512 files / 16 MiB / 16 levels.
+  Links/junctions, path collisions and nonregular files are rejected. All file bytes
+  contribute to the revision. Captures use a bounded repeated read and atomic
+  publication below `<data-dir>/capabilities/skills/<revision>/<slug>`.
+- Captured copies are retained conservatively; there is no automatic snapshot
+  directory pruning in this delivery. Confirmed skill removals move the source to
+  `<library-parent>/skill-library-trash/<operation-id>` after reference validation.
+
+Only the Pi **0.85.1 npm CLI on Windows** has the managed exclusivity gate. Other Pi
+installations fail that gate. OpenCode is unvalidated and Codex managed selection
+unsupported. Empty-selection OpenCode/Codex legacy runs keep their native behavior
+and unknown native inventory. Nonempty selections remain saved but block execution
+and graph preflight. There is no CODEX_HOME-based isolation claim or automatic import
+of native global settings. Pi model discovery uses the same disabled resource and
+startup-package-discovery flags, while retaining native provider/auth files.
+
+### MCP connections and OAuth
+
+Create/edit connections without starting them. **Test connection** is explicit and
+can execute a local server. Stdio uses an executable plus separate args, a fixed cwd
+or the actual execution cwd, and protected explicit environment entries. Shell shims
+are rejected; use an executable such as `node.exe` and an already installed entry
+point. No runtime/package is installed implicitly. A test of an execution-relative
+stdio connection requires temporarily configuring a fixed directory; actual graph
+activations always resolve their own directories/worktrees.
+
+Streamable HTTP uses JSON/SSE protocol sessions, not legacy HTTP+SSE. Credentials
+are secret environment/header/bearer values or OAuth credentials protected with
+Windows per-user DPAPI in private engine state. APIs return presence only. Editing
+uses omitted secrets = keep, `secrets` = replace the set, `removeSecrets` = remove.
+Config changes invalidate the catalog and apply at the next complete turn; retained
+active snapshots keep their configuration and protected credential references.
+
+For OAuth choose a registered client ID (and secret when required), or leave the ID
+empty for public dynamic registration. Configure a provider-accepted redirect URI:
+
+```text
+https://<reachable-engine-api>/api/library/mcp/oauth/callback
+```
+
+That URL reaches the **engine API**, not the frontend server or private gateway.
+Local engine-browser use may use loopback HTTP. A mobile/remote browser must not
+use its own localhost as the callback. HTTPS ingress/provider registration is an
+explicit user setup, not an engine-managed tunnel. Authorization opens only through
+a user action. The mobile web flow uses the same tab and an explicit return link
+to Library; providers that prohibit embedded WebViews need external-browser human
+validation. There is no device-flow or manually pasted authorization-code bypass.
+Callbacks are expiring, one-use, state/PKCE/issuer/resource-bound. Refresh is
+serialized and never initiates interactive authorization or retries a tool on 401.
+Disconnect invalidates stored local credentials, including references of captured
+configurations, without claiming upstream token revocation.
+
+The administrative API retains the existing personal-use network contract. Secret
+redaction is not network authentication. The harness gateway remains authenticated,
+origin-rejecting and loopback-only; upstream credentials never go to a harness.
+
+### Selection and API contract
+
+```toml
+skills = ["example-skill"]
+
+[[mcp_connections]]
+connection_id = "<stable-engine-connection-id>"
+tools = ["search", "read_document"]
+```
+
+These fields belong in `.klm/agents/*.toml`; credentials do not. An empty tools list
+permits resources only when supported by the selected connection. It is not `*`.
+New tools require explicit selection. Resource URIs stay opaque to their server.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/library` | Bounded skill/connection inventory and adapter status |
+| `POST /api/library/mcp` / `PATCH /api/library/mcp/{id}` | Save name/configuration and explicit secret mutation |
+| `POST /api/library/mcp/{id}/test` | Temporary connection, bounded paginated discovery and cleanup |
+| `POST /api/library/mcp/{id}/oauth` | Start human OAuth; optional same-origin web `returnUrl` |
+| `GET /api/library/mcp/oauth/callback` | Dedicated one-use OAuth callback |
+| `POST /api/library/mcp/{id}/disconnect` | Clear local credentials/pending authorization |
+| `GET /api/library/{skills|mcp}/{id}/deletion` | Item/reference revision and usage preview |
+| `DELETE /api/library/{skills|mcp}/{id}` | Confirm with `{revision}`; durable deletion outbox |
+| `POST /api/library/recover` | Retry a pending deletion without overwriting external conflicts |
+| `GET/PATCH /api/sessions/{id}/capabilities` | Desired/applied/preparing snapshot; PATCH `{revision,selection}` |
+| `POST /api/sessions/{id}/questions/{questionId}/elicitation` | Human `{action,content?}` response to the exact pending MCP question |
+
+Selections contain `{skills: string[], mcpConnections: [{connectionId,tools}]}`.
+Revision conflicts return 409 instead of overwriting another client. Main, general,
+side and Focus composers target their actual conversation. Steering retains the
+current full-turn snapshot. New side/spawned sessions copy only applied external
+selection (or saved selection before any application). Runs freeze local config,
+known catalogs and skill copies at actual start; later activations do not inject
+newly discovered tools. A server's remote behavior itself cannot be frozen.
+
+MCPs start with bounded initialization and a total startup deadline. Offline entries
+remain selected with model/user diagnostics. Invalid skills, corrupted snapshots
+and failed isolation are hard errors. Tool dispatch revalidates the execution and
+allowlist even in YOLO. Tool calls are not retried after uncertain delivery. The
+engine-owned stdio process group is independent of harness Stop containment and
+is not a filesystem/network sandbox. Graph finality waits for started gateway
+workers; closing a local client is not proof of remote cancellation.
+
+Current limits: 64 saved connections, 32 selected connections per execution, 512
+tools / 32 discovery pages / 2 MiB per catalog, 128 KiB per schema, 4 MiB transport
+lines, 1 MiB / 100 content blocks per delivered tool response, 256 KiB call args,
+five-minute calls/elicitation, and 16 pending OAuth transactions with ten-minute
+expiry. Resource blocks retain explicit JSON representation. Images support the
+Pi block representation for PNG/JPEG/GIF/WebP; audio/unknown blocks return explicit
+errors. End-to-end model multimodal delivery is not validated. Form elicitation
+supports flat primitive fields and string-enum arrays; unsupported forms/modes
+return errors. HTTPS-URL elicitation never opens navigation or accepts itself.
+Prompts, Sampling and resource subscriptions are not advertised.
+
+Deletion previews all known project agents (including archived/removed projects),
+session desired selections and preserved captured runs. An inaccessible project or
+external file conflict blocks completion. A durable outbox revalidates authoring
+revisions and rolls forward before serving after restart; it is not an atomic
+multi-file transaction. The Library recovery action retries an unresolved outbox.
+
+Compilation/probe evidence and the human acceptance route are in
+`../SKILLS_MCP_LIBRARY_IMPLEMENTATION_PROGRESS.md`.
+
 ## Harness Adapters
 
 Discovery runs at engine startup without sending any prompts or reading auth

@@ -6,6 +6,8 @@ import { Toggle } from '../../design-system/Toggle';
 import { BottomSheet } from '../../design-system/BottomSheet';
 import { ENGINE_URL, request, type Session, type SessionResponse } from '../../engine';
 import { IS_MOBILE_HOST } from '../../platform';
+import { SessionLibraryDialog } from '../library/SessionLibraryDialog';
+import { Button } from '../../design-system/Button';
 
 type YoloIntent = { value?: boolean; saving: boolean; error: string };
 const idleIntent: YoloIntent = { saving: false, error: '' };
@@ -21,6 +23,7 @@ export function SessionOptions({ session, disabled, onSnapshot, graphControl }: 
   graphControl?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const key = `${ENGINE_URL}/${session.id}`;
   const subscribe = useCallback((listener: () => void) => {
     let set = listeners.get(key);
@@ -45,15 +48,19 @@ export function SessionOptions({ session, disabled, onSnapshot, graphControl }: 
     <IconButton label="Session options" size="sm" className={`mobile-session-options-trigger ${yolo ? 'is-yolo' : ''}`} title={yolo ? 'Session options · YOLO mode active' : 'Session options'} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}><EllipsisVertical /></IconButton>
     {open && <BottomSheet title="Session options" className="mobile-session-options-sheet" onClose={() => setOpen(false)}>
       <Toggle label="YOLO mode" checked={yolo} disabled={locked} onCheckedChange={value => void save(value)} />
+      <Button size="sm" onClick={() => { setOpen(false); setLibraryOpen(true); }}>Library</Button>
       {error && <p className="form-error" role="alert">{error}</p>}
       {graphControl && <section className="mobile-session-graph"><h3>Graph</h3>{graphControl}</section>}
     </BottomSheet>}
+    {libraryOpen && <SessionLibraryDialog key={session.id} session={session} onClose={() => setLibraryOpen(false)} />}
   </div>;
   return <div className="session-options">
     {(preview ?? session.yolo) && <span className="yolo-indicator" title="YOLO mode is active for this session">YOLO</span>}
     <Menu label="Session options" className="session-options-menu" open={open} onOpenChange={setOpen} trigger={props => <IconButton {...props} label="Session options" size="sm"><EllipsisVertical /></IconButton>}>
       <Toggle label="YOLO mode" checked={preview ?? !!session.yolo} disabled={locked} onCheckedChange={value => void save(value)} title="Skip permission approvals and saved restrictions for this session" />
+      <Button size="sm" onClick={() => { setOpen(false); setLibraryOpen(true); }}>Library</Button>
       {error && <p className="form-error menu-feedback" role="alert">{error}</p>}
     </Menu>
+    {libraryOpen && <SessionLibraryDialog key={session.id} session={session} onClose={() => setLibraryOpen(false)} />}
   </div>;
 }

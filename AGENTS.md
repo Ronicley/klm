@@ -71,6 +71,25 @@ the user requests a redesign.
   its own app identifier and web port 17332; Vite stays on 5173 and targets 17331.
   Install/uninstall, login and LAN validation remain explicit human checks.
 
+## Skills and MCP Library
+
+- User skills belong to the engine user's `~/.klm/skills`. Use an absolute temporary
+  `KLM_USER_SKILLS_DIR` for probes; dev/release otherwise share the approved root.
+- Internal sources are editable under `engine/skills`, with authoritative
+  `KLM_SKILLS_DIR` overrides. Only general-agent receives skill-library-manager.
+- Managed execution is initially gated to the validated Pi 0.85.1 npm CLI path.
+  OpenCode is unvalidated; Codex is unsupported for exclusive Library selection.
+  Never present additive configuration or CODEX_HOME as exclusive isolation.
+- Keep selection/snapshots at complete engine-turn/run boundaries. Steering does
+  not refresh capabilities. MCP allowlists and graph seals apply even under YOLO;
+  elicitation always needs an explicit human response. Protect upstream secrets
+  from harnesses, projections, snapshots, TOMLs and logs.
+- MCP stdio servers have their own owned processes; harness containment is not
+  their sandbox. Keep the private gateway authenticated and loopback-only. OAuth
+  uses its dedicated public API callback, with a provider-accepted reachable URI.
+- See SKILLS_MCP_LIBRARY_IMPLEMENTATION_PROGRESS.md for evidence and unvalidated
+  runtime paths; do not infer acceptance from compilation or fixture probes.
+
 ## UI Copy
 
 Mobile host URLs use port 7332 by default only for literal IP addresses. Never add

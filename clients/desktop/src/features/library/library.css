@@ -1,0 +1,26 @@
+.library-panel, .capability-selector { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.library-panel h4, .capability-selector h4 { margin: 8px 0 0; }
+.library-toolbar, .library-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.library-toolbar input { min-width: 0; flex: 1; }
+.library-root { font-size: 12px; overflow-wrap: anywhere; color: var(--color-muted); }
+.library-item, .library-selection-row { border-bottom: 1px solid var(--color-border); padding: 12px 0; min-width: 0; }
+.library-item { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.library-item > div:first-child { min-width: 0; flex: 1; }
+.library-item p, .library-selection-row p { margin: 6px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.library-item small { color: var(--color-muted); }
+.library-item-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 6px; max-width: 230px; }
+.library-item details, .library-selection-row details { margin-top: 10px; font-size: 12px; }
+.library-tool-actions { display: flex; gap: 8px; margin: 8px 0; }
+.library-tool { padding: 8px 0 8px 12px; }
+.library-system-skill { color: var(--color-muted); font-size: 12px; }
+.library-confirmation { border: 1px solid var(--color-border); border-radius: 10px; padding: 16px; overflow-wrap: anywhere; }
+.library-confirmation ul { max-height: 180px; overflow: auto; }
+.library-dialog { width: min(720px, calc(100vw - 32px)); }
+.library-dialog-content { overflow: auto; max-height: 65vh; padding: 12px 20px; }
+.library-connection-form label { display: flex; flex-direction: column; gap: 6px; }
+.session-library-trigger { appearance: none; border: 0; background: transparent; color: inherit; font: inherit; padding: 0; cursor: pointer; text-align: start; }
+.session-library-trigger:hover { text-decoration: underline; }
+.mcp-form-fields { display: grid; gap: 12px; margin: 12px 0; }
+.mcp-form-fields label { display: grid; gap: 6px; }
+.mcp-form-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .library-item { flex-direction: column; } .library-item-actions { max-width: none; justify-content: start; } }

@@ -496,6 +496,9 @@ func (a *app) launchGraphAgent(g *graphExecution, run GraphRun, x GraphActivatio
 			}
 		}
 		s := d.session(sessionID)
+		if capabilities := run.Snapshot.Capabilities[x.NodeID]; capabilities != nil {
+			s.Capabilities.Desired = copySelection(capabilities.Selection)
+		}
 		s.Status, s.UpdatedAt = "running", now()
 		s.Permissions, s.Questions = nil, nil
 		activation := d.graphActivation(x.ID)

@@ -214,7 +214,7 @@ type catalogRPC struct {
 func newCatalogRPC(ctx context.Context, b binary, cwd string, pi bool) (*catalogRPC, error) {
 	args := []string{"app-server", "--listen", "stdio://"}
 	if pi {
-		args = []string{"--mode", "rpc", "--no-extensions", "--no-session"}
+		args = []string{"--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"}
 	}
 	t := &turn{ctx: ctx}
 	process, err := startInteractive(t, b, args, cwd, nil)

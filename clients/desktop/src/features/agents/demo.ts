@@ -1,7 +1,10 @@
 import type { Harness } from '../../engine';
+import type { MCPSelection } from '../library/api';
 
 // UI-only records. Model/effort/harness values below are visual fixtures, not execution defaults.
 export type Agent = {
+  skills?: string[];
+  mcpConnections?: MCPSelection[];
   revision?: string;
   id: string;
   name: string;

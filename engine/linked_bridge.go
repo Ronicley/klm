@@ -72,6 +72,9 @@ func (p *adapter) internalOpenCodeTool(name string) bool {
 		return false
 	}
 	for _, tool := range p.bridgeTools() {
+		if truth(tool, "external") {
+			continue
+		}
 		if name == "klm_linked_"+str(tool, "name") {
 			return true
 		}
@@ -253,6 +256,16 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(message.Params, &params) != nil {
 			fail(w, 400, "Invalid tool call.")
 			return
+		}
+		if p != nil && p.externalMCPTool(params.Name) {
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5*time.Minute + 10*time.Second))
+			value, err := p.callExternalMCP(r.Context(), params.Name, params.Arguments, string(message.ID))
+			if err != nil {
+				result = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": err.Error()}}}
+			} else {
+				result = value
+			}
+			break
 		}
 		if params.Name == "session_models_list" || params.Name == "session_settings_update" || params.Name == "session_question_answer" || params.Name == "session_spawn" || params.Name == "session_spawn_options" || params.Name == "session_create" || params.Name == "session_create_options" || params.Name == "session_stop" || params.Name == "session_permission_reply" {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(linkedToolServerTimeout))

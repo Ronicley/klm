@@ -184,6 +184,9 @@ func (p *adapter) bridgeTools() []map[string]any {
 				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"choice": map[string]any{}, "payload": map[string]any{}}, "additionalProperties": true}})
 		}
 	}
+	if p.mcp != nil {
+		tools = append(tools, p.mcp.tools...)
+	}
 	return tools
 }
 

@@ -224,6 +224,9 @@ func spawnReceiptResult(receipt SessionSpawn) map[string]any {
 }
 
 func (a *app) spawnSessionLocked(from *Session, args spawnArgs) (any, error) {
+	if len(a.state.LibraryDeletions) > 0 {
+		return nil, spawnProblem("library", "recovery_pending", "A library deletion needs recovery before inheriting capabilities.", "Finish Library recovery, then retry this creation request.")
+	}
 	if args.SourceUserEventID != "" {
 		if existing, err := a.existingSpawnLocked(from, args); err != nil {
 			return nil, err
@@ -237,6 +240,7 @@ func (a *app) spawnSessionLocked(from *Session, args spawnArgs) (any, error) {
 	}
 	s := newTopLevelSession(selection.ProjectID, selection.Title, selection.Workspace, selection.Harness, selection.Model, selection.Effort)
 	s.YOLO = selection.YOLO
+	s.Capabilities = inheritedCapabilities(from)
 	request := args
 	if args.YOLO != nil {
 		selected := *args.YOLO

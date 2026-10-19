@@ -412,6 +412,75 @@ The private bridge also exposes graph operations according to the conversation's
 role. Graph-node sessions receive their own Choice capability, without access to
 main/side conversation history or tools to invoke other graphs.
 
+### Skills and MCP Library
+
+Settings → **Library** manages engine-shared user skills and MCP connections. User
+skills are complete first-level folders under `~/.klm/skills` on the engine computer;
+the filesystem remains their source of truth. Invalid entries display diagnostics.
+Installation is requested through KLM Agent using existing tools and its private,
+editable `engine/skills/skill-library-manager` skill. Installing does not select a
+skill. That internal skill is distributed only to the general-agent role, never
+through external selection or inheritance.
+
+The status-row Library button replaces the reference skill/MCP counts and opens
+the selection for its actual composer conversation, including overlays and Focus.
+Side conversations expose Library in Session options without status-row counts.
+Selections are positive lists of skill IDs, connection IDs and explicit known tool
+names; selecting a connection also permits its resource discovery/read tools.
+Selection edits take effect on the next complete engine turn. Steering retains the
+current snapshot; Send now's replacement uses the latest selection after confirmed
+shutdown. New side/spawned conversations copy the originator's applied external
+selection (saved selection before any application), then evolve independently.
+
+Agent TOMLs include `skills` and `mcp_connections`. New graph runs capture local
+configuration, known MCP catalogs and content-addressed skill copies at actual
+start, not scheduling. They do not follow later edits. Execution-directory-relative
+stdio catalogs use the known catalog until an activation can connect in its real
+directory; a changed/missing remote contract is diagnosed rather than injected.
+Captured selections are available read-only in node activity. Legacy runs remain
+readable without being relabeled as exclusively managed.
+
+The initial managed adapter is the validated **Pi 0.85.1 npm CLI** on Windows,
+using explicit snapshot paths, disabled native resource discovery, the owned
+extension and an effective tool/skill handshake before prompting. Native provider
+configuration/authentication remains available. The built-in `llama` provider
+command is explicitly retained; startup package installation/updates are disabled.
+Other Pi installations are gated. OpenCode exclusivity remains unvalidated and
+Codex managed exclusivity unsupported. Their empty-selection legacy execution
+remains available with native inventory labeled unknown; a nonempty managed
+selection is saved but blocks execution/preflight instead of being partially applied.
+The internal skill is unavailable in these legacy general-agent runtimes.
+
+The engine is the MCP client for stdio and Streamable HTTP. Harnesses receive only
+the authenticated loopback gateway and the turn's allowed catalog, never upstream
+credentials. Tools, resources and form/HTTPS-URL elicitation are implemented;
+Prompts, Sampling, legacy HTTP+SSE and resource subscriptions are not enabled.
+Elicitation uses correlated pending questions with Accept/Decline/Cancel and is
+never answered by YOLO or general-agent question tools. Local MCP processes have
+their own owned lifetime and Stop cleanup; this is not a filesystem/network sandbox.
+Gateway workers participate in graph sealing/drainage. Lost transport remains
+uncertain and calls are not automatically repeated.
+
+OAuth supports discovery, public dynamic registration or a configured client ID,
+Authorization Code/PKCE, user-bound Windows credential protection, serialized
+refresh and local disconnect. Remote/mobile clients require a provider-accepted
+HTTPS redirect reaching the dedicated public API callback; browser localhost is
+not substituted for the engine. The mobile web flow uses explicit same-tab
+navigation and a return-to-Library link. Providers' embedded-WebView policies and
+real desktop/mobile login still require human validation. The public personal-use
+API's existing network contract is unchanged.
+
+Missing/offline MCP connections warn the model and user while retaining selection.
+Invalid selected skills, corrupted snapshots and isolation failures stop preparation.
+Confirmed deletion previews session/agent/run impact, removes future references
+through a recoverable authoring/state outbox and preserves captured runs/active
+turns. Unresolved filesystem conflicts remain recoverable errors. Existing sessions
+migrate to empty external selection without importing native global configuration.
+
+Implementation and validation evidence are tracked separately in
+`SKILLS_MCP_LIBRARY_IMPLEMENTATION_PROGRESS.md`. Compilation and disposable probes
+do not constitute human acceptance of model execution, OAuth providers or lifecycle.
+
 ### Audio Transcription
 
 The main chat composer can record audio and transcribe it through the engine without
@@ -828,6 +897,10 @@ session continuation still require human validation. OpenCode requires its owned
 plugin handshake and a healthy server, but graph execution is not blocked by the
 harness version. Protocol incompatibilities surface as runtime failures instead
 of requiring prior version approval. Unix graph execution is not enabled.
+
+The managed Library adapter's positive allowlist supersedes native MCP inheritance
+only on its validated compatibility path, as described above. The following remains
+the legacy OpenCode/Codex boundary, not evidence of managed exclusivity.
 
 External-MCP boundary approved on 2026-09-13 (refinement section 14): permit
 configured MCPs in OpenCode/Codex without a server-name allowlist or disabling

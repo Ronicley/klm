@@ -63,6 +63,7 @@ export function GraphRunActivity({ sessionId, runId, nodeId, nodeName, onClose }
         {activity.error && <p className="form-error">{activity.error}</p>}
       </div> : <div className="graph-run-payload" role="region" aria-label={tab === 'input' ? 'Input payload' : 'Output payload'} tabIndex={0}>
         {tab === 'input' ? <>
+          <details><summary>Captured Library</summary>{data.capabilities ? <><p>{data.capabilities.selection.skills.length} skills · {data.capabilities.selection.mcpConnections.length} MCP connections</p>{data.capabilities.skills.map(skill => <p key={skill.id}>{skill.name} · {skill.revision.slice(0, 12)}</p>)}{data.capabilities.connections?.map(c => <p key={c.id}>{c.name} · {c.revision.slice(0, 12)} · {c.selection.tools.join(', ') || 'No tools selected'}</p>)}</> : <p className="muted">Managed inventory was not captured for this run.</p>}</details>
           {activity.input?.task !== undefined && <pre>{activity.input.task}</pre>}
           {Object.entries(activity.input ?? {}).filter(([key]) => key !== 'task').map(([key, value]) => <div key={key}><strong>{key}</strong><pre>{value}</pre></div>)}
         </> : activity.submission ? <>

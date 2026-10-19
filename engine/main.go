@@ -35,6 +35,10 @@ type turn struct {
 }
 
 type app struct {
+	libraryMu         sync.Mutex
+	oauthMu           sync.Mutex
+	credentialMu      sync.Mutex
+	oauthTransactions map[string]*mcpOAuthTransaction
 	githubActivity    githubActivityCache
 	webhookWake       chan struct{}
 	webhookIngress    chan struct{}
@@ -105,6 +109,9 @@ func runEngine(dir string) error {
 		return fmt.Errorf("cannot replay stream journal: %w", err)
 	}
 	if err := recoverGraphCatalogChanges(dir, &state); err != nil {
+		return err
+	}
+	if err := recoverLibraryDeletions(dir, &state); err != nil {
 		return err
 	}
 	recoveryRevision := state.GraphRevision

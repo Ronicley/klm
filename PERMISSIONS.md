@@ -45,8 +45,8 @@ directories (`.agents/skills`, `.claude/skills`, `.opencode/skills`, user
 `.config/opencode/skills`, `.codex/skills`, and Pi skill directories). Loading a
 skill does not approve subsequent commands or writes requested by that skill.
 Codex's supported, empty MCP tool-approval forms are automatically accepted; forms
-asking for user input are not answered automatically. Pi currently runs with external
-extensions disabled; this policy does not add an external MCP transport to Pi.
+asking for user input are not answered automatically. Pi runs with native external
+extensions disabled; selected Library MCPs use the engine's owned gateway.
 
 The workspace is the actual execution directory, including a graph worktree.
 Resolved paths, existing ancestors and symlinks/junctions are considered before
@@ -65,6 +65,35 @@ targets are resolved against the command's working directory. Flags outside the
 supported subset, expansions, wildcards and compound commands require a decision.
 The warning recognizer also flags `git clean`, `git reset --hard`, `Format-Volume`
 and `Clear-Disk`; it does not claim to recognize every destructive action.
+
+## Managed Library capabilities
+
+The validated Pi adapter receives only content-addressed selected skills, the
+general-agent-only internal skill when applicable, and the filtered owned gateway
+catalog. Reads of captured skill resources use the ordinary read-scope policy and
+saved denies; they do not approve commands or writes. Identified gateway MCP calls
+use the normal automatic MCP policy, not the privileged collaboration-tool bypass.
+Connection/tool allowlists and graph seals are enforced again at dispatch, including
+under YOLO. Selecting a connection permits its dedicated resource discovery/read
+tools, not an unrestricted tool executor.
+
+MCP form and HTTPS-URL elicitation uses the pending-question projection and an
+explicit human-only response endpoint. Accept, Decline and Cancel are protocol
+responses, never new user chat messages, permission grants or graph/spawn
+authorization. YOLO and the general agent's ordinary question-reply tool cannot
+answer these requests. Stop/timeout/disconnection invalidates pending requests.
+
+Stdio MCP servers run in engine-owned process containers separate from the harness;
+neither container is a filesystem/network sandbox for the server. HTTP disconnect
+closes the protocol session, not a shared daemon or detached remote job. Gateway
+workers are drained before graph settlement; a lost response remains uncertain and
+is not automatically repeated. OAuth upstream credentials are user-protected on
+Windows and never enter native harness configuration, authoring or run snapshots.
+
+OpenCode/Codex's legacy MCP behavior remains outside this managed guarantee. Their
+saved nonempty Library selection blocks managed execution rather than applying
+additive native configuration. See the Library progress document for compatibility
+evidence and still-unvalidated runtime cases.
 
 ## Remembered scope
 

@@ -1,5 +1,6 @@
 import type { AuthoringCatalog, GraphFile } from './features/graphs/files';
 import { resolveEngineURL } from './platform';
+import type { ConversationCapabilities } from './features/library/api';
 
 export const ENGINE_URL = resolveEngineURL();
 
@@ -40,6 +41,7 @@ export type SessionUsage = {
 export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer" | "interrupt"; status: "queued" | "steering" | "sending" | "accepted" | "interrupting" | "paused" | "uncertain"; error?: string; origin?: { sessionId: string; title: string; kind?: 'instruction' | 'question_answer' } };
 
 export type Session = {
+  capabilities?: ConversationCapabilities;
   queue?: QueuedMessage[] | null;
   role?: 'side_agent' | 'subagent' | 'graph_node' | 'general_agent';
   selectedGraphId?: string;
@@ -102,6 +104,7 @@ export type GraphRunProjection = {
 };
 export type GraphActivationSummary = { id: string; occurrence: number; status: string };
 export type GraphNodeActivity = {
+  capabilities?: ConversationCapabilities['applied'];
   runActive: boolean;
   activations: GraphActivationSummary[];
   activation: (GraphActivationSummary & {
@@ -145,6 +148,7 @@ export type QuestionItem = {
   secret: boolean;
 };
 export type QuestionRequest = {
+  elicitation?: { connectionId: string; connectionName: string; mode: 'form' | 'url'; message: string; url?: string; schema?: Record<string, unknown>; callId: string };
   id: string;
   harness: Harness['id'];
   items: QuestionItem[];

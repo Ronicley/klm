@@ -65,6 +65,7 @@ func loopbackHost(hostport string) bool {
 
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
+	a.libraryRoutes(mux)
 	mux.HandleFunc("GET /api/health", a.health)
 	mux.HandleFunc("GET /api/state", a.getState)
 	mux.HandleFunc("GET /api/transcription/settings", a.getTranscriptionSettings)

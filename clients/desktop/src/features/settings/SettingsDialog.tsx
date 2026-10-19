@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { KeyRound, MessageSquare, Mic, Plus, Trash2, X } from 'lucide-react';
+import { BookOpen, KeyRound, MessageSquare, Mic, Plus, Trash2, X } from 'lucide-react';
+import { LibraryPanel } from '../library/LibraryPanel';
 import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
 import { ENGINE_URL, getTranscriptionSettings, updateTranscriptionSettings, type TranscriptionSettings } from '../../engine';
 import { configureEngineURL } from '../../platform';
 
-type SettingsSection = 'chat' | 'transcription';
+type SettingsSection = 'chat' | 'transcription' | 'library';
 
 const emptyTranscription: TranscriptionSettings = {
   apiKeyConfigured: false,
@@ -18,9 +19,9 @@ function failureMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Could not update transcription settings.';
 }
 
-export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => void; onDesignSystem: () => void }) {
+export function SettingsDialog({ onClose, onDesignSystem, onGeneralAgent }: { onClose: () => void; onDesignSystem: () => void; onGeneralAgent?: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [section, setSection] = useState<SettingsSection>('chat');
+  const [section, setSection] = useState<SettingsSection>(() => new URLSearchParams(window.location.search).get('klm-library') === '1' ? 'library' : 'chat');
   const [engineURL, setEngineURL] = useState(ENGINE_URL);
   const [engineError, setEngineError] = useState('');
   const [settings, setSettings] = useState(emptyTranscription);
@@ -41,6 +42,8 @@ export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => voi
 
   useEffect(() => {
     if (dialog.current && !dialog.current.open) dialog.current.showModal();
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('klm-library')) { url.searchParams.delete('klm-library'); window.history.replaceState(null, '', url); }
     void loadSettings();
   }, []);
 
@@ -84,9 +87,10 @@ export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => voi
       <nav className="settings-sidebar" aria-label="Settings sections">
         <button type="button" className={section === 'chat' ? 'is-active' : ''} aria-current={section === 'chat' ? 'page' : undefined} onClick={() => setSection('chat')}><MessageSquare />Chat</button>
         <button type="button" className={section === 'transcription' ? 'is-active' : ''} aria-current={section === 'transcription' ? 'page' : undefined} onClick={() => setSection('transcription')}><Mic />Transcription</button>
+        <button type="button" className={section === 'library' ? 'is-active' : ''} aria-current={section === 'library' ? 'page' : undefined} onClick={() => setSection('library')}><BookOpen />Library</button>
       </nav>
       <div className="settings-panel">
-        {section === 'chat' ? <section aria-labelledby="chat-settings-title">
+        {section === 'library' ? <LibraryPanel onGeneralAgent={onGeneralAgent} /> : section === 'chat' ? <section aria-labelledby="chat-settings-title">
           <h3 id="chat-settings-title">Chat</h3>
           <form className="engine-settings-form settings-form" onSubmit={connectEngine}>
             <label htmlFor="engine-url">Engine URL</label>

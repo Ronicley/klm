@@ -131,7 +131,7 @@ func skillReadPath(cwd, path string) bool {
 func permissionFactsFor(req Permission, harness, cwd string) permissionFacts {
 	f := permissionFacts{dangerous: destructiveCommand.MatchString(req.Command)}
 	if (harness == "opencode" || harness == "pi") && (req.Kind == "skill" || str(req.Details, "toolName") == "skill") ||
-		harness == "opencode" && req.mcpTool || harness == "codex" && req.Kind == "mcp" {
+		req.mcpTool || harness == "codex" && req.Kind == "mcp" {
 		f.decision = "allow"
 		return f
 	}

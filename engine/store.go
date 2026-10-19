@@ -38,35 +38,36 @@ type Event struct {
 }
 
 type Session struct {
-	Queue           []QueuedMessage         `json:"queue"`
-	Role            string                  `json:"role,omitempty"`
-	GraphRunID      string                  `json:"graphRunId,omitempty"`
-	GraphNodeID     string                  `json:"graphNodeId,omitempty"`
-	ExecutionCWD    string                  `json:"executionCwd,omitempty"`
-	SelectedGraphID string                  `json:"selectedGraphId,omitempty"`
-	Graph           *ConversationGraphState `json:"graph,omitempty"` // HTTP/SSE view only
-	ParentID        string                  `json:"parentId,omitempty"`
-	Sources         []SourceReference       `json:"sources,omitempty"`
-	ID              string                  `json:"id"`
-	ProjectID       string                  `json:"projectId"`
-	Title           string                  `json:"title"`
-	Workspace       string                  `json:"workspace"`
-	Harness         string                  `json:"harness"`
-	HarnessLocked   bool                    `json:"harnessLocked,omitempty"`
-	YOLO            bool                    `json:"yolo,omitempty"`
-	Model           string                  `json:"model,omitempty"`
-	Effort          string                  `json:"effort,omitempty"`
-	ResolvedModel   string                  `json:"resolvedModel,omitempty"`
-	ResolvedEffort  string                  `json:"resolvedEffort,omitempty"`
-	Status          string                  `json:"status"`
-	Archived        bool                    `json:"archived,omitempty"`
-	RuntimeActive   bool                    `json:"runtimeActive,omitempty"` // HTTP/SSE view only
-	Events          []Event                 `json:"events"`
-	Permissions     []Permission            `json:"permissions,omitempty"`
-	Questions       []QuestionRequest       `json:"questions,omitempty"`
-	Usage           *SessionUsage           `json:"usage,omitempty"`
-	CreatedAt       string                  `json:"createdAt"`
-	UpdatedAt       string                  `json:"updatedAt"`
+	Capabilities    ConversationCapabilities `json:"capabilities"`
+	Queue           []QueuedMessage          `json:"queue"`
+	Role            string                   `json:"role,omitempty"`
+	GraphRunID      string                   `json:"graphRunId,omitempty"`
+	GraphNodeID     string                   `json:"graphNodeId,omitempty"`
+	ExecutionCWD    string                   `json:"executionCwd,omitempty"`
+	SelectedGraphID string                   `json:"selectedGraphId,omitempty"`
+	Graph           *ConversationGraphState  `json:"graph,omitempty"` // HTTP/SSE view only
+	ParentID        string                   `json:"parentId,omitempty"`
+	Sources         []SourceReference        `json:"sources,omitempty"`
+	ID              string                   `json:"id"`
+	ProjectID       string                   `json:"projectId"`
+	Title           string                   `json:"title"`
+	Workspace       string                   `json:"workspace"`
+	Harness         string                   `json:"harness"`
+	HarnessLocked   bool                     `json:"harnessLocked,omitempty"`
+	YOLO            bool                     `json:"yolo,omitempty"`
+	Model           string                   `json:"model,omitempty"`
+	Effort          string                   `json:"effort,omitempty"`
+	ResolvedModel   string                   `json:"resolvedModel,omitempty"`
+	ResolvedEffort  string                   `json:"resolvedEffort,omitempty"`
+	Status          string                   `json:"status"`
+	Archived        bool                     `json:"archived,omitempty"`
+	RuntimeActive   bool                     `json:"runtimeActive,omitempty"` // HTTP/SSE view only
+	Events          []Event                  `json:"events"`
+	Permissions     []Permission             `json:"permissions,omitempty"`
+	Questions       []QuestionRequest        `json:"questions,omitempty"`
+	Usage           *SessionUsage            `json:"usage,omitempty"`
+	CreatedAt       string                   `json:"createdAt"`
+	UpdatedAt       string                   `json:"updatedAt"`
 }
 
 type nativeSession struct {
@@ -89,14 +90,17 @@ type TranscriptionSettings struct {
 }
 
 type diskState struct {
-	tx *stateTransaction
+	tx               *stateTransaction
+	MCPConnections   map[string]MCPConnection `json:"mcpConnections,omitempty"`
+	MCPCredentials   map[string][]byte        `json:"mcpCredentials,omitempty"`
+	LibraryDeletions []LibraryDeletion        `json:"libraryDeletions,omitempty"`
 
 	WebhookConnections      map[string]WebhookConnection  `json:"webhookConnections,omitempty"`
 	WebhookEvents           map[string]WebhookStoredEvent `json:"webhookEvents,omitempty"`
 	WebhookPending          map[string]WebhookPending     `json:"webhookPending,omitempty"`
 	WebhookReleases         map[string]WebhookRelease     `json:"webhookReleases,omitempty"`
-	WebhookReceivedSequence uint64                       `json:"webhookReceivedSequence,omitempty"`
-	WebhookReleaseSequence  uint64                       `json:"webhookReleaseSequence,omitempty"`
+	WebhookReceivedSequence uint64                        `json:"webhookReceivedSequence,omitempty"`
+	WebhookReleaseSequence  uint64                        `json:"webhookReleaseSequence,omitempty"`
 
 	JournalFormat       int                      `json:"journalFormat,omitempty"`
 	AcceptedMessages    map[string]string        `json:"acceptedMessages,omitempty"`
@@ -223,6 +227,10 @@ func loadState(dir string) (diskState, error) {
 	generalCount := 0
 	for i := range d.Sessions {
 		s := &d.Sessions[i]
+		if err := normalizeSelection(&s.Capabilities.Desired); err != nil {
+			return d, errors.New("Invalid persisted library selection.")
+		}
+		s.Capabilities.Preparing = nil // An interrupted preparation is never an applied turn.
 		engineOwned := s.Role == sessionRoleGeneralAgent || s.Role == sessionRoleSubagent && s.ProjectID == "" && d.session(s.ParentID) != nil && d.session(s.ParentID).Role == sessionRoleGeneralAgent
 		if s.Role == sessionRoleGeneralAgent {
 			generalCount++

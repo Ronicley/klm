@@ -25,13 +25,15 @@ import (
 )
 
 type AgentDefinition struct {
-	Name           string `json:"name" toml:"name"`
-	Description    string `json:"description" toml:"description,omitempty"`
-	Enabled        bool   `json:"enabled" toml:"enabled"`
-	DefaultHarness string `json:"defaultHarness" toml:"default_harness"`
-	Model          string `json:"model" toml:"model"`
-	Effort         string `json:"effort,omitempty" toml:"effort,omitempty"`
-	Prompt         string `json:"prompt" toml:"prompt,multiline"`
+	Skills         []string       `json:"skills,omitempty" toml:"skills,omitempty"`
+	MCPConnections []MCPSelection `json:"mcpConnections,omitempty" toml:"mcp_connections,omitempty"`
+	Name           string         `json:"name" toml:"name"`
+	Description    string         `json:"description" toml:"description,omitempty"`
+	Enabled        bool           `json:"enabled" toml:"enabled"`
+	DefaultHarness string         `json:"defaultHarness" toml:"default_harness"`
+	Model          string         `json:"model" toml:"model"`
+	Effort         string         `json:"effort,omitempty" toml:"effort,omitempty"`
+	Prompt         string         `json:"prompt" toml:"prompt,multiline"`
 }
 type AgentRecord struct {
 	AgentDefinition
@@ -444,6 +446,16 @@ func (a *app) saveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := body.Agent
+	capabilities := CapabilitySelection{Skills: d.Skills, MCPConnections: d.MCPConnections}
+	if err := normalizeSelection(&capabilities); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	d.Skills, d.MCPConnections = capabilities.Skills, capabilities.MCPConnections
+	if !managedLibraryHarness(d.DefaultHarness) && !selectionEmpty(capabilities) {
+		fail(w, 400, "Managed library capabilities are not supported by this harness.")
+		return
+	}
 	d.Name = strings.TrimSpace(d.Name)
 	d.Description = strings.TrimSpace(d.Description)
 	id := authoringSlug(d.Name)
@@ -464,6 +476,13 @@ func (a *app) saveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oldID := r.PathValue("item")
+	a.mu.Lock()
+	recoveringLibrary := len(a.state.LibraryDeletions) > 0
+	a.mu.Unlock()
+	if recoveringLibrary {
+		fail(w, 409, "A library deletion needs recovery before editing agents.")
+		return
+	}
 	var old *AgentRecord
 	for i := range c.Agents {
 		if c.Agents[i].ID == oldID {
