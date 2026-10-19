@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { ArrowLeft, Download, Focus, GitBranch, Maximize2, Minimize2, Minus, PanelLeft, PanelRight, PanelsTopLeft } from 'lucide-react';
 import { IS_DESKTOP, IS_MOBILE_HOST, openFocus, startWindowDrag } from './platform';
 import { Button, IconButton } from './design-system/Button';
+import { BottomSheet } from './design-system/BottomSheet';
 import { Badge } from './design-system/Badge';
 import { TabNav } from './design-system/TabNav';
 import { WorkspaceSidebar } from './features/workspace/WorkspaceSidebar';
@@ -43,6 +44,7 @@ import klmIcon from './features/projects/klm-icon.png';
 
 const GraphView = lazy(() => import('./features/graphs/GraphView').then(module => ({ default: module.GraphView })));
 type SessionTab = 'chat' | 'graph' | `subagent:${string}`;
+type MobileChatSheet = { id: string; sessionId: string; subagentId?: string };
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'The engine request failed. Please retry.';
@@ -191,7 +193,7 @@ export function App() {
   const navigation = useRef(0);
   const stream = useRef<EventSource | null>(null);
   const [workspaceNavigation, setWorkspaceNavigation] = useState(readWorkspaceNavigation);
-  const [view, setView] = useState<'chat' | 'general' | 'design' | 'agents' | 'graphs'>(() => workspaceNavigation.generalOpen ? 'general' : 'chat');
+  const [view, setView] = useState<'chat' | 'general' | 'design' | 'agents' | 'graphs'>(() => IS_MOBILE_HOST || workspaceNavigation.generalOpen ? 'general' : 'chat');
   const generalView = view === 'general';
   const chatView = view === 'chat' || generalView;
   const [generalError, setGeneralError] = useState('');
@@ -210,6 +212,17 @@ export function App() {
   const projectSession = visibleProjectSessions.find(item => item.id === selectedSessions[project?.id ?? '']) ?? visibleProjectSessions[0];
   const generalSession = sessions.find(item => item.role === 'general_agent');
   const [overlaySessionId, setOverlaySessionId] = useState('');
+  const [mobileChatSheets, setMobileChatSheets] = useState<MobileChatSheet[]>([]);
+  const mobileChats = IS_MOBILE_HOST ? mobileChatSheets.flatMap(sheet => {
+    const target = sessions.find(item => item.id === sheet.sessionId && (item.role === 'general_agent' || !item.role && !item.parentId && !item.archived && projects.some(owner => owner.id === item.projectId && !owner.archivedFolders.includes(item.workspace))));
+    if (!target) return [];
+    const subagent = sheet.subagentId ? sessions.find(item => item.id === sheet.subagentId && item.parentId === target.id && item.role === 'subagent') : undefined;
+    return [{ ...sheet, session: target, title: sheet.subagentId ? subagent?.title ?? 'Subagent' : target.role === 'general_agent' ? 'KLM Agent' : target.title }];
+  }) : [];
+  useEffect(() => {
+    const valid = new Set(mobileChats.map(sheet => sheet.id));
+    if (mobileChatSheets.some(sheet => !valid.has(sheet.id))) setMobileChatSheets(current => current.filter(sheet => valid.has(sheet.id)));
+  }, [mobileChatSheets, mobileChats]);
   const overlaySession = generalView ? sessions.find(item => item.id === overlaySessionId && !item.role && !item.parentId && !item.archived && projects.some(owner => owner.id === item.projectId && !owner.archivedFolders.includes(item.workspace))) : undefined;
   const overlayProject = projects.find(item => item.id === overlaySession?.projectId);
   const session = generalView ? overlaySession ?? generalSession : projectSession;
@@ -264,6 +277,7 @@ export function App() {
   const [graphsVisit, setGraphsVisit] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+  const [mobileProjectRailOpen, setMobileProjectRailOpen] = useState(false);
   const mobileNavigationVisible = IS_MOBILE_HOST && view === 'chat' && !!project && (mobileNavigationOpen || loaded && !session);
   const mobileSessionVisible = IS_MOBILE_HOST && view === 'chat' && !!session && !mobileNavigationVisible;
   const sideOpen = openSideSessions.includes(activeId);
@@ -425,6 +439,13 @@ export function App() {
   if (activeId) streamSet.add(activeId);
   if (generalView && generalSession) streamSet.add(generalSession.id);
   if (sideVisible && sideSession) streamSet.add(sideSession.id);
+  mobileChats.forEach(sheet => {
+    streamSet.add(sheet.session.id);
+    if (sheet.subagentId) streamSet.add(sheet.subagentId);
+    sheet.session.events.forEach(event => {
+      if (event.type === 'subagent' && ['running', 'pending', 'started'].includes(event.status ?? 'running') && typeof event.data?.childSessionId === 'string') streamSet.add(event.data.childSessionId);
+    });
+  });
   floatingSessions.forEach(target => {
     streamSet.add(target.id);
     const childId = floatingSubagentIds[target.id];
@@ -637,6 +658,10 @@ export function App() {
   }
   function openSubagent(sessionId: string) {
     if (!activeId) return;
+    if (IS_MOBILE_HOST) {
+      pushMobileChatSheet(activeId, sessionId);
+      return;
+    }
     setOpenSubagentTabs(current => ({
       ...current,
       [activeId]: (current[activeId] ?? []).includes(sessionId) ? current[activeId] : [...(current[activeId] ?? []), sessionId],
@@ -679,16 +704,29 @@ export function App() {
   }
   function selectProject(next: Project) {
     navigation.current += 1;
+    setMobileProjectRailOpen(false);
     setMobileNavigationOpen(true);
     setWorkspaceNavigation(current => ({ ...current, activeProjectId: next.id })); setView('chat'); setSidebarOpen(false);
   }
+  function pushMobileChatSheet(sessionId: string, subagentId?: string) {
+    const sheet: MobileChatSheet = { id: clientMessageId(), sessionId, subagentId };
+    setMobileChatSheets(current => [...current, sheet]);
+  }
+  function closeMobileChatSheet(id: string) {
+    setMobileChatSheets(current => current.filter(sheet => sheet.id !== id));
+  }
   function openSessionOverlay(target: Session) {
+    if (IS_MOBILE_HOST) {
+      pushMobileChatSheet(target.id);
+      return;
+    }
     setOverlaySessionId(target.id);
     setSessionTabs(current => ({ ...current, [target.id]: 'chat' }));
   }
   function openSessionInProject(target: Session) {
     if (target.role === 'general_agent') {
       navigation.current += 1;
+      setMobileProjectRailOpen(false);
       setOverlaySessionId(''); setSidebarOpen(false); setView('general');
       setSessionTabs(current => ({ ...current, [target.id]: 'chat' }));
       setFocusMinimized(false); setFocusFront('main');
@@ -847,8 +885,9 @@ export function App() {
     tabItems.push({ value: `subagent:${id}`, label, closeLabel: `Close ${label}`, onClose: () => closeSubagent(id) });
   }
 
-  return <SessionNavigationProvider sessions={sessions} projects={projects} onOpenSession={openSessionInProject}><div ref={shell} className={`app-shell ${focusMaximized ? 'is-maximized' : ''} ${focusMinimized && focusEnabled ? 'is-minimized' : ''} ${sidebarOpen ? 'sidebar-open' : ''} ${sideVisible && session ? 'side-agent-open' : ''}`}
+  return <SessionNavigationProvider sessions={sessions} projects={projects} onOpenSession={IS_MOBILE_HOST ? openSessionOverlay : openSessionInProject}><div ref={shell} className={`app-shell ${focusMaximized ? 'is-maximized' : ''} ${focusMinimized && focusEnabled ? 'is-minimized' : ''} ${sidebarOpen ? 'sidebar-open' : ''} ${sideVisible && session ? 'side-agent-open' : ''}`}
     data-mobile-screen={mobileNavigationVisible ? 'sessions' : mobileSessionVisible ? 'chat' : undefined}
+    data-mobile-project-rail={IS_MOBILE_HOST && generalView ? mobileProjectRailOpen ? 'open' : 'hidden' : undefined}
     style={{ ...(focusEnabled ? focusMainGeometry : undefined), zIndex: focusFront === 'main' ? 3 : 1 }} data-resized={focusEnabled && focusMainGeometry ? true : undefined} inert={focusMinimized && focusEnabled}
     onPointerDownCapture={() => setFocusFront('main')} onFocusCapture={() => setFocusFront('main')}
     onPointerDown={event => {
@@ -884,20 +923,20 @@ export function App() {
     onLostPointerCapture={() => { if (drag.current) saveMainGeometry(); drag.current = null; if (shell.current) delete shell.current.dataset.dragging; }}
     onPointerCancel={() => { if (drag.current) saveMainGeometry(); drag.current = null; if (shell.current) delete shell.current.dataset.dragging; }}
   >
-    <ProjectRail projects={projects} sessions={sessions} activeId={generalView ? '' : project?.id ?? ''} generalActive={generalView} onGeneralAgent={() => { navigation.current += 1; setOverlaySessionId(''); setSidebarOpen(false); setView('general'); }} onSelect={selectProject} onEdit={openProjectEditor} onRemove={target => removeProject(target.id)} onReorder={reorderProject} onAdd={() => void openProjectPicker()} onSettings={() => { setSidebarOpen(false); setSettingsOpen(true); }} />
+    <ProjectRail projects={projects} sessions={sessions} activeId={generalView ? '' : project?.id ?? ''} generalActive={generalView} onGeneralAgent={() => { navigation.current += 1; setOverlaySessionId(''); setSidebarOpen(false); setMobileProjectRailOpen(false); setView('general'); }} onSelect={selectProject} onEdit={openProjectEditor} onRemove={target => removeProject(target.id)} onReorder={reorderProject} onAdd={() => void openProjectPicker()} onSettings={() => { setSidebarOpen(false); setSettingsOpen(true); }} />
     {!generalView && sidebarOpen && <button className="panel-backdrop" aria-label="Close side panel" onClick={() => setSidebarOpen(false)} />}
     {!generalView && project && <WorkspaceSidebar key={`sidebar:${project.id}`} project={project} sessions={projectSessions} activeId={view === 'chat' ? activeId : ''} activeSection={view} collapsed={collapsedFolders[project.id] ?? []} archivedCollapsed={collapsedArchivedProjects.includes(project.id)} onCollapsedChange={folders => setWorkspaceNavigation(current => ({ ...current, collapsedFolders: { ...current.collapsedFolders, [project.id]: folders } }))} onArchivedCollapsedChange={collapsed => setWorkspaceNavigation(current => ({ ...current, collapsedArchivedProjects: collapsed ? [...new Set([...current.collapsedArchivedProjects, project.id])] : current.collapsedArchivedProjects.filter(id => id !== project.id) }))} onNew={newSession} onCreateFolder={createFolder} onRename={setRenamingSession} onPosition={async (target, workspace, beforeId) => (await patchSession(target, { position: { workspace, beforeId } })) === null} onReorderFolder={reorderFolder} onArchiveSession={async (target, archived) => (await patchSession(target, { archived })) === null} onArchiveFolder={archiveFolder} onSelect={id => { navigation.current += 1; setWorkspaceNavigation(current => ({ ...current, selectedSessions: { ...current.selectedSessions, [project.id]: id } })); setView('chat'); setSidebarOpen(false); setMobileNavigationOpen(false); }} onClose={() => setSidebarOpen(false)} onAgents={() => { navigation.current += 1; setAgentsVisit(current => current + 1); setView('agents'); setSidebarOpen(false); }} onGraphs={() => { navigation.current += 1; setGraphsVisit(current => current + 1); setView('graphs'); setSidebarOpen(false); }} onProjectSettings={openProjectSettings} />}
     <main className="main-panel">
-      <header className="session-header"><div id="workspace-header-leading" className="header-leading">{!generalView && project && (IS_MOBILE_HOST && view === 'chat' && session ? <IconButton label="Back to sessions" className="mobile-session-back" onClick={() => { navigation.current += 1; setSidebarOpen(false); setMobileNavigationOpen(true); }}><ArrowLeft /></IconButton> : <IconButton label="Open sessions" className="mobile-nav" onClick={() => setSidebarOpen(true)}><PanelLeft /></IconButton>)}<h1>{generalView ? 'KLM Agent' : view === 'chat' && session ? <button className="session-title-button" title="Rename session" onClick={() => setRenamingSession(session)}>{session.title}</button> : view === 'design' ? 'Design system' : view === 'agents' ? 'Agents' : view === 'graphs' ? 'Graphs' : project?.name ?? 'KLM'}</h1>{view === 'chat' && session && gitBranch && <span className="mode-label session-header-branch" title={gitBranch}><GitBranch aria-hidden="true" /><span>{gitBranch}</span></span>}</div><div id="workspace-header-actions" className="header-actions">
+      {!(IS_MOBILE_HOST && generalView) && <header className="session-header"><div id="workspace-header-leading" className="header-leading">{!generalView && project && (IS_MOBILE_HOST && view === 'chat' && session ? <IconButton label="Back to sessions" className="mobile-session-back" onClick={() => { navigation.current += 1; setSidebarOpen(false); setMobileNavigationOpen(true); }}><ArrowLeft /></IconButton> : <IconButton label="Open sessions" className="mobile-nav" onClick={() => setSidebarOpen(true)}><PanelLeft /></IconButton>)}<h1>{generalView ? 'KLM Agent' : view === 'chat' && session ? <button className="session-title-button" title="Rename session" onClick={() => setRenamingSession(session)}>{session.title}</button> : view === 'design' ? 'Design system' : view === 'agents' ? 'Agents' : view === 'graphs' ? 'Graphs' : project?.name ?? 'KLM'}</h1>{view === 'chat' && session && gitBranch && <span className="mode-label session-header-branch" title={gitBranch}><GitBranch aria-hidden="true" /><span>{gitBranch}</span></span>}</div><div id="workspace-header-actions" className="header-actions">
         {session && chatView && <Button size="sm" className="export-button" onClick={exportSession}>Session log<Download /></Button>}
         {focusEnabled && <IconButton label="Minimize window" className="focus-minimize-button" onClick={() => setFocusMinimized(true)}><Minus /></IconButton>}
         {IS_DESKTOP ? <IconButton label="Focus" onClick={() => void focus()}><Focus /></IconButton> : !IS_MOBILE_HOST && <IconButton label={focusMaximized ? 'Restore window' : 'Maximize window'} aria-pressed={focusMaximized} onClick={() => setFocusMaximized(current => !current)}>{focusMaximized ? <Minimize2 /> : <Maximize2 />}</IconButton>}
         {session && view === 'chat' && <IconButton label={sideOpen ? 'Close side agent' : 'Open side agent'} aria-expanded={sideOpen} onClick={() => { setSideOpen(!sideOpen); setSidebarOpen(false); }}><PanelRight /></IconButton>}
-      </div></header>
+      </div></header>}
       {focusError && <div role="alert" className="storage-error">{focusError} <Button size="sm" onClick={() => void focus()}>Retry</Button></div>}
       {generalWindowError && !focusMinimized && <div role="alert" className="storage-error">{generalWindowError} <Button size="sm" disabled={openingGeneralWindow} onClick={() => void openGeneralFloatingWindow()}>Retry</Button></div>}
       {connectionError && <div role="alert" className="storage-error">{connectionError} <Button size="sm" onClick={() => setRefreshVersion(current => current + 1)}>Retry</Button></div>}
-      <KlmAgentWorkspace enabled={generalView} visible={!focusMinimized || !focusEnabled} projects={projects} sessions={sessions} overlaySessionId={overlaySession?.id} onOpenOverlay={openSessionOverlay} onCloseOverlay={() => setOverlaySessionId('')} onOpenProject={openSessionInProject} onOpenFloatingChat={focusEnabled ? () => void openGeneralFloatingWindow() : undefined} openingFloatingChat={openingGeneralWindow}>
+      <KlmAgentWorkspace enabled={generalView} visible={!focusMinimized || !focusEnabled} projects={projects} sessions={sessions} projectRailOpen={mobileProjectRailOpen} onToggleProjectRail={IS_MOBILE_HOST ? () => setMobileProjectRailOpen(current => !current) : undefined} overlaySessionId={IS_MOBILE_HOST ? mobileChats.at(-1)?.session.id : overlaySession?.id} onOpenOverlay={openSessionOverlay} onCloseOverlay={() => setOverlaySessionId('')} onOpenProject={openSessionInProject} onOpenFloatingChat={focusEnabled ? () => void openGeneralFloatingWindow() : undefined} openingFloatingChat={openingGeneralWindow}>
       {(view === 'chat' || view === 'design') && <div className="session-navigation"><TabNav<SessionTab> value={view === 'design' ? 'chat' : activeTab} onChange={tab => { setView('chat'); setSessionTabs(current => ({ ...current, [activeId]: tab })); }} items={view === 'chat' ? tabItems : [{ value: 'chat', label: 'Chat' }]} />{view === 'chat' && project && session && <>{focusEnabled && <IconButton className="session-open-floating" label="Open session in floating window and minimize main window" onClick={() => { openFloatingSession(session); setFocusMinimized(true); }}><PanelsTopLeft /></IconButton>}<Select label="Move session to folder" value={session.workspace} disabled={pendingSessions[session.id] || !!connectionError} onChange={event => void patchSession(session, { workspace: event.target.value })}>{[...project.folders.filter(folder => !project.archivedFolders.includes(folder)), 'Ungrouped'].map(folder => <option key={folder} value={folder}>{folder}</option>)}</Select></>}</div>}
       {view === 'design' ? <DesignSystem /> : (view === 'agents' || view === 'graphs') && project ? <ProjectAuthoring key={`${project.id}:${view}:${agentsVisit}:${graphsVisit}`} projectId={project.id} area={view} /> : !loaded ? <div className="empty-chat"><h2>{connectionError ? 'Engine disconnected' : 'Connecting to engine...'}</h2></div> : generalView && !session ? <div className="empty-chat"><h2>{generalError || 'Opening KLM Agent...'}</h2>{generalError && <Button onClick={() => setGeneralRetry(current => current + 1)}>Retry</Button>}</div> : !generalView && !project ? <div className="empty-chat"><h2>Add a project</h2><Button onClick={() => void openProjectPicker()}>Add project</Button></div> : !session ? <div className="empty-chat"><h2>Create a session</h2><Button onClick={() => newSession()} disabled={!!connectionError}>Create session</Button></div> : <>
         <SessionOverlay session={overlaySession} project={overlayProject} onClose={() => setOverlaySessionId('')} onOpenProject={openSessionInProject}
@@ -955,6 +994,19 @@ export function App() {
     {settingsProject && <ProjectSettingsDialog key={settingsProject.id} project={settingsProject} onSave={editProject} onRemove={removeProject} onClose={() => setProjectSettingsId('')} />}
     {creatingSession && createProject && <CreateSessionDialog project={createProject} harnesses={harnesses} workspace={creatingSession.workspace} onCreate={createSession} onClose={() => { navigation.current += 1; setCreatingSession(null); }} />}
   </div>
+    {mobileChats.map(({ session: mobileChatSession, ...sheet }) => <BottomSheet key={sheet.id} title={sheet.title} className="mobile-session-chat-sheet" onClose={() => closeMobileChatSheet(sheet.id)}>
+      <FocusSessionChat session={mobileChatSession} projectName={projects.find(owner => owner.id === mobileChatSession.projectId)?.name ?? ''} subagents={sessions.filter(item => item.parentId === mobileChatSession.id && item.role === 'subagent')}
+        draft={drafts[mobileChatSession.id] ?? { text: '', mentions: [] }} pending={!!pendingSessions[mobileChatSession.id]} disconnected={!!connectionError} error={sessionErrors[mobileChatSession.id] || graphErrors[mobileChatSession.id]}
+        submissions={localMessages[mobileChatSession.id] ?? []} onRestoreSubmission={item => restoreLocal(mobileChatSession, item)} onRetrySubmission={item => submitLocal(mobileChatSession, item)}
+        onSnapshot={receiveSession} onHistory={receiveHistory} onEventChange={receiveEvent} onInterrupt={interruptSubmissions}
+        onDraftChange={draft => setDrafts(current => ({ ...current, [mobileChatSession.id]: draft }))} onSend={(draft, mode) => sendMessage(mobileChatSession, draft, [], mode)} onStop={() => void updateSession(mobileChatSession, 'stop', {})}
+        onTranscription={text => setDrafts(current => { const draft = current[mobileChatSession.id] ?? { text: '', mentions: [] }; return { ...current, [mobileChatSession.id]: { ...draft, text: `${draft.text}${draft.text ? '\n\n' : ''}${text.trim()}` } }; })}
+        onModel={(model, effort) => applyModelSettings(mobileChatSession, model, effort)} onGraph={applyGraph} selectingGraph={!!selectingGraphs[mobileChatSession.id]}
+        generalControls={mobileChatSession.role === 'general_agent' ? <GeneralHarnessPicker session={mobileChatSession} harnesses={harnesses} disabled={!!pendingSessions[mobileChatSession.id] || generalHarnessBlocked(mobileChatSession) || !!connectionError} onChange={harness => void updateSession(mobileChatSession, 'harness', { harness })} /> : undefined}
+        harnessUnavailable={mobileChatSession.role === 'general_agent' && !harnesses.some(harness => harness.id === mobileChatSession.harness && harness.available)}
+        selectedGraphId={graphPreview[mobileChatSession.id] ?? mobileChatSession.graph?.selectedGraphId ?? mobileChatSession.selectedGraphId ?? ''} onSelectGraph={id => void chooseGraph(mobileChatSession.id, id)}
+        onOpenSession={openSessionOverlay} activeSubagentId={sheet.subagentId ?? ''} onOpenSubagent={id => pushMobileChatSheet(mobileChatSession.id, id)} onBackToSession={() => closeMobileChatSheet(sheet.id)} />
+    </BottomSheet>)}
     {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} onDesignSystem={() => { setSettingsOpen(false); setView('design'); setFocusMinimized(false); setFocusFront('main'); }} />}
     {renamingSession && <RenameSessionDialog key={renamingSession.id} session={renamingSession} onRename={title => patchSession(renamingSession, { title })} onClose={() => setRenamingSession(null)} />}
     {!IS_DESKTOP && !IS_MOBILE_HOST && <><BackgroundPicker hidden={focusMaximized && !focusMinimized} />

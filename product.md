@@ -490,6 +490,17 @@ port uses the frontend default **7332**. A domain without a port gets no added p
 allowing tunnel/proxy URLs. Explicit ports and HTTP(S) schemes are preserved;
 without a scheme, IPs use HTTP and domains use HTTPS.
 
+Mobile registration optionally adds a local web-client URL after selecting one or
+more Wi-Fi SSIDs. The original URL remains the public/default address; parsing and
+port rules are unchanged for both URLs, and old URL-only records remain valid.
+On opening an entry, a matching connected SSID selects the local URL. Other or
+unknown networks select the public URL. Initial local-load failures fall back once
+to a fresh public WebView; only successful public fallback displays a modal notice.
+Both failures retain normal Retry recovery. Attempts have separate controllers and
+origin-scoped audio capabilities, and existing connected sessions are not rerouted
+when the network changes. Android discovers nearby networks; iOS can identify the
+current network and accepts additional SSIDs by name subject to OS permissions.
+
 The KLM logo at the top of the web project rail opens the general-agent chat.
 A **Back to hosts** icon button below Settings returns to the native web client
 list through `KlmMobile.postMessage('home')`. It appears only in the Flutter-hosted
@@ -532,6 +543,52 @@ This button stays anchored to the composer's bottom-left corner, with its own
 reserved space as other controls move or wrap.
 The sheet closes through Close, backdrop tap or Escape. Desktop and browser Focus
 retain their existing options menu, YOLO label and composer graph selector.
+
+The mobile KLM Agent view omits the outer title header and its session-log button.
+The KLM Agent's Feed is the mobile home: each new WebView load opens it regardless
+of the previously selected project or chat, retaining project/session selections
+for subsequent navigation.
+Project Rail starts hidden on the mobile KLM Agent page. A **Show projects** icon
+inside the Feed search field toggles it without leaving the feed; returning from
+a project or opening the app starts with the rail hidden again.
+Its compact tabs are ordered **Feed**, then **KLM Agent**, replacing the previous
+**Chat** and **Activity** labels. Desktop and browser Focus keep their existing header
+and tab labels/order.
+
+The mobile Feed omits the Activity header, project counter and refresh button.
+Feed settings is an icon button inside the search field. Pulling down at the top
+of the feed and releasing past the threshold refreshes the existing loaded feed
+window, with a progress indicator. Short pulls and normal scrolling do not refresh.
+
+Mobile Happening now displays every matching session in a vertical list, with no
+Show more/Show less controls or internal scrolling. The full list scrolls with the
+feed, preserving the existing session actions and ordering.
+
+On mobile, tapping a Happening now session keeps the Feed tab selected and opens
+that session in an edge-to-edge bottom sheet at 85% of the viewport height, with
+rounded top corners and a modal mask above it. The sheet owns its composer, draft,
+live history, queue, requests, Stop, model and graph controls; it does not retarget
+the KLM Agent composer. Closing the sheet preserves both drafts and the feed's
+scroll position without stopping either conversation. Archived or unavailable
+sessions close the sheet. Desktop and browser Focus retain their existing overlay.
+
+The same 85%-height mobile sheet opens sessions from **Created {session-name}**
+cards in any conversation, retaining the underlying chat or feed. Subagent activity
+entries also open in this sheet rather than switching the main chat's tabs; native
+subagents retain their read-only history/status view and Back to parent-chat action.
+Opening another session or subagent pushes a new sheet onto a mobile stack instead
+of replacing the previous one. Covered sheets stay mounted and subscribed, retaining
+their scroll positions and composer state. Close, backdrop tap, Escape or the
+subagent's Back action dismisses only the top sheet and reveals the previous one.
+
+## Brand assets
+
+The transparent sphere is used for KLM logos inside every client, the desktop
+application/window/tray icon and the web favicon. The solid-background sphere is
+used for the mobile launcher icon. Both source images are centered 1000×1000 crops,
+without rescaling their original pixels. Platform-specific icon sizes are generated
+from these crops. Flutter screen branding uses `assets/brand/logo.png`; its launcher
+generator uses the separate solid `assets/brand/icon.png`.
 
 ## File and Folder References
 

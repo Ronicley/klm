@@ -1,19 +1,22 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeftRight, ArrowUp, ArrowUpRight, ChevronDown, MessageSquare, PanelsTopLeft, Radio, Search, Settings2, RefreshCw } from 'lucide-react';
+import { ArrowLeftRight, ArrowUp, ArrowUpRight, ChevronDown, MessageSquare, PanelLeft, PanelsTopLeft, Radio, Search, Settings2, RefreshCw } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { TabNav } from '../../design-system/TabNav';
+import { IS_MOBILE_HOST } from '../../platform';
 import type { Project, Session } from '../../engine';
 import type { ActivityCategory } from './githubActivityApi';
 import { GithubActivityCard } from './GithubActivityCard';
 import { ActivityFeedSettings } from './ActivityFeedSettings';
 import { useGithubActivityFeed } from './useGithubActivityFeed';
+import { useFeedPullToRefresh } from './useFeedPullToRefresh';
 import { saveHappeningOrder, useHappeningOrder } from './happeningOrder';
 import './klm-agent.css';
 
 type FeedProject = Pick<Project, 'name' | 'icon'>;
 type FeedFilter = 'All' | ActivityCategory;
 type SessionActions = { overlaySessionId?: string; onOpenOverlay: (session: Session) => void; onOpenProject: (session: Session) => void };
+type ProjectRailControl = { projectRailOpen?: boolean; onToggleProjectRail?: () => void };
 const filters: FeedFilter[] = ['All', 'PRs', 'Pipelines', 'Issues', 'Security', 'Repository', 'Other'];
 const defaultChatRatio = 100 / 3;
 
@@ -104,7 +107,7 @@ export function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverl
     <div ref={list} id={listId} className="activity-happening-items" onDragLeave={event => {
       if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDrop(null);
     }}>
-      {activeSessions.slice(0, floating || showAll ? undefined : 3).map(({ session, project }) => {
+      {activeSessions.slice(0, IS_MOBILE_HOST || floating || showAll ? undefined : 3).map(({ session, project }) => {
         const status = happeningStatus(session);
         return <div className={`activity-happening-item${overlaySessionId === session.id ? ' is-selected' : ''}${draggedId === session.id ? ' is-dragging' : ''}${drop?.id === session.id ? drop.after ? ' drop-after' : ' drop-before' : ''}`} key={session.id} draggable
           onPointerDownCapture={() => { suppressClick.current = false; }}
@@ -146,21 +149,23 @@ export function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverl
       })}
       {!activeSessions.length && <p className="activity-happening-empty">No active sessions.</p>}
     </div>
-    {!floating && (showAll || activeSessions.length > 3) && <Button variant="ghost" className="activity-show-more" aria-expanded={showAll} aria-controls={listId} onClick={() => {
+    {!IS_MOBILE_HOST && !floating && (showAll || activeSessions.length > 3) && <Button variant="ghost" className="activity-show-more" aria-expanded={showAll} aria-controls={listId} onClick={() => {
       setShowAll(value => !value);
       list.current?.scrollTo({ top: 0, left: 0 });
     }}>{showAll ? 'Show less' : 'Show more'}<ChevronDown className={showAll ? 'is-expanded' : ''} /></Button>}
   </aside>;
 }
 
-export function ActivityFeed({ projects, sessions, visible, standalone = false, actionsTarget, ...actions }: { projects: Project[]; sessions: Session[]; visible: boolean; standalone?: boolean; actionsTarget?: HTMLElement | null } & SessionActions) {
+export function ActivityFeed({ projects, sessions, visible, standalone = false, actionsTarget, projectRailOpen = false, onToggleProjectRail, ...actions }: { projects: Project[]; sessions: Session[]; visible: boolean; standalone?: boolean; actionsTarget?: HTMLElement | null } & SessionActions & ProjectRailControl) {
   const [filter, setFilter] = useState<FeedFilter>('All');
   const [search, setSearch] = useState('');
   const grid = useRef<HTMLDivElement>(null);
   const timeline = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
   const [settings, setSettings] = useState(false);
   const [bookmarks, setBookmarks] = useState<Set<string>>(() => new Set());
   const feed = useGithubActivityFeed(filter, search, projects, visible, timeline);
+  const pull = useFeedPullToRefresh(scroller, IS_MOBILE_HOST && visible && !standalone && !!feed.catalog && !feed.setupError, feed.busy, feed.refresh);
   const projectsById = new Map(projects.map(project => [project.id, project]));
   const newPostProjects = [...new Set(feed.newPosts.map(post => post.projectId))].flatMap(id => {
     const project = projectsById.get(id);
@@ -197,12 +202,18 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
     try { localStorage.setItem('klm.agent.discovery-swapped.v1', String(swapped)); }
     catch { /* Swapping still works without browser storage. */ }
   }, [swapped]);
-  const feedActions = <><IconButton label="Refresh activity" disabled={feed.busy || !feed.catalog} onClick={feed.refresh}><RefreshCw /></IconButton><IconButton label="Feed settings" disabled={!feed.catalog} onClick={() => setSettings(true)}><Settings2 /></IconButton></>;
+  const settingsButton = <IconButton label="Feed settings" disabled={!feed.catalog} onClick={() => setSettings(true)}><Settings2 /></IconButton>;
+  const searchInput = <><Search aria-hidden="true" /><input aria-label="Search activity" type="search" maxLength={200} placeholder="Search activity" value={search} onChange={event => setSearch(event.target.value)} /></>;
+  const searchControl = IS_MOBILE_HOST ? <div className="activity-search">{onToggleProjectRail && <IconButton label={projectRailOpen ? 'Hide projects' : 'Show projects'} aria-expanded={projectRailOpen} onClick={onToggleProjectRail}><PanelLeft /></IconButton>}{searchInput}{settingsButton}</div> : <label className="activity-search">{searchInput}</label>;
+  const feedActions = <><IconButton label="Refresh activity" disabled={feed.busy || !feed.catalog} onClick={feed.refresh}><RefreshCw /></IconButton>{settingsButton}</>;
   return <section className={`activity-feed${standalone ? ' activity-feed--standalone' : ''}`} aria-label="Project activity">
-    {standalone ? actionsTarget && createPortal(feedActions, actionsTarget) : <header className="activity-feed-heading"><div><h2>Activity</h2><span>Across your projects</span></div><div className="activity-feed-tools"><span className="activity-project-count">{projects.length} {projects.length === 1 ? 'project' : 'projects'}</span>{feedActions}</div></header>}
-    {standalone && <label className="activity-search"><Search aria-hidden="true" /><input aria-label="Search activity" type="search" maxLength={200} placeholder="Search activity" value={search} onChange={event => setSearch(event.target.value)} /></label>}
+    {standalone ? actionsTarget && createPortal(feedActions, actionsTarget) : !IS_MOBILE_HOST && <header className="activity-feed-heading"><div><h2>Activity</h2><span>Across your projects</span></div><div className="activity-feed-tools"><span className="activity-project-count">{projects.length} {projects.length === 1 ? 'project' : 'projects'}</span>{feedActions}</div></header>}
+    {standalone && searchControl}
     {settings && feed.catalog && <ActivityFeedSettings items={feed.catalog.items} overrides={feed.overrides} error={feed.preferenceError} onChange={feed.savePreferences} onClose={() => setSettings(false)} />}
-    <div className="activity-feed-scroll">
+    {IS_MOBILE_HOST && !standalone && <div className="mobile-feed-refresh" data-pulling={pull.distance > 0 || undefined} data-refreshing={pull.refreshing || undefined} style={{ height: pull.refreshing ? 44 : pull.distance }} role="status" aria-live="polite" aria-hidden={!pull.refreshing && pull.distance === 0}>
+      <div><RefreshCw aria-hidden="true" style={pull.refreshing ? undefined : { transform: `rotate(${pull.distance * 3}deg)` }} /><span>{pull.refreshing ? 'Refreshing…' : pull.ready ? 'Release to refresh' : 'Pull to refresh'}</span></div>
+    </div>}
+    <div className="activity-feed-scroll" ref={scroller}>
       <div ref={grid} className={`activity-feed-grid${swapped ? ' is-swapped' : ''}`} style={{ '--activity-sidebar-width': `${width}px` } as CSSProperties}>
         <div className="activity-timeline" ref={timeline} tabIndex={-1}>
           <nav className="activity-filters" aria-label="Filter activity">{filters.map(value => <button type="button" key={value} aria-current={filter === value ? 'page' : undefined} className={filter === value ? 'is-active' : ''} onClick={() => setFilter(value)}>{value}</button>)}</nav>
@@ -228,7 +239,7 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
           value={width} minimum={200} maximum={maximum} valueText={`${Math.round(width)}px sidebar`} dragScale={available > 660 ? (swapped ? 1 : -1) : 0} step={24}
           onChange={setSavedWidth} onReset={() => setSavedWidth(230)} onSwap={() => setSwapped(value => !value)} />
         <div id={discoveryId} className="activity-discovery">
-          <label className="activity-search"><Search aria-hidden="true" /><input aria-label="Search activity" type="search" maxLength={200} placeholder="Search activity" value={search} onChange={event => setSearch(event.target.value)} /></label>
+          {searchControl}
           <HappeningNow projects={projects} sessions={sessions} {...actions} />
         </div></>}
       </div>
@@ -236,8 +247,8 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
   </section>;
 }
 
-export function KlmAgentWorkspace({ enabled, visible = true, projects, sessions, children, onCloseOverlay, onOpenFloatingChat, openingFloatingChat = false, ...actions }: { enabled: boolean; visible?: boolean; projects: Project[]; sessions: Session[]; children: ReactNode; onCloseOverlay: () => void; onOpenFloatingChat?: () => void; openingFloatingChat?: boolean } & SessionActions) {
-  const [mobilePane, setMobilePane] = useState<'chat' | 'activity'>('chat');
+export function KlmAgentWorkspace({ enabled, visible = true, projects, sessions, children, onCloseOverlay, onOpenFloatingChat, openingFloatingChat = false, projectRailOpen, onToggleProjectRail, ...actions }: { enabled: boolean; visible?: boolean; projects: Project[]; sessions: Session[]; children: ReactNode; onCloseOverlay: () => void; onOpenFloatingChat?: () => void; openingFloatingChat?: boolean } & SessionActions & ProjectRailControl) {
+  const [mobilePane, setMobilePane] = useState<'chat' | 'activity'>(() => IS_MOBILE_HOST ? 'activity' : 'chat');
   const columns = useRef<HTMLDivElement>(null);
   const chatId = useId();
   const [available, setAvailable] = useState(0);
@@ -275,13 +286,13 @@ export function KlmAgentWorkspace({ enabled, visible = true, projects, sessions,
   }, [swapped]);
   if (!enabled) return children;
   return <div className="klm-agent-workspace" data-mobile-pane={mobilePane}>
-    <div className="klm-agent-mobile-tabs"><TabNav value={mobilePane} onChange={setMobilePane} items={[{ value: 'chat', label: 'Chat' }, { value: 'activity', label: 'Activity' }]} /></div>
+    <div className="klm-agent-mobile-tabs"><TabNav value={mobilePane} onChange={setMobilePane} items={IS_MOBILE_HOST ? [{ value: 'activity', label: 'Feed' }, { value: 'chat', label: 'KLM Agent' }] : [{ value: 'chat', label: 'Chat' }, { value: 'activity', label: 'Activity' }]} /></div>
     <div ref={columns} className={`klm-agent-columns${swapped ? ' is-swapped' : ''}`} style={{ '--klm-left-width': `${swapped ? 100 - ratio : ratio}%` } as CSSProperties}>
       <section id={chatId} className={`klm-agent-chat${actions.overlaySessionId ? ' has-session-overlay' : ''}`} aria-label="KLM Agent chat"><div className="klm-agent-chat-heading"><MessageSquare aria-hidden="true" /><h2>Chat</h2>{onOpenFloatingChat && <IconButton className="klm-agent-open-floating" label="Open KLM Agent in floating window" disabled={openingFloatingChat} onClick={onOpenFloatingChat}><PanelsTopLeft /></IconButton>}</div>{actions.overlaySessionId && <button type="button" className="klm-overlay-backdrop" aria-label="Dismiss session overlay" onClick={onCloseOverlay} />}{children}</section>
       <WorkspaceDivider label="Resize chat and activity" swapLabel="Swap chat and activity" controls={chatId}
         value={ratio} minimum={minimum} maximum={maximum} valueText={`${Math.round(ratio)}% chat`} dragScale={available > 800 ? 100 / available * (swapped ? -1 : 1) : 0} step={2}
         onChange={setSavedRatio} onReset={() => setSavedRatio(defaultChatRatio)} onSwap={() => setSwapped(value => !value)} />
-      <ActivityFeed projects={projects} sessions={sessions} visible={visible && (available > 800 || mobilePane === 'activity')} {...actions} onOpenOverlay={session => { setMobilePane('chat'); actions.onOpenOverlay(session); }} />
+      <ActivityFeed projects={projects} sessions={sessions} visible={visible && (available > 800 || mobilePane === 'activity')} projectRailOpen={projectRailOpen} onToggleProjectRail={onToggleProjectRail} {...actions} onOpenOverlay={session => { if (!IS_MOBILE_HOST) setMobilePane('chat'); actions.onOpenOverlay(session); }} />
     </div>
   </div>;
 }

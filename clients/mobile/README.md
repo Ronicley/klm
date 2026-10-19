@@ -69,6 +69,47 @@ TLS certificate errors are not bypassed. Android permits cleartext HTTP for loca
 hosts; iOS declares local-network access and an ATS exception for web content.
 Desktop/browser/mobile drafts and web storage are independent.
 
+## Local URL and Wi-Fi routing
+
+The existing Web client URL remains the public/default address. **Add local URL**
+opens a Wi-Fi picker; select one or more SSIDs, confirm, then enter the local URL.
+Editing preserves both addresses and selected networks; **Remove** removes only
+the optional local configuration. Existing saved entries continue to load without
+migration. Both addresses use the existing IP/domain/port normalization unchanged.
+
+Opening an entry reads the currently connected SSID without scanning or asking
+for new permissions. A matching saved SSID selects the local URL; all other or
+unknown networks use the public URL. Initial local main-frame network/HTTP/TLS
+failures and an 8-second initial timeout recreate the WebView with the public URL.
+The public attempt keeps the normal 25-second timeout. If it succeeds, a single
+**Connected using public URL** modal explains the fallback. If both fail, the
+existing recovery screen shows the failed public address and Retry. Later page
+navigation failures do not silently move an already-connected chat to another URL.
+Each attempt has an isolated controller and audio capability scoped to its selected
+origin; late callbacks from a discarded local attempt cannot complete the public one.
+
+Network discovery requests foreground location permission, required by Android to
+read SSIDs/scan Wi-Fi. Android also requires Wi-Fi and location services enabled;
+scan throttling uses the available cached results. iOS exposes only the connected
+network, not a nearby-network scan; the picker supports entering additional SSIDs
+by name. iOS requires precise location permission and the Access Wi-Fi Information
+entitlement in a compatible signing profile. The entitlement is included for all
+Runner configurations; build from the Flutter project directory so the permission
+plugin discovers its Info.plist. Denied/unavailable SSID access selects the public
+URL rather than guessing that a local network matches. Wi-Fi names are case-sensitive.
+
+Manual phone validation:
+
+1. Edit an existing entry, keep its public URL, add local access, select the current
+   Wi-Fi and another network if needed, then save a reachable local URL.
+2. Reopen it on that Wi-Fi and check that local assets/requests load; reopen off
+   the saved Wi-Fis and check the public URL is used.
+3. Keep the selected Wi-Fi but make the local frontend unreachable. Reopen and
+   confirm the public page loads and the fallback modal appears once, after success.
+4. Make both URLs unreachable and confirm recovery shows the public URL. Restore
+   access and Retry. Check native audio and Back to hosts on both successful routes.
+5. Restart the app, edit/remove local settings, and reopen a legacy URL-only entry.
+
 ## Audio recording
 
 The main composer uses Flutter's native microphone recorder in this WebView,
@@ -116,14 +157,14 @@ requires the phone acceptance steps above; iOS was not built on Windows.
 `lib/design_system` recreates the needed web primitives and tokens:
 
 - Inter (bundled under `assets/fonts`, SIL OFL) and Lucide-outline SVG icons.
-- KLM ring mark and Harness badge, page header, 44px touch icon buttons.
+- Transparent KLM sphere and Harness badge, page header, 44px touch icon buttons.
 - Primary button, outlined input fields, neutral list cards and error treatment.
 - Matching light/dark colors, 4/8/12/16/24/32 spacing, 8/12px radii.
 
 Native appearance follows the device theme. Behavior stays in `features/hosts`
 and `features/web`; generic visual components contain no host/network operations.
-Launcher icons are generated from `assets/brand/icon.png` with
-`dart run flutter_launcher_icons`.
+Native screen logos use `assets/brand/logo.png` (transparent). Launcher icons are
+generated from `assets/brand/icon.png` (solid) with `dart run flutter_launcher_icons`.
 
 ## Verification — 2026-09-14
 

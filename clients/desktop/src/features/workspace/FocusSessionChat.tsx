@@ -15,6 +15,7 @@ import { SubagentView } from '../chat/SubagentView';
 import { SessionNavigationProvider } from '../chat/SessionNavigation';
 import { useAuthoringCatalog } from '../graphs/catalog';
 import { graphListEntry } from '../graphs/files';
+import { IS_MOBILE_HOST } from '../../platform';
 
 export function FocusSessionChat({ session, projectName, subagents, draft, pending, disconnected, error, submissions, onRestoreSubmission, onRetrySubmission, onSnapshot, onHistory, onEventChange, onDraftChange, onTranscription, onSend, onStop, onInterrupt, onModel, onGraph, onSelectGraph, selectingGraph, selectedGraphId, onOpenSubagent, activeSubagentId, onBackToSession, onOpenSession, generalControls, harnessUnavailable = false }: {
   session: Session; projectName: string; subagents: Session[]; draft: ComposerDraft; pending: boolean; disconnected: boolean; error?: string;
@@ -43,9 +44,10 @@ export function FocusSessionChat({ session, projectName, subagents, draft, pendi
   }
   const graphRequests = general ? [] : session.graph?.requests ?? [];
   const activeSubagent = subagents.find(child => child.id === activeSubagentId);
+  const graphControl = general ? undefined : <GraphPicker graphs={catalog?.graphs.map(graphListEntry) ?? []} value={selectedGraphId} selectedName={catalog?.graphs.find(graph => graph.id === selectedGraphId)?.definition.name ?? (graphRun?.graphId === selectedGraphId ? graphRun.snapshot.definition.name : undefined)} running={!!graphRun?.active && graphRun.graphId === selectedGraphId} disabled={selectingGraph || !session.graph} loading={loading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reload().catch(() => {})} onChange={onSelectGraph} />;
   return <SessionNavigationProvider onOpenSession={onOpenSession}>
     <div className="focus-session-chat" hidden={!!activeSubagentId}>
-    <ConversationHistory session={session} subagents={subagents} working={running || submissions.some(item => item.status === 'sending')} label={`${title} floating conversation`} onSnapshot={onSnapshot} onHistory={onHistory} onEventChange={onEventChange} onOpenSubagent={onOpenSubagent} empty={<div className="empty-chat"><h2>What would you like to work on?</h2></div>} />
+    <ConversationHistory session={session} subagents={subagents} working={running || submissions.some(item => item.status === 'sending')} label={`${title}${IS_MOBILE_HOST ? '' : ' floating'} conversation`} onSnapshot={onSnapshot} onHistory={onHistory} onEventChange={onEventChange} onOpenSubagent={onOpenSubagent} empty={<div className="empty-chat"><h2>What would you like to work on?</h2></div>} />
     {error && <div className="storage-error" role="alert">{error}</div>}
     <div className="composer-area">
       {(!!session.permissions?.length || !!session.questions?.length || graphRequests.length > 0) && <div className="permission-queue">
@@ -66,8 +68,8 @@ export function FocusSessionChat({ session, projectName, subagents, draft, pendi
       {harnessUnavailable && <p role="status" className="form-error">The selected harness is not installed.</p>}
       <MessageComposer projectId={general ? undefined : session.projectId} placeholder={`Message ${title}`} draft={draft} onDraftChange={onDraftChange} onSend={onSend} onStop={onStop} running={running} disabled={pending || harnessUnavailable}
         onTranscription={onTranscription}
-        graphControl={general ? undefined : <GraphPicker graphs={catalog?.graphs.map(graphListEntry) ?? []} value={selectedGraphId} selectedName={catalog?.graphs.find(graph => graph.id === selectedGraphId)?.definition.name ?? (graphRun?.graphId === selectedGraphId ? graphRun.snapshot.definition.name : undefined)} running={!!graphRun?.active && graphRun.graphId === selectedGraphId} disabled={selectingGraph || !session.graph} loading={loading} error={catalogError || catalog?.errors.join(' ')} onReload={() => void reload().catch(() => {})} onChange={onSelectGraph} />}
-        modelControl={<ModelPicker key={`${session.id}/${session.harness}`} session={session} disabled={pending || running} optionsDisabled={pending || disconnected} onSave={onModel} onSnapshot={onSnapshot} />} />
+        graphControl={IS_MOBILE_HOST ? undefined : graphControl}
+        modelControl={<ModelPicker key={`${session.id}/${session.harness}`} session={session} disabled={pending || running} optionsDisabled={pending || disconnected} onSave={onModel} onSnapshot={onSnapshot} graphControl={IS_MOBILE_HOST ? graphControl : undefined} />} />
       <SessionStatusBar session={session} />
       {catalogError && <div className="form-error" role="alert">{catalogError}<Button size="sm" variant="ghost" onClick={() => void reload().catch(() => {})}>Retry</Button></div>}
     </div>

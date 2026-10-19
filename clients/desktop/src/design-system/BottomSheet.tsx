@@ -17,7 +17,7 @@ export function BottomSheet({ title, children, onClose, className = '' }: {
   }, []);
 
   return createPortal(<dialog ref={dialog} className={`bottom-sheet ${className}`} aria-labelledby={titleId}
-    onCancel={event => { event.preventDefault(); onClose(); }} onClose={onClose}
+    onCancel={event => { event.preventDefault(); event.stopPropagation(); onClose(); }} onClose={event => { event.stopPropagation(); onClose(); }}
     onClick={event => {
       if (event.target !== event.currentTarget) return;
       const bounds = event.currentTarget.getBoundingClientRect();
