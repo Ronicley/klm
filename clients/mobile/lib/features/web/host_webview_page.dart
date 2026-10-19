@@ -5,6 +5,7 @@ import '../../design_system/components.dart';
 import '../../design_system/icons.dart';
 import '../../design_system/theme.dart';
 import '../hosts/host_store.dart';
+import 'host_audio_bridge.dart';
 import 'host_navigation.dart';
 
 class HostWebViewPage extends StatefulWidget {
@@ -15,8 +16,9 @@ class HostWebViewPage extends StatefulWidget {
   State<HostWebViewPage> createState() => _HostWebViewPageState();
 }
 
-class _HostWebViewPageState extends State<HostWebViewPage> {
+class _HostWebViewPageState extends State<HostWebViewPage> with WidgetsBindingObserver {
   late final WebViewController _controller;
+  late final HostAudioBridge _audio;
   Timer? _timeout;
   bool _loading = true;
   bool _leaving = false;
@@ -27,12 +29,18 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
   void initState() {
     super.initState();
     _controller = WebViewController();
+    _audio = HostAudioBridge(_controller, widget.host.url.origin);
+    WidgetsBinding.instance.addObserver(this);
     _configure();
   }
 
   Future<void> _configure() async {
     try {
       await _controller.setJavaScriptMode(JavaScriptMode.unrestricted);
+      await _controller.addJavaScriptChannel(
+        'KlmAudio',
+        onMessageReceived: _audio.receive,
+      );
       await _controller.addJavaScriptChannel(
         'KlmMobile',
         onMessageReceived: (message) async {
@@ -50,6 +58,7 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
                 : NavigationDecision.prevent;
           },
           onPageStarted: (url) {
+            _audio.invalidate();
             if (!mounted) return;
             _pageUrl = url;
             setState(() {
@@ -64,6 +73,7 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
             try {
               if (uri != null && _belongsToHost(uri)) {
                 await _controller.runJavaScript(installHostNavigation);
+                if (uri.origin == widget.host.url.origin) await _audio.install();
               }
             } catch (_) {
               _fail('Could not connect web client navigation. Please retry.');
@@ -124,6 +134,7 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
   }
 
   void _fail(String message) {
+    _audio.invalidate();
     _timeout?.cancel();
     if (mounted) {
       setState(() {
@@ -136,12 +147,24 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
   void _home() {
     if (_leaving || !mounted) return;
     _leaving = true;
+    _audio.invalidate();
     Navigator.of(context).pop();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Permission dialogs can make the app inactive; only cancel on background.
+    if (state == AppLifecycleState.resumed) _audio.setForeground(true);
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+      _audio.setForeground(false);
+    }
   }
 
   @override
   void dispose() {
     _timeout?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _audio.dispose();
     super.dispose();
   }
 

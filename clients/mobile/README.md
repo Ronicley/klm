@@ -69,6 +69,48 @@ TLS certificate errors are not bypassed. Android permits cleartext HTTP for loca
 hosts; iOS declares local-network access and an ATS exception for web content.
 Desktop/browser/mobile drafts and web storage are independent.
 
+## Audio recording
+
+The main composer uses Flutter's native microphone recorder in this WebView,
+including when the saved frontend uses an HTTP LAN address. Android requests
+`RECORD_AUDIO` at runtime; iOS declares microphone usage. Updated Flutter and web
+clients are both required. Install the new APK as an update to keep saved hosts.
+
+Tap **Record audio**, allow microphone access, speak, then **Stop recording**.
+The AAC/M4A recording passes back to the frontend in bounded chunks and uses its
+existing engine transcription upload and global settings. The API key stays on
+the engine. The result appends to the current draft, preserving text and selected
+references, without sending. **Cancel audio** discards capture or cancels an
+in-flight transcription. Permission denial and interruptions show a recoverable
+error. Recordings are limited to ten minutes and the existing 25 MiB upload cap.
+
+`KlmAudio` is separate from the existing `KlmMobile` home channel. Only the exact
+saved frontend origin (scheme, host and port) receives a per-document capability
+inside a main-frame closure; untrusted frames and other origins cannot invoke the
+recorder. No native URL fetching, API keys or arbitrary file access is exposed.
+Navigation, leaving the host, backgrounding and disposal cancel native capture;
+temporary recordings are deleted on stop/cancel/error. Desktop and ordinary
+browsers keep their existing `getUserMedia` / `MediaRecorder` path.
+
+Manual acceptance on a phone:
+
+1. Install `build/app/outputs/flutter-apk/app-debug.apk` and open the dev host
+   `http://192.168.10.250:5173` (dev engine API: 17331).
+2. Configure transcription in the existing Settings if needed. Start with draft
+   text and a file/folder reference, record a short phrase, stop and confirm only
+   the transcript is appended. Nothing should send automatically.
+3. Try **Cancel audio** during capture and transcription; deny microphone access
+   and then allow it through system settings. Check the draft survives each case.
+4. Background the app or leave the chat while recording; confirm the microphone
+   indicator stops. Return and record again. Check **Back to sessions**, the
+   options sheet / YOLO state, empty-draft Send and **Back to hosts** still work.
+
+Implementation checks (2026-10-18): `npx tsc -b --pretty false`;
+`dart analyze lib/features/web/host_audio_bridge.dart lib/features/web/host_webview_page.dart`;
+`flutter build apk --debug --build-number=3 --verbose` succeeded. The APK is
+version 0.5.0, versionCode 3. Native microphone/transcription behavior still
+requires the phone acceptance steps above; iOS was not built on Windows.
+
 ## Design system
 
 `lib/design_system` recreates the needed web primitives and tokens:

@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to your KLM hosts on the local network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Record audio to transcribe into your message draft.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoadsInWebContent</key>

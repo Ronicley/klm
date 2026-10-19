@@ -424,10 +424,17 @@ The API never returns the key, only whether one is configured. Vocabulary notes 
 available as engine-backed context for the interface; this first slice sends only terms
 as transcription prompt context. Audio uploads are limited to 25 MiB.
 
-Recording requires the client environment to support `getUserMedia` and `MediaRecorder`.
+Desktop and ordinary browser recording require `getUserMedia` and `MediaRecorder`.
 Browser security rules may deny microphone capture on insecure remote origins, so remote
-HTTP access is not promised to support recording. This does not change the existing
-personal-use network and authentication contract.
+HTTP browser access is not promised to support recording. The Flutter-hosted mobile
+WebView instead uses native microphone permission and AAC/M4A recording, including on
+HTTP LAN hosts. Its separate audio bridge is restricted to the exact saved frontend
+origin and forwards bounded audio chunks to the existing engine transcription upload.
+Cancel discards audio or aborts transcription; backgrounding, navigation and disposal
+release capture and temporary files. Recordings are limited to ten minutes and 25 MiB.
+Transcripts append to the current draft and preserve references without sending. This
+requires an updated mobile app and frontend and does not change the existing personal-use
+network and authentication contract.
 
 Permission prompts are supported for OpenCode, Pi, and Codex. Cards expose **Allow**,
 **Allow session**, and **Deny**, with a menu for **Allow in this project**, **Deny in
