@@ -127,6 +127,20 @@ func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID strin
 				}
 			}
 		}
+		if agent.Harness == "opencode" {
+			if b, installed := a.binaries[agent.Harness]; installed {
+				if err := validateOpenCodeLibraryBinary(b); err != nil {
+					return err
+				}
+			}
+		}
+		if agent.Harness == "codex" {
+			if b, installed := a.binaries[agent.Harness]; installed {
+				if err := validateCodexLibraryBinary(b); err != nil {
+					return err
+				}
+			}
+		}
 		key := agent.Harness + "\x00" + agent.Model + "\x00" + agent.Effort
 		if validated[key] {
 			return nil
@@ -172,7 +186,7 @@ func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID strin
 			if definition.ID != agent.AgentID {
 				continue
 			}
-			captured, captureErr := a.captureCapabilities(ctx, CapabilitySelection{Skills: definition.Skills, MCPConnections: definition.MCPConnections}, agent.Harness, "graph_node")
+			captured, captureErr := a.captureCapabilities(ctx, CapabilitySelection{Skills: definition.Skills, MCPConnections: definition.MCPConnections}, agent.Harness)
 			if captureErr != nil {
 				return snapshot, nil, fmt.Errorf("Node %s: %w", nodeID, captureErr)
 			}
@@ -274,7 +288,7 @@ func validateGraphSnapshot(snapshot GraphSnapshot) error {
 			if captured == nil {
 				continue
 			}
-			if !managedLibraryHarness(agent.Harness) || captured.Adapter != "pi-library-v1" || captured.Version != 1 {
+			if !managedLibraryHarness(agent.Harness) || captured.Adapter != libraryAdapterID(agent.Harness) || captured.Version != 1 {
 				return errors.New("Invalid captured library adapter.")
 			}
 			clone := *captured

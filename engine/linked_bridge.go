@@ -22,14 +22,16 @@ const (
 // A private Streamable HTTP MCP server. Ordinary conversations retain it with
 // their runtime; graph nodes retain the stricter turn-scoped lifetime.
 type linkedBridge struct {
-	url    string
-	token  string
-	server *http.Server
-	ready  chan struct{}
-	once   sync.Once
-	mu     sync.RWMutex
-	p      *adapter
-	tools  []map[string]any
+	libraryURL   string
+	libraryToken string
+	url          string
+	token        string
+	server       *http.Server
+	ready        chan struct{}
+	once         sync.Once
+	mu           sync.RWMutex
+	p            *adapter
+	tools        []map[string]any
 }
 
 func (b *linkedBridge) adapter() *adapter {
@@ -139,6 +141,8 @@ func newLinkedBridge(p *adapter, ctx context.Context) (*linkedBridge, error) {
 		return nil, errors.New("Could not start the linked-agent bridge.")
 	}
 	b := &linkedBridge{url: "http://" + l.Addr().String() + "/mcp", token: newID() + newID(), ready: make(chan struct{})}
+	b.libraryURL = "http://" + l.Addr().String() + "/library"
+	b.libraryToken = newID() + newID()
 	b.bind(p)
 	b.server = &http.Server{Handler: http.HandlerFunc(b.serve), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 12 * time.Second, IdleTimeout: 30 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	go func() { _ = b.server.Serve(l) }()
@@ -158,7 +162,12 @@ func (b *linkedBridge) waitReady(ctx context.Context) error {
 }
 
 func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/mcp" || !loopbackHost(r.Host) || !loopbackHost(r.RemoteAddr) || r.Header.Get("Origin") != "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+b.token)) != 1 {
+	library := r.URL.Path == "/library"
+	token := b.token
+	if library {
+		token = b.libraryToken
+	}
+	if (r.URL.Path != "/mcp" && !library) || !loopbackHost(r.Host) || !loopbackHost(r.RemoteAddr) || r.Header.Get("Origin") != "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
 		fail(w, 403, "Invalid linked-agent capability.")
 		return
 	}
@@ -185,6 +194,10 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	var result any
 	p := b.adapter()
+	if library && message.Method != "initialize" && message.Method != "ping" && message.Method != "tools/list" && message.Method != "tools/call" {
+		respond(w, 200, map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32601, "message": "Method not available to Library capability."}})
+		return
+	}
 	switch message.Method {
 	case "initialize":
 		var params struct {
@@ -203,7 +216,13 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 		b.mu.RLock()
 		tools := append([]map[string]any{}, b.tools...)
 		b.mu.RUnlock()
-		result = map[string]any{"tools": tools}
+		scoped := []map[string]any{}
+		for _, tool := range tools {
+			if truth(tool, "external") == library {
+				scoped = append(scoped, tool)
+			}
+		}
+		result = map[string]any{"tools": scoped}
 	case "klm/steering/take", "klm/steering/consumed":
 		if p == nil || p.graphNode() || (p.harness != "pi" && p.harness != "opencode") || p.turn.ctx.Err() != nil {
 			fail(w, 409, "Harness turn is not active.")
@@ -248,6 +267,13 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result = map[string]any{"allowed": allowed}
+	case "klm/library/opencode/ready":
+		if p == nil || p.harness != "opencode" || p.capabilities == nil || p.turn.ctx.Err() != nil {
+			fail(w, 409, "Managed OpenCode turn is not active.")
+			return
+		}
+		p.openCodeLibraryReady.Store(true)
+		result = map[string]any{"ready": true}
 	case "tools/call":
 		var params struct {
 			Name      string          `json:"name"`
@@ -258,6 +284,10 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if p != nil && p.externalMCPTool(params.Name) {
+			if !library {
+				fail(w, 403, "External tools require the Library capability.")
+				return
+			}
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5*time.Minute + 10*time.Second))
 			value, err := p.callExternalMCP(r.Context(), params.Name, params.Arguments, string(message.ID))
 			if err != nil {
@@ -266,6 +296,10 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 				result = value
 			}
 			break
+		}
+		if library {
+			fail(w, 403, "Tool is not selected for this Library capability.")
+			return
 		}
 		if params.Name == "session_models_list" || params.Name == "session_settings_update" || params.Name == "session_question_answer" || params.Name == "session_spawn" || params.Name == "session_spawn_options" || params.Name == "session_create" || params.Name == "session_create_options" || params.Name == "session_stop" || params.Name == "session_permission_reply" {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(linkedToolServerTimeout))

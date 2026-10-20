@@ -98,9 +98,13 @@ func normalizeSelection(s *CapabilitySelection) error {
 	return nil
 }
 
-func managedLibraryHarness(harness string) bool { return harness == "pi" }
+func managedLibraryHarness(harness string) bool {
+	return harness == "pi" || harness == "opencode" || harness == "codex"
+}
 
-func (a *app) captureCapabilities(ctx context.Context, selection CapabilitySelection, harness, role string) (*CapabilitySnapshot, error) {
+func libraryAdapterID(harness string) string { return harness + "-library-v1" }
+
+func (a *app) captureCapabilities(ctx context.Context, selection CapabilitySelection, harness string) (*CapabilitySnapshot, error) {
 	selection = copySelection(selection)
 	if err := normalizeSelection(&selection); err != nil {
 		return nil, err
@@ -112,11 +116,27 @@ func (a *app) captureCapabilities(ctx context.Context, selection CapabilitySelec
 		return nil, nil // Explicit legacy execution, never advertised as an empty effective catalog.
 	}
 	if b, installed := a.binaries["pi"]; installed {
-		if err := validatePiLibraryBinary(b); err != nil {
-			return nil, err
+		if harness == "pi" {
+			if err := validatePiLibraryBinary(b); err != nil {
+				return nil, err
+			}
 		}
 	}
-	s := &CapabilitySnapshot{Version: 1, Selection: selection, Adapter: "pi-library-v1", Skills: []SkillSnapshot{}, Connections: []MCPConnectionSnapshot{}, Diagnostics: []string{}}
+	if harness == "opencode" {
+		if b, installed := a.binaries[harness]; installed {
+			if err := validateOpenCodeLibraryBinary(b); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if harness == "codex" {
+		if b, installed := a.binaries[harness]; installed {
+			if err := validateCodexLibraryBinary(b); err != nil {
+				return nil, err
+			}
+		}
+	}
+	s := &CapabilitySnapshot{Version: 1, Selection: selection, Adapter: libraryAdapterID(harness), Skills: []SkillSnapshot{}, Connections: []MCPConnectionSnapshot{}, Diagnostics: []string{}}
 	root, entries, err := scanSkillLibrary()
 	if err != nil {
 		return nil, err
@@ -136,11 +156,6 @@ func (a *app) captureCapabilities(ctx context.Context, selection CapabilitySelec
 		}
 		s.Skills = append(s.Skills, captured)
 	}
-	internal, err := a.captureInternalSkills(role)
-	if err != nil {
-		return nil, err
-	}
-	s.Skills = append(s.Skills, internal...)
 	for _, selected := range selection.MCPConnections {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -200,7 +215,7 @@ func (p *adapter) prepareCapabilities(s Session) error {
 			}
 			rev, desired := current.Capabilities.Revision, copySelection(current.Capabilities.Desired)
 			p.app.mu.Unlock()
-			snapshot, err = p.app.captureCapabilities(p.turn.ctx, desired, s.Harness, s.Role)
+			snapshot, err = p.app.captureCapabilities(p.turn.ctx, desired, s.Harness)
 			if err != nil {
 				return err
 			}
@@ -225,6 +240,18 @@ func (p *adapter) prepareCapabilities(s Session) error {
 				return err
 			}
 		}
+	}
+	p.internalSkills, err = p.app.captureInternalSkills(s.Role)
+	if err != nil {
+		return err
+	}
+	p.internalSkillPrompt, err = p.app.internalSkillGuidance(s.Role, p.internalSkills)
+	if err != nil {
+		return err
+	}
+	if snapshot != nil {
+		snapshot.Skills = append(snapshot.Skills, p.internalSkills...)
+		sealCapabilitySnapshot(snapshot)
 	}
 	p.capabilities = snapshot
 	if snapshot != nil {

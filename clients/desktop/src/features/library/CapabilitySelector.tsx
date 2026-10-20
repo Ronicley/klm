@@ -22,12 +22,12 @@ export function CapabilitySelector({ value, onChange, harness, general = false, 
   const matches = (text: string) => text.toLowerCase().includes(search.trim().toLowerCase());
   return <div className="capability-selector">
     <div className="library-toolbar"><Input aria-label="Search Library" placeholder="Search skills and connections" value={search} onChange={event => setSearch(event.target.value)} /><Button size="sm" onClick={() => { setError(''); setAttempt(n => n + 1); }}>Refresh</Button></div>
-    {unavailable && <p className="form-error" role="status">Managed capabilities are unavailable for this harness. Native inventory is unknown. Saved selections cannot be applied.</p>}
+    {unavailable && <p className="form-error" role="status">External Library selections are unavailable for this harness. Native inventory is unknown.</p>}
     {error && <p className="form-error" role="alert">{error}</p>}
     {!inventory && !error && <p className="muted">Loading Library...</p>}
     {inventory && <>
       <h4>Skills</h4>
-      {general && <p className="library-system-skill">skill-library-manager · System managed{unavailable ? ' · Unavailable' : ''}</p>}
+      {general && <p className="library-system-skill">skill-library-manager · System managed</p>}
       {inventory.skills.filter(skill => matches(`${skill.id} ${skill.description}`)).map(skill => <div className="library-selection-row" key={skill.id}>
         <Toggle label={skill.name || skill.id} checked={selection.skills.includes(skill.id)} disabled={disabled || (!skill.valid && !selection.skills.includes(skill.id))} onCheckedChange={checked => onChange({ ...selection, skills: checked ? [...selection.skills, skill.id] : selection.skills.filter(id => id !== skill.id) })} />
         <p className={skill.valid ? 'muted' : 'form-error'}>{skill.error || skill.description}</p>

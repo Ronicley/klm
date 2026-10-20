@@ -68,7 +68,7 @@ and `Clear-Disk`; it does not claim to recognize every destructive action.
 
 ## Managed Library capabilities
 
-The validated Pi adapter receives only content-addressed selected skills, the
+The managed adapters receive only content-addressed selected Library skills, the
 general-agent-only internal skill when applicable, and the filtered owned gateway
 catalog. Reads of captured skill resources use the ordinary read-scope policy and
 saved denies; they do not approve commands or writes. Identified gateway MCP calls
@@ -90,10 +90,15 @@ workers are drained before graph settlement; a lost response remains uncertain a
 is not automatically repeated. OAuth upstream credentials are user-protected on
 Windows and never enter native harness configuration, authoring or run snapshots.
 
-OpenCode/Codex's legacy MCP behavior remains outside this managed guarantee. Their
-saved nonempty Library selection blocks managed execution rather than applying
-additive native configuration. See the Library progress document for compatibility
-evidence and still-unvalidated runtime cases.
+OpenCode's managed profile retains ordinary native permissions and pattern order;
+selected skills still respect explicit native skill denies outside YOLO. Positive
+skill and role-tool scopes cannot be expanded by YOLO. Its native child agents
+cannot acquire the root's conversation-role tools or internal manager. Codex's
+profile preserves approval/sandbox settings, disables native plugin/app/hook and
+delegation sources, and projects disabled native MCP entries plus the owned role
+and Library gateways per thread. The two gateways have distinct tokens/catalogs;
+external routes cannot enter the privileged role dispatch. See the Library progress
+document for version/configuration limits and still-unvalidated runtime cases.
 
 ## Remembered scope
 

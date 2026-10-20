@@ -37,7 +37,7 @@ var openCodePermissionsPlugin string
 
 func (p *adapter) openCodeGraphConfig() (string, func(), error) {
 	config := map[string]any{}
-	if existing := os.Getenv("OPENCODE_CONFIG_CONTENT"); strings.TrimSpace(existing) != "" {
+	if existing := os.Getenv("OPENCODE_CONFIG_CONTENT"); strings.TrimSpace(existing) != "" && !(p.capabilities != nil && p.harness == "opencode") {
 		if json.Unmarshal([]byte(existing), &config) != nil || config == nil {
 			return "", nil, errors.New("Cannot safely extend OPENCODE_CONFIG_CONTENT for the owned graph plugin.")
 		}
@@ -47,13 +47,20 @@ func (p *adapter) openCodeGraphConfig() (string, func(), error) {
 		return "", nil, errors.New("Cannot create the owned graph plugin directory.")
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
+	if p.capabilities != nil && p.harness == "opencode" {
+		p.openCodeLibraryEnv, err = p.configureOpenCodeLibrary(config, dir)
+		if err != nil {
+			cleanup()
+			return "", nil, err
+		}
+	}
 	pluginPath := filepath.Join(dir, "klm-policy.mjs")
 	data, _ := json.Marshal(map[string]string{"url": p.bridge.url, "token": p.bridge.token})
 	plugin := strings.Replace(openCodeGraphPlugin, "/*KLM_GRAPH_CONFIG*/{}", string(data), 1)
 	if !p.graphNode() {
 		plugin = "export default async function () { return {}; }"
 	}
-	policyData, _ := json.Marshal(map[string]any{"url": p.bridge.url, "token": p.bridge.token, "yolo": p.yolo, "graphNode": p.graphNode()})
+	policyData, _ := json.Marshal(map[string]any{"url": p.bridge.url, "token": p.bridge.token, "yolo": p.yolo, "graphNode": p.graphNode(), "library": p.capabilities != nil && p.harness == "opencode"})
 	plugin = strings.Replace(plugin, "export default async function", "async function graphPlugin", 1) + "\n" +
 		strings.Replace(openCodePermissionsPlugin, "/*KLM_PERMISSION_CONFIG*/{}", string(policyData), 1)
 	if err := os.WriteFile(pluginPath, []byte(plugin), 0600); err != nil {
@@ -416,6 +423,9 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 	cmd.Dir = cwd
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
+		if len(p.openCodeLibraryEnv) > 0 && (strings.HasPrefix(strings.ToUpper(key), "OPENCODE_") || strings.EqualFold(key, "XDG_CONFIG_HOME")) {
+			continue
+		}
 		if strings.EqualFold(key, "OPENCODE_CONFIG_CONTENT") {
 			continue
 		}
@@ -426,6 +436,7 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 	}
 	cmd.Env = append(cmd.Env, "OPENCODE_SERVER_USERNAME=opencode", "OPENCODE_SERVER_PASSWORD="+h.password, "OPENCODE_ENABLE_QUESTION_TOOL=true")
 	cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+graphConfig)
+	cmd.Env = append(cmd.Env, p.openCodeLibraryEnv...)
 	var owner *ownedProcess
 	if p.runtime == nil {
 		owner, err = prepareOwnedProcess(cmd)
@@ -523,11 +534,27 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 		}
 	}
 	var bridgeStatus map[string]any
+	if p.capabilities != nil {
+		if err := p.verifyOpenCodeLibrary(h); err != nil {
+			return failed(err)
+		}
+		if !p.openCodeLibraryReady.Load() {
+			return failed(errors.New("Owned OpenCode Library policy did not complete its handshake."))
+		}
+	}
 	if err := h.json(ctx, http.MethodPost, "/mcp", map[string]any{"name": "klm_linked", "config": map[string]any{"type": "remote", "url": p.bridge.url, "headers": map[string]string{"Authorization": "Bearer " + p.bridge.token}, "oauth": false, "enabled": true, "timeout": linkedToolClientTimeout.Milliseconds()}}, &bridgeStatus); err != nil {
 		return failed(errors.New("Could not configure the OpenCode linked-agent bridge."))
 	}
 	if str(object(bridgeStatus["klm_linked"]), "status") != "connected" {
 		return failed(errors.New("OpenCode did not connect to the linked-agent bridge."))
+	}
+	if p.capabilities != nil {
+		if err := h.json(ctx, http.MethodPost, "/mcp", map[string]any{"name": "klm_library", "config": map[string]any{"type": "remote", "url": p.bridge.libraryURL, "headers": map[string]string{"Authorization": "Bearer " + p.bridge.libraryToken}, "oauth": false, "enabled": true, "timeout": 330000}}, &bridgeStatus); err != nil {
+			return failed(err)
+		}
+		if len(bridgeStatus) != 2 || str(object(bridgeStatus["klm_library"]), "status") != "connected" {
+			return failed(errors.New("OpenCode gateway-only Library connection was not confirmed."))
+		}
 	}
 	server.mcpPrefixes = openCodeMCPToolPrefixes(bridgeStatus)
 	if err := p.bridge.waitReady(ctx); err != nil {
@@ -561,7 +588,7 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 
 	server, reused := (*openCodeServer)(nil), false
 	toolKey := p.runtimeToolKey()
-	if p.runtime != nil {
+	if p.runtime != nil && p.capabilities == nil {
 		server, reused = p.runtime.getOpenCode(toolKey)
 	}
 	if !reused {
@@ -593,7 +620,11 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 			abortSettled = h.json(abortCtx, http.MethodPost, "/session/"+url.PathEscape(sessionID)+"/abort", nil, nil) == nil
 			abortCancel()
 		}
-		if p.runtime == nil {
+		if p.runtime != nil && p.capabilities != nil {
+			shutdownErr := p.runtime.shutdown()
+			p.processesDrained = shutdownErr == nil
+			err = errors.Join(err, shutdownErr)
+		} else if p.runtime == nil {
 			server.Close()
 			p.processesDrained = owner.Drained()
 		} else {
@@ -918,6 +949,12 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 			}
 			// Opaque tool names stay intact; do not guess that every custom tool is MCP.
 			raw["tool"], raw["callID"], raw["state"] = toolName, part["callID"], state
+			if label, metadata, ok := p.libraryToolPresentation(toolName); ok {
+				kind, title = "mcp", label
+				for key, value := range metadata {
+					raw[key] = value
+				}
+			}
 		default:
 			return nil
 		}
@@ -931,6 +968,12 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 	}
 
 	prompt := map[string]any{"parts": payload.openCodeParts()}
+	if p.capabilities != nil {
+		prompt["agent"] = p.openCodeManagedAgent()
+		if err := p.markCapabilitiesApplied(); err != nil {
+			return err
+		}
+	}
 	if p.model != "" {
 		provider, model, ok := strings.Cut(p.model, "/")
 		if !ok || provider == "" || model == "" {

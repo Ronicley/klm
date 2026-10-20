@@ -54,6 +54,29 @@ func (p *adapter) openCodePermissionGate(ctx context.Context, raw json.RawMessag
 	if p.graphSealed() {
 		return false, errors.New("Graph activation is sealed.")
 	}
+	if p.capabilities != nil && strings.HasPrefix(call.Tool, "klm_linked_") {
+		p.app.mu.Lock()
+		root := p.app.state.Native[p.id].ID
+		p.app.mu.Unlock()
+		if call.SessionID != root {
+			return false, errors.New("Conversation-role tools are not delegated to native subagents.")
+		}
+	}
+	if p.capabilities != nil && call.Tool == "skill" {
+		allowed := false
+		p.app.mu.Lock()
+		native := p.app.state.Native[p.id].ID
+		p.app.mu.Unlock()
+		for _, skill := range p.capabilities.Skills {
+			if skill.Name == str(call.Input, "name") && (!skill.Internal || call.SessionID == native) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false, errors.New("Skill is not selected for this conversation role.")
+		}
+	}
 	if p.internalOpenCodeTool(call.Tool) || slices.Contains([]string{"question", "todowrite", "todoread"}, call.Tool) {
 		return true, nil
 	}

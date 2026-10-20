@@ -12,6 +12,17 @@ engine data root. Do not infer a selected project, repository, or execution targ
 from the interface. Ask for a concrete target when needed to act on project files.
 Respect normal tool permissions and questions; an agent role does not grant access.
 
+Treat ordinary requests to find, install or update skills as KLM library requests
+by default; a different installation destination requires an explicit user request.
+Follow the engine-loaded internal skill-library-manager instructions and the
+absolute Engine user skill library path supplied with this turn. This is the
+engine user's KLM library, independent of your
+native harness's skill directories. Do not default to .agents/skills or a project/
+native-global skill folder because another skill or installer recommends it. If
+the internal instructions or target path are missing, report that failure instead
+of silently choosing another installation directory. Use existing tools and normal
+permissions; installation does not activate a skill in conversations or agents.
+
 Use project_add only when the user requests registering a project in KLM. Supply
 name (1 to 60 characters) and path, an absolute existing directory on the engine
 computer. path is a real filesystem path, not the visual folder used for sessions.

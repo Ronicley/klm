@@ -1089,6 +1089,14 @@ select them per conversation or agent. Installation does not activate a skill.
 - Internal root: `KLM_SKILLS_DIR` (authoritative), installed sibling `skills/`, then
   the development `engine/skills`. Only `skill-library-manager` is explicitly
   distributed to `general_agent`. An invalid override fails instead of falling back.
+- The general agent receives the captured manager SKILL.md and installation-format
+  content, plus the absolute user-library path, through its normal turn context on
+  Pi/OpenCode/Codex. This is independent of external selection compatibility; it
+  neither imports native skill directories nor adds installation tools. Pi also
+  exposes the same captured package through its explicit native skill path. Edits
+  update the next complete turn and participate in retained-runtime identity.
+  Installation guidance is limited to 64 KiB; invalid/missing internal files stop
+  preparation rather than silently falling back to `.agents/skills`.
 - Bundled internal files are editable and shipped recursively with the engine.
   Upgrades can replace bundled edits; use an external override for durable edits.
   Uninstall never removes the user library or an override outside the installation.
@@ -1101,13 +1109,54 @@ select them per conversation or agent. Installation does not activate a skill.
   directory pruning in this delivery. Confirmed skill removals move the source to
   `<library-parent>/skill-library-trash/<operation-id>` after reference validation.
 
-Only the Pi **0.85.1 npm CLI on Windows** has the managed exclusivity gate. Other Pi
-installations fail that gate. OpenCode is unvalidated and Codex managed selection
-unsupported. Empty-selection OpenCode/Codex legacy runs keep their native behavior
-and unknown native inventory. Nonempty selections remain saved but block execution
-and graph preflight. There is no CODEX_HOME-based isolation claim or automatic import
-of native global settings. Pi model discovery uses the same disabled resource and
-startup-package-discovery flags, while retaining native provider/auth files.
+Validated startup/catalog profiles on Windows target **Pi 0.85.1**, **OpenCode
+1.18.35** and **Codex 0.153.4**. Other versions fail the managed preflight rather
+than assuming compatibility. This is protocol/fixture validation, not end-to-end
+model/human acceptance. Pi discovery retains its explicit selected snapshot paths.
+
+OpenCode projects native provider/model/default effort, instruction paths and
+ordinary native permissions into a private configuration root. Permission pattern
+order is preserved. Repository instructions and configured relative globs are resolved
+from the original execution directory/worktree; environment path substitutions
+are retained. File-substituted instruction paths fail explicitly. Native build/plan
+root agents retain their baseline policies, including question access and plan edit
+restrictions, plus authored rules and `OPENCODE_PERMISSION` overrides. Custom,
+hidden, disabled or subagent-only root agents fail preparation explicitly. Only
+captured skill paths and the owned policy plugin enter
+that profile; native project configs/plugins and home `.opencode` discovery cannot
+add capabilities. Real HOME, auth and native history data remain in place (the
+framework's discovery-home override affects discovery only). Native root/child
+skill rules and role-tool restrictions are checked through the actual server APIs,
+including YOLO. Well-known remote-config auth, active organization config and
+administrator-managed configuration are rejected; Node 22+ `node:sqlite` is needed
+for read-only organization metadata inspection when a native database exists.
+Custom native plugin/agent definitions are not imported. Built-in provider auth
+plugins remain available. Existing cached provider SDK behavior remains native.
+
+Codex uses its original home/auth/history and unchanged engine-selected sandbox /
+approval policy. Managed flags suppress automatic model-side host/bundled skill
+instructions, native skill search, plugins/apps/hooks and native delegation. The
+engine supplies selected snapshot metadata for lazy SKILL.md reads. The raw
+app-server `skills/list` endpoint still inventories disk skills and must not be
+mistaken for the active model catalog. The runtime reads native MCP definitions,
+projects valid disabled transport entries plus the owned gateways into thread
+start/resume configuration, and checks every registry page before a model turn.
+Native subagent tools are disabled in this Codex profile until capability-safe
+native inheritance is validated; engine sessions/graph nodes remain independent.
+
+OpenCode/Codex rebuild their managed process at complete engine-turn boundaries,
+resuming the same native ID and directory. Codex requests EOF and waits for native
+shutdown before retiring a successful turn, preserving transcript flush. Steering
+never refreshes the profile. No global settings or CODEX_HOME are rewritten and no
+additive path/CODEX_HOME-only isolation claim is made. Model catalog discovery uses
+the controlled OpenCode projection and the corresponding Codex discovery flags.
+
+There are two private gateway capabilities on the same authenticated loopback
+listener: `/mcp` (`klm_linked`) contains role tools; `/library` (`klm_library`) contains
+only selected external routes. Tokens and catalogs are different. Library tokens
+cannot call role tools, graph gates or control methods. External calls always pass
+normal engine policy and allowlist validation, including in YOLO. OpenCode native
+children cannot receive/dispatch root conversation-role tools or the internal skill.
 
 ### MCP connections and OAuth
 

@@ -445,6 +445,6 @@ func (p *adapter) markRuntimeInfrastructure() {
 }
 
 func (p *adapter) runtimeToolKey() string {
-	encoded, _ := json.Marshal(map[string]any{"tools": p.bridgeTools(), "yolo": p.yolo, "capabilities": p.capabilities})
+	encoded, _ := json.Marshal(map[string]any{"tools": p.bridgeTools(), "yolo": p.yolo, "capabilities": p.capabilities, "internalSkills": p.internalSkills})
 	return string(encoded)
 }

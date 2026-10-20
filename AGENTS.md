@@ -77,9 +77,17 @@ the user requests a redesign.
   `KLM_USER_SKILLS_DIR` for probes; dev/release otherwise share the approved root.
 - Internal sources are editable under `engine/skills`, with authoritative
   `KLM_SKILLS_DIR` overrides. Only general-agent receives skill-library-manager.
-- Managed execution is initially gated to the validated Pi 0.85.1 npm CLI path.
-  OpenCode is unvalidated; Codex is unsupported for exclusive Library selection.
-  Never present additive configuration or CODEX_HOME as exclusive isolation.
+  Its captured installation instructions and engine-resolved destination are
+  delivered on Pi, OpenCode and Codex independently of external Library gates.
+- Managed Windows profiles are gated to Pi 0.85.1, OpenCode 1.18.35 and Codex
+  0.153.4. OpenCode projects provider/model/instruction/permission configuration
+  into a controlled discovery profile; remote-config auth/org/admin variants fail
+  explicitly. Codex suppresses native model-side skills/plugins/apps/hooks and
+  native delegation, projects MCPs per thread and supplies selected skill metadata.
+  Never present additive configuration or CODEX_HOME alone as exclusive isolation.
+- Internal role tools and external Library tools use separate authenticated
+  loopback capabilities (`klm_linked` / `klm_library`), even under YOLO. Native
+  OpenCode children cannot inherit root conversation-role tools or internal skills.
 - Keep selection/snapshots at complete engine-turn/run boundaries. Steering does
   not refresh capabilities. MCP allowlists and graph seals apply even under YOLO;
   elicitation always needs an explicit human response. Protect upstream secrets

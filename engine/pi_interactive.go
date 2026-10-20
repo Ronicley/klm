@@ -114,7 +114,7 @@ func (p *adapter) runPi(b binary, cwd, text string) (err error) {
 		}
 		cleanup := func() { _ = os.RemoveAll(extensionDir) }
 		extensionPath := filepath.Join(extensionDir, "pi-permissions.ts")
-		bridgeConfig, _ := json.Marshal(map[string]any{"url": p.bridge.url, "token": p.bridge.token, "graphNode": p.graphNode(), "tools": p.bridgeTools(), "toolTimeoutMs": linkedToolClientTimeout.Milliseconds()})
+		bridgeConfig, _ := json.Marshal(map[string]any{"url": p.bridge.url, "token": p.bridge.token, "libraryUrl": p.bridge.libraryURL, "libraryToken": p.bridge.libraryToken, "graphNode": p.graphNode(), "tools": p.bridgeTools(), "toolTimeoutMs": linkedToolClientTimeout.Milliseconds()})
 		configPath := filepath.Join(extensionDir, "catalog.json")
 		if writeErr := os.WriteFile(configPath, bridgeConfig, 0600); writeErr != nil {
 			cleanup()

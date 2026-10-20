@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -653,6 +654,18 @@ func (p *adapter) callExternalMCP(ctx context.Context, name string, raw json.Raw
 		result.Content = append(result.Content, &mcp.TextContent{Text: "The server catalog changed during this call. The returned response is preserved; the call was not repeated. Refresh capabilities on the next turn."})
 	}
 	return translateMCPResult(result)
+}
+
+func (p *adapter) libraryToolPresentation(name string) (string, map[string]any, bool) {
+	if p.mcp == nil {
+		return "", nil, false
+	}
+	name = strings.TrimPrefix(name, "klm_library_")
+	route, ok := p.mcp.routes[name]
+	if !ok {
+		return "", nil, false
+	}
+	return route.connection.Name + " / " + route.original, map[string]any{"connectionId": route.connection.ID, "connectionRevision": route.connection.Revision, "originalTool": route.original}, true
 }
 
 func (p *adapter) authorizeExternalMCP(ctx context.Context, route mcpRoute, name, callID string, arguments map[string]any) error {

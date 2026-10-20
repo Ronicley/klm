@@ -4,18 +4,23 @@ import { readFileSync } from "node:fs";
 
 const linkedConfig = /*KLM_LINKED_CONFIG*/{} as {
   url: string; token: string; graphNode?: boolean; toolTimeoutMs: number;
+  libraryUrl?: string; libraryToken?: string;
   tools?: { name: string; description: string; inputSchema: TSchema; external?: boolean }[];
 };
 
 // This gates agent-dispatched tools, not OS access or arbitrary extension code.
 export default function (pi: ExtensionAPI) {
   let sealed = false;
-  async function linkedRPC(method: string, params: unknown, signal?: AbortSignal, callId: string = crypto.randomUUID()) {
+  async function linkedRPC(method: string, params: unknown, signal?: AbortSignal, callId: string = crypto.randomUUID(), library = false) {
     // Readiness and graph gates retain their short timeout; tool calls can wait for a catalog.
     const external = method === "tools/call" && (linkedConfig.tools ?? []).some(tool => tool.external && tool.name === (params as { name?: string }).name);
+    library ||= external;
     const timeout = AbortSignal.timeout(external ? 330000 : method === "tools/call" ? linkedConfig.toolTimeoutMs : 10000);
-    const response = await fetch(linkedConfig.url, {
-      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + linkedConfig.token },
+    const url = library ? linkedConfig.libraryUrl : linkedConfig.url;
+    const token = library ? linkedConfig.libraryToken : linkedConfig.token;
+    if (!url || !token) throw new Error("Library capability is unavailable.");
+    const response = await fetch(url, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
       body: JSON.stringify({ jsonrpc: "2.0", id: callId, method, params }),
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
@@ -149,7 +154,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_, ctx) => {
     if (ctx.mode === "rpc" && ctx.hasUI) {
       const inventory = await linkedRPC("tools/list", {});
-      if (!tools.every(tool => inventory.tools?.some(item => item.name === tool.name))) {
+      const libraryInventory = tools.some(tool => tool.external) ? await linkedRPC("tools/list", {}, undefined, crypto.randomUUID(), true) : { tools: [] };
+      if (!tools.every(tool => (tool.external ? libraryInventory : inventory).tools?.some(item => item.name === tool.name))) {
         throw new Error("Linked-agent tools are not ready.");
       }
       const allowed = new Set(["read", "write", "edit", "bash", "powershell", "grep", "find", "ls", "ask_user", ...tools.map(tool => tool.name)]);

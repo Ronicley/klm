@@ -44,10 +44,14 @@ func (a *app) getLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 	pending := len(a.state.LibraryDeletions) > 0
 	piBinary, piInstalled := a.binaries["pi"]
+	ocBinary, ocInstalled := a.binaries["opencode"]
+	codexBinary, codexInstalled := a.binaries["codex"]
 	a.mu.Unlock()
 	sort.Slice(connections, func(i, j int) bool { return str(connections[i], "name") < str(connections[j], "name") })
 	piSupported := piInstalled && validatePiLibraryBinary(piBinary) == nil
-	respond(w, 200, map[string]any{"skillsRoot": root, "skills": skills, "connections": connections, "recoveryPending": pending, "harnesses": map[string]any{"pi": map[string]any{"managed": piSupported, "status": map[bool]string{true: "supported", false: "not_validated"}[piSupported], "evidence": "Pi 0.85.1 resource-loader/RPC fixture probes and per-start effective catalog handshake"}, "opencode": map[string]any{"managed": false, "status": "not_validated"}, "codex": map[string]any{"managed": false, "status": "unsupported"}}})
+	ocSupported := ocInstalled && validateOpenCodeLibraryBinary(ocBinary) == nil
+	codexSupported := codexInstalled && validateCodexLibraryBinary(codexBinary) == nil
+	respond(w, 200, map[string]any{"skillsRoot": root, "skills": skills, "connections": connections, "recoveryPending": pending, "harnesses": map[string]any{"pi": map[string]any{"managed": piSupported, "status": map[bool]string{true: "supported", false: "not_validated"}[piSupported], "evidence": "Pi 0.85.1 resource-loader/RPC fixture probes and per-start effective catalog handshake"}, "opencode": map[string]any{"managed": ocSupported, "status": map[bool]string{true: "supported", false: "not_validated"}[ocSupported], "evidence": "OpenCode 1.18.35 controlled discovery profile and empty/selected/YOLO native catalog probes"}, "codex": map[string]any{"managed": codexSupported, "status": map[bool]string{true: "supported", false: "not_validated"}[codexSupported], "evidence": "Codex 0.153.4 thread projection, gateway-only registry and local model-surface fixture; native plugin/app/hook/delegation sources disabled"}}})
 }
 
 type LibraryReference struct {

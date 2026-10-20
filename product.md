@@ -420,7 +420,10 @@ the filesystem remains their source of truth. Invalid entries display diagnostic
 Installation is requested through KLM Agent using existing tools and its private,
 editable `engine/skills/skill-library-manager` skill. Installing does not select a
 skill. That internal skill is distributed only to the general-agent role, never
-through external selection or inheritance.
+through external selection or inheritance. The engine loads its captured SKILL.md
+and installation-format instructions into each KLM Agent turn on Pi, OpenCode and
+Codex, together with the absolute engine-user library path. Native installers' or
+discovery skills' `.agents/skills` defaults do not choose the KLM destination.
 
 The status-row Library button replaces the reference skill/MCP counts and opens
 the selection for its actual composer conversation, including overlays and Focus.
@@ -440,20 +443,42 @@ directory; a changed/missing remote contract is diagnosed rather than injected.
 Captured selections are available read-only in node activity. Legacy runs remain
 readable without being relabeled as exclusively managed.
 
-The initial managed adapter is the validated **Pi 0.85.1 npm CLI** on Windows,
-using explicit snapshot paths, disabled native resource discovery, the owned
-extension and an effective tool/skill handshake before prompting. Native provider
-configuration/authentication remains available. The built-in `llama` provider
-command is explicitly retained; startup package installation/updates are disabled.
-Other Pi installations are gated. OpenCode exclusivity remains unvalidated and
-Codex managed exclusivity unsupported. Their empty-selection legacy execution
-remains available with native inventory labeled unknown; a nonempty managed
-selection is saved but blocks execution/preflight instead of being partially applied.
-The internal skill is unavailable in these legacy general-agent runtimes.
+Managed Windows profiles target **Pi 0.85.1**, **OpenCode 1.18.35** and
+**Codex 0.153.4**, with version/preparation gates and effective catalog checks before
+prompting. Pi uses explicit snapshot paths and its owned extension. OpenCode uses
+a private discovery/config root, projects provider/model/instruction/native
+permission settings, disables unrelated project/external skill discovery, and
+applies positive native skill permissions including under YOLO. Repository
+instructions remain available. Native build/plan root policies and
+`OPENCODE_PERMISSION` overrides are preserved; unsupported custom roots or
+file-substituted instruction paths fail explicitly. Native auth/history
+data and the real execution directory remain in place. Organization, well-known
+remote-config authentication and administrator-managed OpenCode config require a
+separate compatible path and are explicitly refused rather than silently imported.
+
+Codex keeps its native home/auth/history and approval/sandbox flow, disables native
+model-side skill discovery plus plugin/app/hook/delegation sources, and supplies
+only selected captured skill metadata for on-demand file loading. Its app-server
+disk inventory can still list host skills; that inventory is not used as the model
+catalog. Before thread start/resume, known native MCP configurations are projected
+to disabled entries alongside the two owned gateways, then the entire thread
+registry is checked. Native subagent tools are unavailable in this managed Codex
+profile; independent KLM sessions and graph agents retain their normal behavior.
+
+OpenCode/Codex use a fresh managed process per complete engine turn and resume the
+same native history; Codex waits for EOF shutdown before retiring it so the native
+transcript can flush. Changing selection during execution still waits for the next
+complete turn. Other versions/configuration variants fail preparation explicitly.
+The mandatory general-agent installation guidance remains independent of external
+selection and is delivered as engine-owned role context on all three harnesses.
 
 The engine is the MCP client for stdio and Streamable HTTP. Harnesses receive only
-the authenticated loopback gateway and the turn's allowed catalog, never upstream
-credentials. Tools, resources and form/HTTPS-URL elicitation are implemented;
+authenticated loopback gateways and the turn's allowed catalogs, never upstream
+credentials. Conversation-role tools (`klm_linked`) and external Library tools
+(`klm_library`) have different tokens/catalogs/dispatch scopes; the Library token
+cannot call privileged role/control methods. OpenCode native children receive only
+the external selection, not root conversation-role tools or the internal manager.
+Tools, resources and form/HTTPS-URL elicitation are implemented;
 Prompts, Sampling, legacy HTTP+SSE and resource subscriptions are not enabled.
 Elicitation uses correlated pending questions with Accept/Decline/Cancel and is
 never answered by YOLO or general-agent question tools. Local MCP processes have

@@ -17,7 +17,7 @@ export function SessionStatusBar({ session, side = false }: { session: Session; 
   const [libraryOpen, setLibraryOpen] = useState(false);
   const selection = selectionOf(session.capabilities?.desired);
   const pending = !session.capabilities?.applied || selectionKey(selection) !== selectionKey(session.capabilities.applied.selection);
-  const managed = session.harness === 'pi';
+  const managed = session.harness === 'pi' || session.harness === 'opencode' || session.harness === 'codex';
   const unavailable = !!session.capabilities?.applied?.diagnostics?.length;
   const usage = session.usage;
   const inputTokens = usage?.inputTokens;

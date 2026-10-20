@@ -1,6 +1,7 @@
 # Skills/MCP library — implementation progress
 
-Source implementation is delivered for the initial managed Pi path. This document
+Source implementation now includes version-gated Windows Pi/OpenCode/Codex profiles.
+This document
 records evidence, not acceptance. OAuth and Elicitation are included implementation,
 not optional backlog. End-to-end engine/model/provider/mobile acceptance is pending.
 
@@ -39,8 +40,8 @@ not optional backlog. End-to-end engine/model/provider/mobile acceptance is pend
 | --- | --- | --- |
 | Windows, Pi 0.85.1 `dist/cli.js` through Node | Supported initial gate | Installed-source inspection; resource-loader and real RPC fixtures passed; exact effective tool and skill-path handshakes before prompt. Actual model task/resume/Stop not exercised. |
 | Other Pi version/entry/platform | Not validated; gated | Version/installation/platform gate refuses managed startup. No automatic update. |
-| OpenCode 1.18.35 | Not validated | No exclusivity inferred from additive paths/config directories. Legacy empty-selection use remains explicit; nonempty selection blocks execution/preflight. |
-| Codex 0.153.4 | Unsupported for managed selection | No CODEX_HOME/deny-current-paths exclusivity claim. Legacy empty-selection use remains explicit; nonempty selection blocks execution/preflight. |
+| OpenCode 1.18.35 | Controlled Windows profile | Native empty/selected/YOLO catalog probes; projected provider/auth/history/instruction/permission behavior. Remote-config/org/admin variants fail explicitly. See adapter follow-up below; real model/task acceptance pending. |
+| Codex 0.153.4 | Controlled Windows profile | Compound native discovery flags, per-thread MCP projection and local inference-protocol fixture. Native plugin/app/hook/delegation sources disabled; native subagent support is not claimed. Raw disk skill inventory is not the model catalog. |
 
 The first real Pi RPC probe exposed a built-in `llama` provider command, which the
 resource-loader-only probe did not contain. The implementation explicitly retains
@@ -107,9 +108,10 @@ installation, real skill-library write or running-engine restart was performed.
    redirect must reach the engine API and be accepted by that provider. The fixture
    does not establish a real provider's DCR support, client requirements, TLS ingress,
    embedded-WebView policy, remote login, token revocation or refresh behavior.
-3. **Only the initial Pi gate is delivered as managed.** Other harnesses stay
-   explicit legacy/unknown or reject nonempty managed selection. This includes the
-   general agent's mandatory internal skill being unavailable on legacy runtimes.
+3. **Managed support is profile/version-specific.** Windows Pi 0.85.1, OpenCode
+   1.18.35 and Codex 0.153.4 have the controlled profiles described below. Other
+   versions and unsupported config-bearing variants fail explicitly. Codex native
+   subagent tools are disabled; no capability-safe native delegation claim is made.
 4. **Known graph catalog boundary:** a run captures the locally known catalog.
    Execution-directory-relative stdio is not started in a guessed directory just
    to discover a catalog before its workspace exists. An activation reconnects in
@@ -178,6 +180,168 @@ source was moved out of the repository to
 reproduction. No full suite, model/provider call, harness/engine/graph execution,
 real credential/library operation, new reviewer/session, commit or push occurred.
 Frontend code was unchanged in this correction round, so its checks were not rerun.
+
+## Follow-up: KLM Agent skill installation destination
+
+The user reported that a requested skill was installed under `.agents/skills`.
+The initial implementation captured the mandatory manager only through Pi's managed
+external-selection path; legacy OpenCode/Codex received neither the manager nor the
+resolved destination. This was a delivery bug, not a requirement for new tools.
+
+The internal package is now captured by role independently of external Library
+compatibility. Its complete SKILL.md and installation-format reference, with the
+absolute engine-user library root, enter every KLM Agent turn on Pi/OpenCode/Codex.
+Pi retains its explicit native manager snapshot path. Internal revisions affect
+runtime reuse, remain fixed during steering, and are not inherited by other roles.
+The manager/general prompt explicitly rejects native `.agents/skills` installer
+defaults for KLM installs. The Library selector identifies it as system-managed
+even when external selections are unsupported. Existing installation tools and
+ordinary permissions continue to be used.
+
+This follow-up is separate from the earlier R1–R3 review approval. Focused checks
+passed: `go test -tags dev -run '^TestInternalSkillInstallation' -count=1 -timeout
+30s -v .` (2.857s) verified the captured manager body/reference and resolved root
+through preparation on all three harnesses, Pi's native snapshot, legacy external
+snapshot remaining nil, external-only inheritance, immutable current instructions,
+next-turn revision/runtime-key changes, non-general role exclusion and authoritative
+override failure. `npx tsc -b --pretty false` also passed. Tests used temporary
+source/library/data roots, without launching models, harnesses, engines or graphs.
+
+Ordinary skill-installation requests now explicitly default to the KLM user library,
+even without the word "KLM" in the user's request. Real model obedience, installation
+and the currently running binary still require human validation with the updated
+engine. No real skill installation is moved or repeated by this code change.
+
+## OpenCode/Codex adapter completion — implementation and focused evidence
+
+User authorization: proceed with the adapter implementation. No additional
+sessions/subagents, graph execution, harness upgrade or global configuration edit
+was requested or performed. Earlier R1–R3 review approval does not cover these new
+adapter changes. The stale development KLM project registration remains a separate
+data issue; this change does not relocate projects or alter native histories.
+
+### Implemented
+
+- `engine/opencode_library.go`: version-gated Windows 1.18.35 profile, controlled
+  config/discovery roots, positive native skill rules (including the embedded
+  customize-opencode skill being denied when unselected), explicit root/child
+  role scopes, original auth/database/cwd preserved. Provider/model/default variant,
+  instruction paths and native permissions/tools are projected from JSONC; native
+  permission pattern order is preserved rather than reordered through Go maps.
+  Native skill denies outside YOLO fail selected-skill preparation explicitly.
+- Unselected project/global plugin/MCP/skill sources do not enter that OpenCode
+  profile. The owned `.mjs` policy plugin imports no npm SDK; the private profile
+  predeclares dependency metadata to prevent the native startup reify path from
+  installing packages. Built-in authentication plugins remain native. Config-bearing
+  well-known auth, active organization config and system-managed config are refused
+  instead of silently stripping their policy. Node 22+ SQLite is used read-only
+  when checking organization metadata in an existing native database.
+- OpenCode startup verifies real skill locations, every native agent's skill and
+  role-tool permissions, the policy handshake, and the gateway-only MCP registry.
+  YOLO does not widen the positive skill/role scopes. Native children cannot call
+  root conversation-role tools or the internal manager by guessing names.
+- `engine/codex_library.go`: Windows 0.153.4 gates, native model-side skill catalog
+  suppression, selected captured skill metadata for lazy file loading, explicit
+  disabling of plugin/app/hook/delegation sources, native MCP configuration read and
+  per-thread start/resume projection to disabled original entries plus owned
+  gateways, and complete registry validation. Original CODEX_HOME/auth/history,
+  actual cwd, user-reviewed approval and native sandbox flow are retained.
+- Codex native subagent tools are deliberately disabled in this managed profile;
+  capability-safe native role inheritance is not claimed. Engine-owned sessions,
+  side chats and graph agents keep their existing selection inheritance rules.
+- `/mcp` and `/library` now have different tokens and catalogs. `klm_linked` is
+  role/control-only; `klm_library` is external-selection-only. Both inventory and
+  dispatch reject cross-scope names/tokens/operations. Pi's extension was updated
+  to route external calls through the Library capability too. External native
+  events retain logical connection/tool/revision labels without another tool event.
+- OpenCode/Codex use a fresh managed process per full engine execution, retaining
+  the same native ID/cwd. Codex waits for successful native EOF shutdown/flush
+  before retiring it. Steering retains the original snapshot. Preflight, captured
+  adapter identity validation, Library compatibility API and chat counts recognize
+  all three version-gated profiles. Native model metadata discovery uses the same
+  controlled profile/discovery restrictions.
+
+### Actual focused checks
+
+- Final command from `engine`:
+  `$env:KLM_RUN_LIBRARY_NATIVE_PROBES='1'; go test -tags dev -run
+  '^(TestOpenCodeLibraryProbe|TestCodexLibraryProbe|TestLibraryGatewayRoleSeparation|TestInternalSkillInstallation.*)$'
+  -count=1 -timeout 120s -v .` — **PASS, 25.055s**. These native probes are opt-in;
+  ordinary test runs skip them. Backend compilation is included in this command.
+- OpenCode: actual installed native server, empty/selected skills × normal/YOLO,
+  a selected external gateway-tool fixture, unselected global/project skills,
+  an unselected throwing plugin and unusable MCP command, real native permissions
+  and gateway status inspection. All four combinations passed. A native `bash`
+  deny remained present outside YOLO. No model request was made.
+- Codex: actual installed app-server, normal/YOLO sandbox settings, a selected
+  external gateway-tool fixture, per-thread projection of an original native MCP
+  command that would create a marker if started. Only the owned catalogs exposed
+  tools and no unselected process marker was created. No model request was made by
+  the Go metadata probe.
+- `engine/probes/codex-library.mjs` established the limits of candidate controls:
+  a bare mcp_servers table was additive; disabled entries require valid transport
+  configuration. The script's corrected `--thread-projection --model-surface`
+  path passed against an **owned localhost inference-protocol fixture**, not a real
+  model/provider. The captured model surface kept PROJECT_INSTRUCTION_SENTINEL,
+  contained no fixture/unselected host-skill markers and no skill/delegation tool
+  namespace, and did not start the unselected MCP command. The separate native
+  skills/list endpoint still showed disk metadata (including Windows user-home
+  metadata despite the fixture HOME), confirming it is not the model catalog.
+  No real skill, credential or global config was modified.
+- Private gateway unit probe: role and Library catalogs separated; wrong-token,
+  cross-scope tool calls and privileged Library transport calls rejected.
+- General-agent unit probes: mandatory manager instructions/root and snapshots
+  remain correctly scoped and delivered on all harnesses after adapter changes.
+- `npx tsc -b --pretty false` — passed for the shared frontend.
+- Targeted strict no-emit TypeScript check of `engine/pi-permissions.ts` against
+  installed Pi/TypeBox declarations — passed. Native policy plugin syntax and
+  execution were checked by Node syntax check and the OpenCode YOLO probes.
+- Pi RPC fixture initially hit two bounded startup deadlines without stderr; an
+  invocation with startup-frame diagnostics then passed exact empty/selected
+  catalogs and owned extension readiness. No production restart or blind claim of
+  fully validated Pi startup stability is made from that final pass.
+
+### Human acceptance still pending
+
+Real tasks, native history continuation after process replacement, Stop/Send now,
+actual external tool/resource results, OAuth/Elicitation across these adapters,
+graph Choice/finality and real provider configurations remain deliberate human
+validation. The initial adapter follow-up did not include a review agent or
+publication; the requested review/correction follow-up is recorded below.
+Source metadata/config probes are not end-to-end acceptance.
+
+### Requested native subagent review and corrections
+
+- A read-only native subagent reviewed the uncommitted Library/manager/adapters
+  against `945eee5`, excluding concurrent Activity/grouping and diagnostics work.
+  It found three OpenCode policy regressions, confirmed against 1.18.35 sources.
+- Repository instruction files now retain native global/project precedence.
+  Configured relative paths and recursive globs resolve from the original cwd up
+  to the worktree, not from the declaring config file. Environment substitutions
+  resolve before globbing; unsupported file-substituted instruction paths fail
+  explicitly instead of silently disappearing. `doublestar` handles recursive
+  filesystem globs without importing native capability sources.
+- Managed execution retains the selected native build/plan agent instead of
+  replacing its baseline with a custom agent. This preserves question access and
+  plan edit denial outside YOLO. Unsupported custom/hidden/disabled/subagent roots
+  fail preparation explicitly.
+- Ordered `OPENCODE_PERMISSION` overrides now merge at native precedence before
+  mandatory skill/role restrictions; invalid overrides fail explicitly. The raw
+  environment override is not forwarded to bypass owned scopes.
+- The same reviewer rechecked the corrections and confirmed all reported findings
+  addressed, including environment substitution and explicit file-template rejection.
+- Focused projection regression coverage checks instruction precedence, ancestor
+  resolution, recursive globs, environment paths, override precedence and rejected
+  unsupported configurations. The native OpenCode probe checks build/plan baseline
+  policies and the environment override in normal/YOLO profiles.
+- Final focused Go verification passed in **13.787s** against the exact selectively
+  staged source exported with `git checkout-index` to an isolated temporary folder,
+  excluding concurrent Activity/grouping and diagnostics changes. The command was
+  `$env:KLM_RUN_LIBRARY_NATIVE_PROBES='1'; go test -tags dev -run
+  '^(TestOpenCodeLibraryProjectionPreservesNativePolicy|TestOpenCodeLibraryProbe|TestCodexLibraryProbe|TestLibraryGatewayRoleSeparation|TestInternalSkillInstallation.*)$'
+  -count=1 -timeout 120s -v .` Compilation, projection regression, normal/YOLO native
+  metadata probes, gateway separation and manager coverage passed. No full suite
+  or real provider request was performed.
 
 ## Suggested manual acceptance route
 

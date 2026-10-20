@@ -40,11 +40,11 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 
 	process, reused := (*interactiveProcess)(nil), false
 	toolKey := p.runtimeToolKey()
-	if p.runtime != nil {
+	if p.runtime != nil && p.capabilities == nil {
 		process, reused = p.runtime.getInteractive("codex", "", "", toolKey)
 	}
 	if !reused {
-		process, err = startInteractive(p.turn, b, []string{
+		args := []string{
 			"-c", "features.default_mode_request_user_input=true",
 			"-c", "tools.experimental_request_user_input.enabled=true",
 			"-c", "mcp_servers.klm_linked.url=" + strconv.Quote(p.bridge.url),
@@ -52,8 +52,16 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			"-c", "mcp_servers.klm_linked.enabled=true",
 			"-c", "mcp_servers.klm_linked.startup_timeout_sec=15",
 			"-c", "mcp_servers.klm_linked.tool_timeout_sec=" + strconv.FormatInt(int64(linkedToolClientTimeout/time.Second), 10),
-			"app-server", "--listen", "stdio://",
-		}, cwd, p.runtime)
+		}
+		if p.capabilities != nil {
+			if err := validateCodexLibraryBinary(b); err != nil {
+				return err
+			}
+			args = append(args, codexLibraryFlags()...)
+			payload.Text = p.codexSelectedSkillContext() + "\n\n" + payload.Text
+		}
+		args = append(args, "app-server", "--listen", "stdio://")
+		process, err = startInteractive(p.turn, b, args, cwd, p.runtime)
 		if err != nil {
 			return err
 		}
@@ -67,7 +75,11 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 	p.processesDrained = false
 	cancelSettled := false
 	defer func() {
-		if p.runtime == nil {
+		if p.runtime != nil && p.capabilities != nil {
+			shutdownErr := p.runtime.shutdown()
+			p.processesDrained = shutdownErr == nil && !p.processDrainFailed
+			err = errors.Join(err, shutdownErr)
+		} else if p.runtime == nil {
 			_ = process.Close()
 			for frame := range process.Frames {
 				p.observeCodexMCP(str(frame, "method"), object(frame["params"]))
@@ -154,6 +166,7 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 		phase = "klm-thread"
 	}
 	mcpBridgeFound := false
+	libraryBridgeFound := false
 	startup := time.NewTimer(30 * time.Second)
 	defer startup.Stop()
 	deadline := startup.C
@@ -181,11 +194,15 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 		return nil
 	}
 	approvalPolicy, sandbox, sandboxType := "on-request", "read-only", "readOnly"
+	var libraryConfig map[string]any
 	if p.captureNativeYOLO() {
 		approvalPolicy, sandbox, sandboxType = "never", "danger-full-access", "dangerFullAccess"
 	}
 	sendThread := func() error {
 		params := map[string]any{"cwd": cwd, "approvalPolicy": approvalPolicy, "approvalsReviewer": "user", "sandbox": sandbox}
+		if p.capabilities != nil {
+			params["config"] = libraryConfig
+		}
 		method := "thread/start"
 		if native.ID != "" {
 			method, params["threadId"] = "thread/resume", native.ID
@@ -351,6 +368,22 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			if err := c.send(map[string]any{"method": "initialized"}); err != nil {
 				return err
 			}
+			if p.capabilities != nil {
+				phase = "klm-library-config"
+				if err := c.send(map[string]any{"id": phase, "method": "config/read", "params": map[string]any{"cwd": cwd, "includeLayers": false}}); err != nil {
+					return err
+				}
+				continue
+			}
+			phase = "klm-thread"
+			if err := sendThread(); err != nil {
+				return err
+			}
+		case "klm-library-config":
+			libraryConfig, err = p.codexLibraryConfig(object(result["config"]))
+			if err != nil {
+				return err
+			}
 			phase = "klm-thread"
 			if err := sendThread(); err != nil {
 				return err
@@ -392,23 +425,34 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			servers, _ := result["data"].([]any)
 			for _, value := range servers {
 				server := object(value)
-				if str(server, "name") != "klm_linked" {
+				if p.capabilities != nil {
+					if err := p.verifyCodexLibraryServer(server); err != nil {
+						return err
+					}
+				}
+				library := str(server, "name") == "klm_library"
+				if str(server, "name") != "klm_linked" && !library {
 					continue
 				}
 				tools := object(server["tools"])
-				found = true
-				for _, tool := range p.bridgeTools() {
+				serverFound := true
+				for _, tool := range p.scopedBridgeTools(library) {
 					exists := false
 					for key, value := range tools {
 						if key == str(tool, "name") || str(object(value), "name") == str(tool, "name") {
 							exists = true
 						}
 					}
-					found = found && exists
+					serverFound = serverFound && exists
+				}
+				if library {
+					libraryBridgeFound = libraryBridgeFound || serverFound
+				} else {
+					found = found || serverFound
 				}
 			}
 			mcpBridgeFound = mcpBridgeFound || found
-			if (p.graphNode() || !mcpBridgeFound) && str(result, "nextCursor") != "" {
+			if (p.graphNode() || p.capabilities != nil || !mcpBridgeFound) && str(result, "nextCursor") != "" {
 				if err := c.send(map[string]any{"id": phase, "method": "mcpServerStatus/list", "params": map[string]any{"threadId": c.threadID, "limit": 100, "cursor": result["nextCursor"]}}); err != nil {
 					return err
 				}
@@ -417,10 +461,16 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			if !mcpBridgeFound {
 				return errors.New("Codex did not expose the linked-agent tools.")
 			}
+			if p.capabilities != nil && !libraryBridgeFound {
+				return errors.New("Codex did not expose the selected Library gateway.")
+			}
 			if err := p.bridge.waitReady(p.turn.ctx); err != nil {
 				return err
 			}
 			p.markRuntimeInfrastructure()
+			if err := p.markCapabilitiesApplied(); err != nil {
+				return err
+			}
 			phase = "klm-turn"
 			turnParams := map[string]any{
 				"threadId": c.threadID, "input": payload.codexInput(),
@@ -457,6 +507,9 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 // This checks the actual stored tool-result pair before claiming continuability.
 func (p *adapter) finishCodexNative(process *interactiveProcess, b binary, cwd, threadID, turnID string) error {
 	if !p.graphNode() {
+		if p.capabilities != nil {
+			return finishCodexProcess(process, p.turn.ctx, nil)
+		}
 		return nil
 	}
 	if err := finishCodexProcess(process, p.turn.ctx, func(frame map[string]any) { p.observeCodexMCP(str(frame, "method"), object(frame["params"])) }); err != nil {
@@ -465,7 +518,11 @@ func (p *adapter) finishCodexNative(process *interactiveProcess, b binary, cwd, 
 	if !process.Drained() {
 		return errors.New("Codex owned processes did not drain after native shutdown.")
 	}
-	probe, err := startInteractive(p.turn, b, []string{"app-server", "--listen", "stdio://"}, cwd, nil)
+	probeArgs := []string{"app-server", "--listen", "stdio://"}
+	if p.capabilities != nil {
+		probeArgs = append(codexLibraryFlags(), probeArgs...)
+	}
+	probe, err := startInteractive(p.turn, b, probeArgs, cwd, nil)
 	if err != nil {
 		return err
 	}
@@ -826,6 +883,14 @@ func putCodexItem(p *adapter, trackedParts map[string]map[string]bool, item map[
 		title, text = "File changes", codexJSON(item["changes"])
 	case "mcpToolCall":
 		kind, title = "mcp", str(item, "server")+" / "+str(item, "tool")
+		if str(item, "server") == "klm_library" {
+			if label, metadata, ok := p.libraryToolPresentation(str(item, "tool")); ok {
+				title = label
+				for key, value := range metadata {
+					item[key] = value
+				}
+			}
+		}
 		text = contentText(item["result"])
 		if text == "" && item["result"] != nil {
 			text = codexJSON(item["result"])

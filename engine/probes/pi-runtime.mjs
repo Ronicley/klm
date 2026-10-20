@@ -48,13 +48,15 @@ try {
     try {
       await new Promise((resolve, reject) => {
         let ready = false, inventory = false;
-        const timer = setTimeout(() => reject(new Error(`Pi startup deadline: ${stderr.slice(0, 1000)}`)), 20000);
+        const observed = [];
+        const timer = setTimeout(() => reject(new Error(`Pi startup deadline: ${stderr.slice(0, 1000)} ${JSON.stringify(observed)}`)), 20000);
         const finish = () => { if (ready && inventory) { clearTimeout(timer); resolve(); } };
         child.on('error', reject);
         child.on('exit', code => { if (!ready || !inventory) { clearTimeout(timer); reject(new Error(`Pi exited (${code}): ${stderr.slice(0, 1000)}`)); } });
         lines.on('line', line => {
           try {
             const frame = JSON.parse(line);
+            observed.push({ type: frame.type, id: frame.id, method: frame.method, message: frame.message });
             if (frame.type === 'extension_ui_request' && frame.message === 'klm.permissions.ready.v1') { ready = true; finish(); }
             if (frame.type === 'response' && frame.id === 'inventory') {
               assert.equal(frame.success, true);

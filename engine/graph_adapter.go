@@ -190,6 +190,16 @@ func (p *adapter) bridgeTools() []map[string]any {
 	return tools
 }
 
+func (p *adapter) scopedBridgeTools(library bool) []map[string]any {
+	tools := []map[string]any{}
+	for _, tool := range p.bridgeTools() {
+		if truth(tool, "external") == library {
+			tools = append(tools, tool)
+		}
+	}
+	return tools
+}
+
 func (p *adapter) callGraphTool(ctx context.Context, name, callID string, raw json.RawMessage) (any, error) {
 	b := p.graph
 	if b == nil {
@@ -336,7 +346,9 @@ func (p *adapter) setOpenCodeGraphTools(ids []string, servers map[string]any) {
 		p.graph.openCodeTools[id] = true
 	}
 	for _, tool := range p.bridgeTools() {
-		p.graph.openCodeTools["klm_linked_"+str(tool, "name")] = true
+		if !truth(tool, "external") {
+			p.graph.openCodeTools["klm_linked_"+str(tool, "name")] = true
+		}
 	}
 	// McpCatalog.toolName in 1.18.30 uses sanitized server + '_' + tool.
 	// This is classification of actually discovered servers, not an allowlist.

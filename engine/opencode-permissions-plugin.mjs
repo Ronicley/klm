@@ -58,16 +58,21 @@ export default async function (context) {
       await hooks["tool.execute.before"]?.(input, output);
     },
     config: async (config) => {
-      if (!permissionConfig.yolo) return;
-      config.permission = { "*": "allow" };
-      for (const agent of Object.values(config.agent ?? {})) {
-        agent.permission = { "*": "allow" };
-        if (agent.tools) {
-          for (const tool of Object.keys(agent.tools)) agent.tools[tool] = true;
+      if (permissionConfig.yolo) {
+        const skill = config.permission?.skill;
+        config.permission = { "*": "allow", ...(permissionConfig.library ? { skill, "klm_linked_*": "deny" } : {}) };
+        for (const agent of Object.values(config.agent ?? {})) {
+          const skill = agent.permission?.skill;
+          const linked = agent.permission?.["klm_linked_*"];
+          agent.permission = { "*": "allow", ...(permissionConfig.library && skill ? { skill } : {}), ...(permissionConfig.library && linked ? { "klm_linked_*": linked } : {}) };
+          if (agent.tools) {
+            for (const tool of Object.keys(agent.tools)) agent.tools[tool] = true;
+          }
         }
+        if (config.tools) for (const tool of Object.keys(config.tools)) config.tools[tool] = true;
       }
-      if (config.tools) {
-        for (const tool of Object.keys(config.tools)) config.tools[tool] = true;
+      if (permissionConfig.library) {
+        await steeringRPC("klm/library/opencode/ready", {});
       }
     },
   };

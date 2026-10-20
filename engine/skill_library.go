@@ -283,22 +283,27 @@ func (a *app) skillSnapshotPath(s SkillSnapshot) string {
 }
 
 func (a *app) validateSkillSnapshot(s SkillSnapshot) error {
+	_, err := a.readSkillSnapshot(s)
+	return err
+}
+
+func (a *app) readSkillSnapshot(s SkillSnapshot) (skillPackage, error) {
 	if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(s.Revision) {
-		return errors.New("Invalid skill snapshot revision.")
+		return skillPackage{}, errors.New("Invalid skill snapshot revision.")
 	}
 	if !validSkillID(s.ID) && !(s.Internal && s.ID == "skill-library-manager") {
-		return errors.New("Invalid skill snapshot identity.")
+		return skillPackage{}, errors.New("Invalid skill snapshot identity.")
 	}
 	p, err := readSkillPackage(filepath.Join(a.dir, "capabilities", "skills", s.Revision), s.ID, s.Internal)
 	if err != nil {
-		return err
+		return skillPackage{}, err
 	}
 	encoded, _ := json.Marshal(p.Files)
 	if revision(encoded) != s.Revision {
-		return fmt.Errorf("Skill snapshot %s is corrupted.", s.ID)
+		return skillPackage{}, fmt.Errorf("Skill snapshot %s is corrupted.", s.ID)
 	}
 	if p.Entry.Name != s.Name || p.Entry.Description != s.Description {
-		return errors.New("Skill snapshot metadata mismatch.")
+		return skillPackage{}, errors.New("Skill snapshot metadata mismatch.")
 	}
-	return nil
+	return p, nil
 }

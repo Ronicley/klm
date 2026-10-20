@@ -213,6 +213,9 @@ type catalogRPC struct {
 
 func newCatalogRPC(ctx context.Context, b binary, cwd string, pi bool) (*catalogRPC, error) {
 	args := []string{"app-server", "--listen", "stdio://"}
+	if !pi {
+		args = append(codexLibraryFlags(), args...)
+	}
 	if pi {
 		args = []string{"--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"}
 	}
@@ -431,6 +434,24 @@ func (b *limitedOutput) Write(p []byte) (int, error) {
 
 // Short-lived authenticated loopback server used only for catalog/config reads.
 func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, error) {
+	if err := validateOpenCodeLibraryBinary(b); err != nil {
+		return nil, err
+	}
+	dir, err := os.MkdirTemp("", "klm-opencode-catalog-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	profile := &adapter{app: &app{dir: dir}, turn: &turn{ctx: ctx}, cwd: cwd, harness: "opencode", capabilities: &CapabilitySnapshot{Skills: []SkillSnapshot{}}}
+	config := map[string]any{}
+	env, err := profile.configureOpenCodeLibrary(config, dir)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
 	h := &openCodeHTTP{directory: cwd, password: newID()}
 	transport := &http.Transport{ResponseHeaderTimeout: 15 * time.Second}
 	defer transport.CloseIdleConnections()
@@ -439,11 +460,16 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 	cmd.Dir = cwd
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(strings.ToUpper(key), "OPENCODE_") || strings.EqualFold(key, "XDG_CONFIG_HOME") {
+			continue
+		}
 		if !strings.EqualFold(key, "OPENCODE_SERVER_PASSWORD") && !strings.EqualFold(key, "OPENCODE_SERVER_USERNAME") {
 			cmd.Env = append(cmd.Env, entry)
 		}
 	}
 	cmd.Env = append(cmd.Env, "OPENCODE_SERVER_USERNAME=opencode", "OPENCODE_SERVER_PASSWORD="+h.password)
+	cmd.Env = append(cmd.Env, env...)
+	cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+string(encoded))
 	configureProcess(cmd)
 	cmd.Cancel = func() error { return killTree(cmd.Process) }
 	cmd.WaitDelay = 3 * time.Second
@@ -506,7 +532,6 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 	if err = h.json(ctx, http.MethodGet, "/provider", nil, &providers); err != nil {
 		return nil, err
 	}
-	var config map[string]any
 	if err = h.json(ctx, http.MethodGet, "/config", nil, &config); err != nil {
 		return nil, err
 	}
