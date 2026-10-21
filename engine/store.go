@@ -90,7 +90,15 @@ type TranscriptionSettings struct {
 }
 
 type diskState struct {
-	tx               *stateTransaction
+	tx *stateTransaction
+
+	ActivityBoardConfig      activityBoardConfig                `json:"activityBoardConfig,omitempty"`
+	ActivityBoardConnections map[string]activityBoardConnection `json:"activityBoardConnections,omitempty"`
+	ActivityBoardCredentials map[string][]byte                  `json:"activityBoardCredentials,omitempty"`
+	ActivityBoardItems       map[string]activityBoardItem       `json:"activityBoardItems,omitempty"`
+	ActivityBoardSync        map[string]activityBoardSync       `json:"activityBoardSync,omitempty"`
+	ActivityBoardMoves       map[string]activityBoardMove       `json:"activityBoardMoves,omitempty"`
+
 	MCPConnections   map[string]MCPConnection `json:"mcpConnections,omitempty"`
 	MCPCredentials   map[string][]byte        `json:"mcpCredentials,omitempty"`
 	LibraryDeletions []LibraryDeletion        `json:"libraryDeletions,omitempty"`
@@ -174,6 +182,7 @@ func loadState(dir string) (diskState, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "state.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		initializeWebhookRecords(&d)
+		initializeActivityBoardRecords(&d)
 		return d, nil
 	}
 	if err != nil {
@@ -302,6 +311,10 @@ func loadState(dir string) (diskState, error) {
 		return d, err
 	}
 	initializeWebhookRecords(&d)
+	initializeActivityBoardRecords(&d)
+	if err := validateActivityBoardRecords(&d); err != nil {
+		return d, err
+	}
 	normalizeGraphWorkspaceRecords(&d)
 	if err := validateGraphRecords(&d); err != nil {
 		return d, err
@@ -316,6 +329,9 @@ func loadState(dir string) (diskState, error) {
 }
 
 func saveState(dir string, d *diskState) error {
+	if err := validateActivityBoardRecords(d); err != nil {
+		return err
+	}
 	if d.Version != 2 {
 		return errors.New("refusing to write unsupported state version")
 	}

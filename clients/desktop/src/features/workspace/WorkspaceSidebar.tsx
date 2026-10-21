@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, Bot, Folder, FolderPlus, MoreHorizontal, PanelLeftClose, Pencil, Plus, Search, Settings, SquarePen, Workflow, X } from 'lucide-react';
+import { Archive, ArchiveRestore, Bot, ListTodo, Folder, FolderPlus, MoreHorizontal, PanelLeftClose, Pencil, Plus, Search, Settings, SquarePen, Workflow, X } from 'lucide-react';
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Menu, MenuItem } from '../../design-system/Menu';
@@ -40,13 +40,15 @@ function sessionBeforeAt(container: HTMLElement, draggingId: string, clientY: nu
   return '';
 }
 
-export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onCreateFolder, onRename, onPosition, onReorderFolder, onArchiveSession, onArchiveFolder, onClose, onAgents, onGraphs, onProjectSettings }: {
+export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onCreateFolder, onRename, onPosition, onReorderFolder, onArchiveSession, onArchiveFolder, onClose, onAgents, onGraphs, onProjectSettings, onActivityBoard, hasTaskProvider }: {
   project: Project; sessions: Session[]; activeId: string; collapsed: string[]; archivedCollapsed: boolean; onCollapsedChange: (folders: string[]) => void; onArchivedCollapsedChange: (collapsed: boolean) => void;
   onSelect: (id: string) => void; onNew: (folder?: string) => void; onCreateFolder: (name: string) => Promise<string | null>;
   onRename: (session: Session) => void; onPosition: (session: Session, folder: string, beforeId: string) => Promise<boolean>;
   onReorderFolder: (folder: string, before: string) => Promise<boolean>;
   onArchiveSession: (session: Session, archived: boolean) => Promise<boolean>; onArchiveFolder: (folder: string, archived: boolean) => Promise<boolean>;
-  onClose: () => void; activeSection: 'chat' | 'design' | 'agents' | 'graphs'; onAgents: () => void; onGraphs: () => void;
+  onClose: () => void; activeSection: 'chat' | 'design' | 'agents' | 'graphs' | 'activity-board'; onAgents: () => void; onGraphs: () => void;
+  onActivityBoard: () => void;
+  hasTaskProvider: boolean;
   onProjectSettings: (project: Project) => void;
 }) {
   const [sessionMenu, setSessionMenu] = useState('');
@@ -141,6 +143,7 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
     <p className="project-folder-label" title={project.folder}><bdi dir="ltr">{project.folder}</bdi></p>
     <nav className="sidebar-navigation" aria-label="Project navigation">
       <Button variant="ghost" size="sm" onClick={() => onNew()}><SquarePen />New session</Button>
+      {hasTaskProvider && <Button variant="ghost" size="sm" aria-current={activeSection === 'activity-board' ? 'page' : undefined} onClick={onActivityBoard}><ListTodo />Tasks</Button>}
       <Button variant="ghost" size="sm" aria-current={activeSection === 'agents' ? 'page' : undefined} onClick={onAgents}><Bot />Agents</Button>
       <Button variant="ghost" size="sm" aria-current={activeSection === 'graphs' ? 'page' : undefined} onClick={onGraphs}><Workflow />Graphs</Button>
     </nav>

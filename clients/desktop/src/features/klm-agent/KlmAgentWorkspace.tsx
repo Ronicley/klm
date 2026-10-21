@@ -8,6 +8,7 @@ import type { Project, Session } from '../../engine';
 import type { ActivityCategory } from './githubActivityApi';
 import { GithubActivityCard } from './GithubActivityCard';
 import { ActivityFeedSettings } from './ActivityFeedSettings';
+import { ActivityBoardEntry } from '../activity-board/ActivityBoardEntry';
 import { useGithubActivityFeed } from './useGithubActivityFeed';
 import { useFeedPullToRefresh } from './useFeedPullToRefresh';
 import { saveHappeningOrder, useHappeningOrder } from './happeningOrder';
@@ -16,7 +17,7 @@ import './klm-agent.css';
 type FeedProject = Pick<Project, 'name' | 'icon'>;
 type FeedFilter = 'All' | ActivityCategory;
 type SessionActions = { overlaySessionId?: string; onOpenOverlay: (session: Session) => void; onOpenProject: (session: Session) => void };
-type ProjectRailControl = { projectRailOpen?: boolean; onToggleProjectRail?: () => void };
+type ProjectRailControl = { projectRailOpen?: boolean; onToggleProjectRail?: () => void; onOpenBoard?: () => void };
 const filters: FeedFilter[] = ['All', 'PRs', 'Pipelines', 'Issues', 'Security', 'Repository', 'Other'];
 const defaultChatRatio = 100 / 3;
 
@@ -156,7 +157,7 @@ export function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverl
   </aside>;
 }
 
-export function ActivityFeed({ projects, sessions, visible, standalone = false, actionsTarget, projectRailOpen = false, onToggleProjectRail, ...actions }: { projects: Project[]; sessions: Session[]; visible: boolean; standalone?: boolean; actionsTarget?: HTMLElement | null } & SessionActions & ProjectRailControl) {
+export function ActivityFeed({ projects, sessions, visible, standalone = false, actionsTarget, projectRailOpen = false, onToggleProjectRail, onOpenBoard, ...actions }: { projects: Project[]; sessions: Session[]; visible: boolean; standalone?: boolean; actionsTarget?: HTMLElement | null } & SessionActions & ProjectRailControl) {
   const [filter, setFilter] = useState<FeedFilter>('All');
   const [search, setSearch] = useState('');
   const grid = useRef<HTMLDivElement>(null);
@@ -241,6 +242,7 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
         <div id={discoveryId} className="activity-discovery">
           {searchControl}
           <HappeningNow projects={projects} sessions={sessions} {...actions} />
+          {onOpenBoard && <ActivityBoardEntry onOpen={onOpenBoard} />}
         </div></>}
       </div>
     </div>

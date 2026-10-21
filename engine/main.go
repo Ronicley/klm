@@ -35,6 +35,9 @@ type turn struct {
 }
 
 type app struct {
+	activityBoardBusy  map[string]bool // One scan or move per connection; guarded by mu.
+	activityBoardSlots chan struct{}
+
 	libraryMu         sync.Mutex
 	oauthMu           sync.Mutex
 	credentialMu      sync.Mutex
@@ -208,6 +211,9 @@ func runEngine(dir string) error {
 		return err
 	}
 	defer control.Close()
+	if err := a.startActivityBoard(); err != nil {
+		return err
+	}
 	a.wg.Add(1)
 	go func() { defer a.wg.Done(); a.webhookWorker() }()
 	a.wg.Add(1)

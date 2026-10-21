@@ -54,7 +54,7 @@ as favorites.
 ### Project Settings and GitHub Webhooks
 
 The **Project settings** button in the sessions sidebar opens a modal with
-**General** and **Webhooks** sections. General edits the project's name and icon,
+**General**, **Webhooks** and **Tasks** sections. General edits the project's name and icon,
 shows its fixed directory and provides confirmed project removal. Project creation
 and the rail's Edit/Remove menu retain their existing entry points. Webhooks belong
 to this project modal, not global Settings.
@@ -674,6 +674,70 @@ Opening another session or subagent pushes a new sheet onto a mobile stack inste
 of replacing the previous one. Covered sheets stay mounted and subscribed, retaining
 their scroll positions and composer state. Close, backdrop tap, Escape or the
 subagent's Back action dismisses only the top sheet and reveals the previous one.
+
+## Tasks
+
+One engine-global **Tasks** board projects tasks from GitHub.com and Azure DevOps
+Services. Its global user-created phases must be mapped in every board connection;
+connections explicitly bind one GitHub repository or one Azure project/work-item
+type to a local project. The same board opens below Happening now on the KLM Agent
+page, using a checklist icon. A **Tasks** button below New session appears only when
+the project has at least one configured task provider, opening the same board with
+that project's filter. The **Phases** action manages global phases. Provider setup,
+editing, mappings, outbound priority and disconnect live in **Project settings →
+Tasks**, directly below Webhooks. This section lists only the current project's
+connections and fixes new connections to that project. Saving/disconnecting updates
+the navigation immediately; drafts and failed saves do not expose the Tasks button.
+Azure setup accepts organization and PAT, then lists accessible projects and the
+selected project's work item types in searchable pickers. Choosing a type loads
+its states. Project discovery requires Project and Team read access in addition
+to the Work Items access used by the board; no incomplete connection is saved.
+Azure inventory always uses `[System.AssignedTo] = @Me`, where `@Me` is the user
+authenticated by that connection's PAT. There is no assignment toggle or option to
+list other users' tasks. Existing connections adopt this rule automatically at
+engine startup, withholding older unfiltered snapshots until a full filtered scan
+succeeds. Replacing an Azure token likewise withholds the previous owner's snapshot
+until refresh succeeds. This does not change assignees or remote tasks.
+The Tasks toolbar has a searchable **Sprint** dropdown for Azure, with **All sprints**
+to clear the filter. Choices combine deduplicated iteration paths in the confirmed
+assigned-task snapshot with the provider-reported current sprint of each Azure
+project's **default team**, as explicitly selected by the user. Current sprints
+show **Current**, sort first and remain available even without assigned tasks.
+Exactly one confirmed current sprint is preselected on each project visit; no
+current sprint or multiple current sprints retains All sprints with a status note.
+Metadata failures show Retry and require an explicit selection instead of silently
+defaulting to All. Refresh never overrides a manual sprint/All sprints choice.
+Choices are qualified by Azure organization/project. **No sprint** represents the
+project root iteration. A specific choice filters exact paths and shows matching
+Azure tasks only; All sprints retains the normal mixed-provider view. This is a
+temporary view filter, not a connection setting or a remote sprint change. Other
+empty iterations and non-default teams are not enumerated.
+Task configuration drafts preserve their edit-start revision and require explicit
+reload after conflicts or uncertain saves. Global phase mapping discovery can read
+retained removed-project connections without permitting inventory/moves or label
+creation for those projects. Missing move receipts have explicit cancellation of
+the unaccepted operation ID; accepted provider work is returned as its existing
+receipt, never undone or replayed. Refresh keeps its in-transit request through
+Focus hide/restore and discards earlier GETs. Two requested static review/correction
+rounds are recorded in `ACTIVITY_BOARD_REVIEW.md`; human runtime acceptance remains
+pending.
+
+GitHub uses labels on open and closed issues, excluding PRs; unmapped issues are
+hidden and cross-phase label conflicts remain visible. Move to preserves unrelated
+labels and open/closed. Explicit label creation is available during setup. Azure
+uses real states for the selected work-item type and revision-guarded state updates,
+without bypassing transition rules. Phase count has no product cap, but complete
+coverage still requires enough distinct Azure states. Providers remain the source
+of truth; local persistence is configuration, compact cache and update receipts.
+
+PATs are write-only and Windows-user protected at rest. Inventory refreshes on
+startup, connection save and explicit Refresh. Partial scans retain stale snapshots;
+uncertain updates require read reconciliation and are never automatically replayed.
+The existing personal-use public API network contract remains unchanged. No hook
+consumer, Azure receiver or automatic agent/graph execution is included. Go dev and
+TypeScript compilation succeeded; provider runtime and desktop/Focus/mobile behavior
+still need human validation. Actual APIs, recovery limits and acceptance steps are
+recorded in `ACTIVITY_BOARD_IMPLEMENTATION_PROGRESS.md`.
 
 ## Brand assets
 

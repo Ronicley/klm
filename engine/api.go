@@ -66,6 +66,7 @@ func loopbackHost(hostport string) bool {
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
 	a.libraryRoutes(mux)
+	a.activityBoardRoutes(mux)
 	mux.HandleFunc("GET /api/health", a.health)
 	mux.HandleFunc("GET /api/state", a.getState)
 	mux.HandleFunc("GET /api/transcription/settings", a.getTranscriptionSettings)
@@ -454,7 +455,17 @@ func (a *app) removeProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !p.Removed {
-		if err := a.commitLocked(func(d *diskState) { d.project(id).Removed = true }); err != nil {
+		if err := a.commitLocked(func(d *diskState) {
+			d.project(id).Removed = true
+			for connectionID, c := range d.ActivityBoardConnections {
+				if c.ProjectID == id {
+					s := d.ActivityBoardSync[connectionID]
+					s.Stale = true
+					d.ActivityBoardSync[connectionID] = s
+				}
+			}
+			d.ActivityBoardConfig.Projection++
+		}); err != nil {
 			a.mu.Unlock()
 			fail(w, 503, err.Error())
 			return

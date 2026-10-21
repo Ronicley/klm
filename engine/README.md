@@ -1,5 +1,69 @@
 # KLM Engine
 
+## Tasks
+
+The global board uses `/api/activity-board/*`, independent of webhook ingress and
+the GitHub activity feed. **Project settings → Tasks** (below Webhooks) connects one GitHub.com repository or one
+Azure DevOps Services organization/project/work-item type to an explicit local
+project, fixed to the project whose settings are open. This is also where connection
+editing, mappings and disconnect are managed. **Tasks** appears below New session
+only for projects with a configured provider; the shared Tasks page manages global
+phases through **Phases**. Use a scoped GitHub PAT with Issues read/write (including label access),
+or an Azure PAT with Work Items read/write and access to the selected project.
+For Azure project discovery, also enable **Project and Team (Read)**. In setup,
+enter the organization name and token, click **Load projects**, then select a
+project and work item type from searchable lists; selecting a type loads its
+native states. Project catalogs read every `$top`/`$skip` page before returning.
+Azure tasks are always restricted to `[System.AssignedTo] = @Me` in WIQL, using
+the authenticated PAT owner rather than an email/display-name comparison or the
+client identity. There is no configurable assignment option and no save is needed
+to activate this rule on existing connections. On startup the engine migrates
+legacy unfiltered snapshots to a withheld state and performs a full filtered scan.
+Replacing an Azure token also withholds the previous owner's snapshot until a
+successful refresh; failures never fall back to other users' tasks. The former
+`onlyAssignedToMe` input is ignored for old-client compatibility and cannot disable
+the restriction. No extra profile/code permissions are required, and assignees
+are never modified. Restart with the updated engine to apply the migration.
+The **Sprint** picker filters exact `System.IterationPath` values, retaining
+mandatory `AssignedTo = @Me`. Alongside paths from the confirmed task cache, it
+queries `/{project}/_apis/work/teamsettings/iterations?$timeframe=current` using
+Azure's **default team**, explicitly chosen by the user. Current sprints are marked
+**Current**, listed first and included even when they have no assigned tasks.
+One unambiguous current sprint is preselected when entering a project view; none
+or multiple current sprints uses **All sprints** with a status note. Failed current
+lookup does not silently select All: Retry and explicit manual selection remain
+available. A subsequent refresh preserves the user's selection.
+**All sprints** clears the filter; **No sprint** selects the project's root path.
+A specific sprint shows Azure tasks only. Current lookups deduplicate per external
+Azure project, run outside the global lock with a 90-second total deadline, and
+change no remote resources. Other empty iterations/non-default teams are not
+enumerated. Restart/Refresh loads missing iteration metadata in older caches;
+incomplete caches show a refresh notice but may still include a confirmed current
+sprint. No provider request is made per card.
+Enter tokens only in the client; they are write-only and protected at rest with
+Windows user-bound DPAPI. Existing public API networking/CORS is unchanged, so use
+a trusted local/network connection or appropriate HTTPS for credential setup.
+
+Providers own tasks. The engine stores global phases, complete ordered mappings,
+technical item snapshots and durable update receipts under `activityBoard*` fields.
+Refresh runs at startup, after connection saves and on explicit request. Move to
+revalidates provider state, preserves unrelated GitHub labels/open-closed, and uses
+revision-guarded Azure state patches. Uncertain writes are reconciled by reads,
+never replayed automatically. Existing webhooks are not board connections; hooks
+and automation are outside this delivery.
+Draft edits use their initial config revision; uncertain saves require explicit
+reload. Global phase mappings have a read-only discovery path for retained
+removed-project connections. Missing move receipts can be cancelled only before
+acceptance, with a durable ID reservation against delayed submissions; accepted
+work is not cancelled or replayed. Refresh coordinates in-transit requests and
+fresh reads even through Focus hide/restore. See `ACTIVITY_BOARD_REVIEW.md` for the
+two requested static review/correction rounds and remaining human validation.
+
+See [`ACTIVITY_BOARD_IMPLEMENTATION_PROGRESS.md`](../ACTIVITY_BOARD_IMPLEMENTATION_PROGRESS.md)
+for the actual JSON routes, setup/mapping rules, receipt retention, recovery limits,
+storage/downgrade notes and pending human validation. Go dev build and TypeScript
+typecheck are the compilation evidence; no real provider execution was validated.
+
 Small standalone Go HTTP engine for real projects, sessions, and delegated harness
 execution. Go 1.24.2, with `go-gitignore` for project path discovery. Includes a private linked-agent MCP
 bridge; no frontend or general-purpose engine MCP interface is bundled.
