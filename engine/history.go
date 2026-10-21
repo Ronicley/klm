@@ -29,6 +29,7 @@ type SessionSummary struct {
 	Title                string                   `json:"title"`
 	LatestReasoningTitle string                   `json:"latestReasoningTitle,omitempty"`
 	Workspace            string                   `json:"workspace"`
+	TopicID              string                   `json:"topicId,omitempty"`
 	Harness              string                   `json:"harness"`
 	HarnessLocked        bool                     `json:"harnessLocked,omitempty"`
 	YOLO                 bool                     `json:"yolo,omitempty"`
@@ -89,6 +90,7 @@ type sessionJournal struct {
 
 func sessionSummary(view *Session) SessionSummary {
 	return SessionSummary{
+		TopicID:      view.TopicID,
 		Capabilities: view.Capabilities,
 		Queue:        view.Queue,
 		Role:         view.Role, GraphRunID: view.GraphRunID, GraphNodeID: view.GraphNodeID, ExecutionCWD: view.ExecutionCWD,

@@ -1,9 +1,26 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { EngineRequestError, type Project } from '../../engine';
 import { activityPreferencesKey, readActivityPreferences, type ActivityOverrides } from './ActivityFeedSettings';
-import { compareActivitySequence, getActivityCatalog, getActivityPage, type ActivityCatalog, type GithubActivityPage } from './githubActivityApi';
+import { compareActivitySequence, getActivityCatalog, getActivityPage, type ActivityCatalog, type GithubActivityItem, type GithubActivityPage } from './githubActivityApi';
 
 const preferencesChanged = 'klm:activity-preferences-changed';
+
+const expired = (item: GithubActivityItem, now: number) => !!item.expiresAt && !(Date.parse(item.expiresAt) > now);
+function retainedActivity(item: GithubActivityItem, now: number): GithubActivityItem[] {
+  if (item.retentionPending && item.group) {
+    const children = item.group.children.filter(child => !expired(child, now));
+    return [children.length === item.group.children.length ? item : { ...item, group: { ...item.group, children } }];
+  }
+  if (!expired(item, now)) return [item];
+  if (!item.group) return [];
+  // The minimum member expiry is a revalidation deadline, not a group tombstone.
+  // Keep only structural identity and still-retained children, never the old
+  // representative's text/result/links, while the feed promptly fetches survivors.
+  return [{ id: item.id, projectId: item.projectId, projectName: item.projectName, webhookId: item.webhookId, provider: item.provider,
+    category: item.category, eventType: '', releaseSequence: item.releaseSequence, receivedAt: '', emittedAt: '',
+    title: 'Activity', summary: '', reference: '', actionLabel: 'Activity', tone: 'muted', icon: 'pipeline', retentionPending: true,
+    group: { ...item.group, children: item.group.children.filter(child => !expired(child, now)) } }];
+}
 
 function feedScroller(timeline: HTMLDivElement | null) {
   if (!timeline) return null;
@@ -122,7 +139,7 @@ export function useGithubActivityFeed(category: string, search: string, projects
         }
         if (controller.signal.aborted) return;
         offset.current = Date.parse(result.asOf) - Date.now();
-        const next = { ...result, items: [...new Map(items.map(item => [item.id, item])).values()] };
+        const next = { ...result, items: [...new Map(items.flatMap(item => retainedActivity(item, Date.now() + offset.current)).map(item => [item.id, item])).values()] };
         const awayFromTop = captureAnchor();
         const retained = new Set(next.items.map(item => item.id));
         const arrivals = previous && !more && awayFromTop ? next.items.filter(item => compareActivitySequence(item.releaseSequence, previous.highWatermark) > 0) : [];
@@ -164,15 +181,18 @@ export function useGithubActivityFeed(category: string, search: string, projects
     setNotice('An update is no longer available.'); operate.current();
   }, []);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(''), 6000); return () => clearTimeout(timer); }, [notice]);
-  // Never keep expired payload summaries in the mounted snapshot.
+  // Remove individual posts at TTL; scrub groups and immediately revalidate them
+  // without unmounting readers whose other members may still be retained.
   useEffect(() => {
     const old = snapshot.current;
     if (!old) return;
-    const items = old.items.filter(item => !item.expiresAt || Date.parse(item.expiresAt) > clock);
-    if (items.length !== old.items.length) { snapshot.current = { ...old, items }; setPage(snapshot.current); }
+    const revalidate = old.items.some(item => item.group && !item.retentionPending && expired(item, clock));
+    const items = old.items.flatMap(item => retainedActivity(item, clock));
+    if (items.length !== old.items.length || items.some((item, index) => item !== old.items[index])) { snapshot.current = { ...old, items }; setPage(snapshot.current); }
+    if (revalidate) operate.current();
   }, [clock]);
-  const items = (page?.items ?? []).filter(item => projectIds.has(item.projectId) && (!item.expiresAt || Date.parse(item.expiresAt) > clock));
-  return { catalog, overrides, savePreferences, preferenceError, setupError, busy, error, notice, clock,
+  const items = (page?.items ?? []).filter(item => projectIds.has(item.projectId)).flatMap(item => retainedActivity(item, clock));
+  return { catalog, overrides, savePreferences, preferenceError, setupError, busy, error, notice, clock, query, asOf: page?.asOf, highWatermark: page?.highWatermark,
     items, newPosts: items.filter(item => unseenIds.has(item.id)), showNewPosts,
     loaded: !!page, hasMore: page?.hasMore ?? false, unavailable,
     refresh: () => operate.current(), loadMore: () => operate.current(true),

@@ -422,6 +422,11 @@ func (a *app) sessionViewLocked(id string) *Session {
 	view := a.state.sessionView(id)
 	if view != nil {
 		view.RuntimeActive = a.runtimes[id] != nil && a.runtimes[id].active()
+		if view.Role == sessionRoleSideAgent {
+			if topic := a.state.sessionTopic(a.state.session(id)); topic != nil {
+				view.TopicID = topic.ID
+			}
+		}
 	}
 	return view
 }

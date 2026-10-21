@@ -94,6 +94,20 @@ func (p *adapter) spawnSession(ctx context.Context, args spawnArgs) (any, error)
 	defer a.mu.Unlock()
 	from = a.state.session(p.id)
 	project := a.state.project(selection.ProjectID)
+	if ctx.Err() == nil && p.activeToolLocked() && args.SourceUserEventID != "" {
+		if existing, err := a.existingSpawnLocked(from, args); err != nil {
+			return nil, err
+		} else if existing != nil {
+			return spawnReceiptResult(*existing), nil
+		}
+	}
+	currentTopicID := ""
+	if topic := a.state.sessionTopic(from); topic != nil {
+		currentTopicID = topic.ID
+	}
+	if currentTopicID != selection.TopicID {
+		return nil, spawnProblem("topic", "topic_changed", "The source topic changed while validating spawn settings.", "Retry the same creation request using the source conversation's current topic. No session was created.")
+	}
 	if ctx.Err() != nil || !p.activeToolLocked() || from == nil || project == nil || project.Removed || project.Folder != cwd || from.Harness != before.Harness || from.Model != before.Model || from.Effort != before.Effort || from.YOLO != before.YOLO || from.Workspace != before.Workspace {
 		return nil, spawnProblem("session", "settings_changed", "The sender, turn or project changed while validating spawn settings.", "Read session_spawn_options again and retry. No session was created.")
 	}
@@ -144,12 +158,10 @@ func (p *adapter) spawnOptionsForProject(ctx context.Context, projectID, harness
 	for _, option := range a.harnesses {
 		harnesses = append(harnesses, option)
 	}
-	folders := append([]string{"Ungrouped"}, project.Folders...)
-	activeFolders := []string{}
-	for _, folder := range folders {
-		if !folderArchived(project, folder) {
-			activeFolders = append(activeFolders, folder)
-		}
+	var topic *Topic
+	if current := a.state.sessionTopic(from); current != nil {
+		copy := *current
+		topic = &copy
 	}
 	a.mu.Unlock()
 	senderModel, senderEffort := s.Model, s.Effort
@@ -177,6 +189,6 @@ func (p *adapter) spawnOptionsForProject(ctx context.Context, projectID, harness
 		pageArgs.ProjectID = projectID
 		required = append(required, "projectId")
 	}
-	extra := map[string]any{"projectId": projectID, "executionCwd": cwd, "harness": harness, "harnesses": harnesses, "folders": activeFolders, "senderYolo": s.YOLO, "senderModel": senderModel, "senderEffort": senderEffort, "defaultModel": catalog.DefaultModel, "defaultEffort": catalog.DefaultEffort, "sourceUserMessages": userMessages, "requiredFields": required}
+	extra := map[string]any{"projectId": projectID, "executionCwd": cwd, "harness": harness, "harnesses": harnesses, "topic": topic, "senderYolo": s.YOLO, "senderModel": senderModel, "senderEffort": senderEffort, "defaultModel": catalog.DefaultModel, "defaultEffort": catalog.DefaultEffort, "sourceUserMessages": userMessages, "requiredFields": required}
 	return agentItemsPage(name, pageArgs, items, extra, revisionForItems(map[string]any{"items": items, "options": extra}))
 }

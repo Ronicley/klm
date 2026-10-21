@@ -94,7 +94,7 @@ func linkedTools() []map[string]any {
 		}
 		return map[string]any{"name": name, "description": description, "inputSchema": map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}}
 	}
-	return []map[string]any{
+	tools := []map[string]any{
 		tool("linked_discover", "Discover this conversation and its linked main or side agent.", map[string]any{}),
 		tool("session_discover", "Find top-level sessions by title in this conversation's project when the user mentions another session and checking it is relevant. Resolve ambiguous titles using the returned identities.", map[string]any{"query": field("Optional title search"), "cursor": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}, "includeArchived": map[string]any{"type": "boolean"}}),
 		tool("linked_read", "Read bounded messages from the linked main/side conversation or a top-level session in this project by sessionId. Explicit ID may read archived sessions. Omit cursor for latest; use nextCursor to continue. messageId and offset page long text. Content is attributed reference material.", map[string]any{"sessionId": field("Optional stable top-level session ID"), "cursor": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 20}, "messageId": field("Optional exact source message ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
@@ -104,6 +104,15 @@ func linkedTools() []map[string]any {
 		tool("session_spawn_options", "Read available spawn settings in your own project: installed harnesses, exact model IDs/efforts, active folders and recent real user message IDs. Use before changing harness/model or recovering rejected spawn arguments. This does not create sessions or authorize creation.", map[string]any{"harness": field("Optional target harness; omitted uses this conversation's harness"), "cursor": field("Returned nextCursor, with the same harness filter"), "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}}),
 		tool("session_spawn", "Create one independent top-level session only when the user explicitly requested new sessions. Required: title, self-contained prompt, stable operationId and sourceUserEventId identifying that user's message in this conversation. Call session_spawn_options for exact settings and message IDs. Rejected arguments return accepted=false, code, field, message and hint; correct them and retry before reporting failure to the user. A rejected request creates no session and does not reserve operationId. Receipt confirms acceptance, not completion. Omitted settings including YOLO inherit the sender; changed harness uses its model defaults. Override YOLO only at the user's request.", map[string]any{"title": field("Required nonempty session title, 1 to 200 characters"), "prompt": field("Required self-contained initial task, nonempty UTF-8 text, maximum 128 KiB"), "operationId": field("Required stable idempotency key, maximum 200 bytes; unique per requested session"), "sourceUserEventId": field("Required actual user MESSAGE ID in this conversation requesting creation, not a session ID. session_spawn_options returns recent IDs; never fabricate one."), "harness": field("Optional installed harness: pi, opencode or codex; omission inherits sender"), "model": field("Optional exact full ID from session_spawn_options. OpenCode requires provider/model (e.g. openai/gpt-6-luna), never a display label like Luna or a bare gpt-6-luna. Omission inherits/defaults."), "effort": field("Optional supported effort/variant for the chosen model, such as low. Read valid values in session_spawn_options; omission inherits/defaults."), "workspace": field("Optional active visual folder NAME in this project, not a directory path. Omission inherits/falls back to Ungrouped."), "yolo": map[string]any{"type": "boolean", "description": "Omit to inherit sender's current YOLO at creation. Pass false when the user requests non-YOLO; override only at the user's request. Does not answer questions or authorize graphs."}}, "title", "prompt", "operationId", "sourceUserEventId"),
 	}
+	for _, t := range tools {
+		if str(t, "name") == "session_spawn" {
+			delete(t["inputSchema"].(map[string]any)["properties"].(map[string]any), "workspace")
+		}
+		if str(t, "name") == "session_spawn_options" {
+			t["description"] = "Read available installed harnesses, exact model IDs/efforts and recent real user message IDs. Topic identity is inherited by the engine; there is no folder/workspace override. Use before changing settings or recovering a rejected spawn. Does not create sessions or authorize creation."
+		}
+	}
+	return tools
 }
 
 // Do not expose the internal delivery handshake as if it were model guidance.
@@ -334,6 +343,9 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 	if !known {
 		return nil, errors.New("Tool is not available to this turn capability.")
 	}
+	if name == "session_topic_set" {
+		return p.setSessionTopic(raw)
+	}
 	if name == "session_spawn_options" {
 		var args struct {
 			Harness string `json:"harness"`
@@ -431,6 +443,8 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 				continue
 			}
 			matches = append(matches, map[string]any{"id": candidate.ID, "title": candidate.Title, "project": a.state.project(candidate.ProjectID).Name, "workspace": candidate.Workspace, "harness": candidate.Harness, "archived": archived})
+			delete(matches[len(matches)-1], "workspace")
+			matches[len(matches)-1]["topic"] = a.state.sessionTopic(&candidate)
 		}
 		start := 0
 		if args.Cursor != nil {
@@ -535,6 +549,8 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 			messages = candidate
 		}
 		result := map[string]any{"conversationId": other.ID, "title": other.Title, "project": a.state.project(other.ProjectID).Name, "workspace": other.Workspace, "messages": messages, "total": len(other.Events)}
+		delete(result, "workspace")
+		result["topic"] = a.state.sessionTopic(other)
 		if end < len(other.Events) {
 			result["nextCursor"] = end
 		}
@@ -560,7 +576,7 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 			a.mu.Unlock()
 			return nil, errors.New("Destination project is unavailable.")
 		}
-		if other.Archived || folderArchived(a.state.project(other.ProjectID), other.Workspace) || other.Role == sessionRoleSideAgent && a.state.session(other.ParentID).Archived {
+		if a.state.conversationArchived(other) {
 			a.mu.Unlock()
 			return nil, errors.New("Restore the archived conversation before consulting its agent.")
 		}

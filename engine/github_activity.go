@@ -12,33 +12,37 @@ import (
 )
 
 type githubActivityItem struct {
-	ID               string `json:"id"`
-	ProjectID        string `json:"projectId"`
-	ProjectName      string `json:"projectName"`
-	WebhookID        string `json:"webhookId"`
-	Provider         string `json:"provider"`
-	EventType        string `json:"eventType"`
-	Action           string `json:"action,omitempty"`
-	CatalogID        string `json:"catalogId,omitempty"`
-	ReleaseSequence  string `json:"releaseSequence"`
-	ReceivedAt       string `json:"receivedAt"`
-	EmittedAt        string `json:"emittedAt"`
-	ExpiresAt        string `json:"expiresAt,omitempty"`
-	Category         string `json:"category"`
-	Tone             string `json:"tone"`
-	Icon             string `json:"icon"`
-	ActionLabel      string `json:"actionLabel"`
-	Summary          string `json:"summary"`
-	Actor            string `json:"actor,omitempty"`
-	Repository       string `json:"repository,omitempty"`
-	Title            string `json:"title"`
-	Reference        string `json:"reference"`
-	Branch           string `json:"branch,omitempty"`
-	BaseBranch       string `json:"baseBranch,omitempty"`
-	TargetURL        string `json:"targetUrl,omitempty"`
-	TargetKind       string `json:"targetKind,omitempty"`
-	Result           string `json:"result,omitempty"`
-	SummaryTruncated bool   `json:"summaryTruncated,omitempty"`
+	ID               string                  `json:"id"`
+	ProjectID        string                  `json:"projectId"`
+	ProjectName      string                  `json:"projectName"`
+	WebhookID        string                  `json:"webhookId"`
+	Provider         string                  `json:"provider"`
+	EventType        string                  `json:"eventType"`
+	Action           string                  `json:"action,omitempty"`
+	CatalogID        string                  `json:"catalogId,omitempty"`
+	ReleaseSequence  string                  `json:"releaseSequence"`
+	ReceivedAt       string                  `json:"receivedAt"`
+	EmittedAt        string                  `json:"emittedAt"`
+	ExpiresAt        string                  `json:"expiresAt,omitempty"`
+	Category         string                  `json:"category"`
+	Tone             string                  `json:"tone"`
+	Icon             string                  `json:"icon"`
+	ActionLabel      string                  `json:"actionLabel"`
+	Summary          string                  `json:"summary"`
+	Actor            string                  `json:"actor,omitempty"`
+	Repository       string                  `json:"repository,omitempty"`
+	Title            string                  `json:"title"`
+	Reference        string                  `json:"reference"`
+	Branch           string                  `json:"branch,omitempty"`
+	BaseBranch       string                  `json:"baseBranch,omitempty"`
+	TargetURL        string                  `json:"targetUrl,omitempty"`
+	TargetKind       string                  `json:"targetKind,omitempty"`
+	Result           string                  `json:"result,omitempty"`
+	SummaryTruncated bool                    `json:"summaryTruncated,omitempty"`
+	Pipeline         *githubPipelineMetadata `json:"pipeline,omitempty"`
+	Group            *githubActivityGroup    `json:"group,omitempty"`
+	DetailEventID    string                  `json:"detailEventId,omitempty"`
+	GroupRelation    string                  `json:"groupRelation,omitempty"`
 }
 type githubActivityField struct {
 	Label string `json:"label"`
@@ -378,6 +382,7 @@ func normalizeGithubActivity(e WebhookStoredEvent, withDetails bool) (githubActi
 			*value = activityBound(*value, len(*value)/2, &item.SummaryTruncated)
 		}
 	}
+	item.Pipeline = extractGithubPipeline(e.EventType, p)
 	details := githubActivityDetails{ID: e.ID, Fields: []githubActivityField{}}
 	if !withDetails {
 		return item, details

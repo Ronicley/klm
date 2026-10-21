@@ -43,9 +43,13 @@ export function MobileSessionSubtitle({ session, now, archived }: { session: Ses
     <span>{runtime.label}</span>
   </span>;
 
+  return <SessionRecencySubtitle session={session} now={now} className="mobile-session-subtitle" />;
+}
+
+export function SessionRecencySubtitle({ session, now, className = 'session-subtitle' }: { session: Session; now: number; className?: string }) {
   const timestamp = lastMessageTimestamp(session);
   const valid = Number.isFinite(Date.parse(timestamp));
-  return <span className="mobile-session-subtitle">{valid
+  return <span className={className}>{valid
     ? <time dateTime={timestamp} title={exactDate.format(new Date(timestamp))}>{lastMessageLabel(timestamp, now)}</time>
     : <span>No messages yet</span>}
   </span>;

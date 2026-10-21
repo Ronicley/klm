@@ -16,6 +16,8 @@ import (
 )
 
 type Project struct {
+	Topics          []Topic  `json:"topics"`
+	TopicOrder      []string `json:"topicOrder,omitempty"`
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
 	Folder          string   `json:"folder"`
@@ -52,6 +54,7 @@ type Session struct {
 	ProjectID       string                   `json:"projectId"`
 	Title           string                   `json:"title"`
 	Workspace       string                   `json:"workspace"`
+	TopicID         string                   `json:"topicId,omitempty"`
 	Harness         string                   `json:"harness"`
 	HarnessLocked   bool                     `json:"harnessLocked,omitempty"`
 	YOLO            bool                     `json:"yolo,omitempty"`
@@ -90,7 +93,8 @@ type TranscriptionSettings struct {
 }
 
 type diskState struct {
-	tx *stateTransaction
+	tx          *stateTransaction
+	TopicSchema int `json:"topicSchema,omitempty"`
 
 	ActivityBoardConfig      activityBoardConfig                `json:"activityBoardConfig,omitempty"`
 	ActivityBoardConnections map[string]activityBoardConnection `json:"activityBoardConnections,omitempty"`
@@ -329,6 +333,9 @@ func loadState(dir string) (diskState, error) {
 }
 
 func saveState(dir string, d *diskState) error {
+	if err := validateTopicRecords(d); err != nil {
+		return err
+	}
 	if err := validateActivityBoardRecords(d); err != nil {
 		return err
 	}

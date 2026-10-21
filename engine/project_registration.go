@@ -22,7 +22,7 @@ func prepareProject(name, path, icon string) (Project, error) {
 	if !validIcon(icon) {
 		return Project{}, errors.New("Icon must be a PNG data URL, at most 128 KiB and 1024 by 1024 pixels.")
 	}
-	return Project{ID: newID(), Name: name, Folder: folder, Icon: icon, Folders: []string{}, ArchivedFolders: []string{}}, nil
+	return Project{ID: newID(), Name: name, Folder: folder, Icon: icon, Folders: []string{}, ArchivedFolders: []string{}, Topics: []Topic{}}, nil
 }
 
 func sameProjectFolder(left, right string) bool {
@@ -34,6 +34,8 @@ func sameProjectFolder(left, right string) bool {
 func (a *app) registerProjectLocked(p Project, previous *Project) (Project, error) {
 	if previous != nil {
 		p.ID, p.Folders, p.ArchivedFolders = previous.ID, previous.Folders, previous.ArchivedFolders
+		p.Topics = previous.Topics
+		p.TopicOrder = previous.TopicOrder
 	}
 	if err := a.commitLocked(func(d *diskState) {
 		if previous := d.project(p.ID); previous != nil {

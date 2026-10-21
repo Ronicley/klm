@@ -10,8 +10,10 @@ import { GithubActivityCard } from './GithubActivityCard';
 import { ActivityFeedSettings } from './ActivityFeedSettings';
 import { ActivityBoardEntry } from '../activity-board/ActivityBoardEntry';
 import { useGithubActivityFeed } from './useGithubActivityFeed';
+import { useActivityBookmarks } from './useActivityBookmarks';
 import { useFeedPullToRefresh } from './useFeedPullToRefresh';
 import { saveHappeningOrder, useHappeningOrder } from './happeningOrder';
+import { topicArchived } from '../workspace/topics';
 import './klm-agent.css';
 
 type FeedProject = Pick<Project, 'name' | 'icon'>;
@@ -82,7 +84,7 @@ export function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverl
   const projectsById = new Map(projects.map(project => [project.id, project]));
   const activeSessions = sessions.flatMap(session => {
     const project = projectsById.get(session.projectId);
-    if (!project || session.parentId || session.role || session.archived || project.archivedFolders.includes(session.workspace)) return [];
+    if (!project || session.parentId || session.role || session.archived || topicArchived(project, session)) return [];
     if (!session.runtimeActive && session.status !== 'running' && session.status !== 'error' && !session.permissions?.length && !session.questions?.length) return [];
     return [{ session, project }];
   // New arrivals precede the saved order, newest first. Streaming never reorders cards.
@@ -164,9 +166,9 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
   const timeline = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const [settings, setSettings] = useState(false);
-  const [bookmarks, setBookmarks] = useState<Set<string>>(() => new Set());
   const feed = useGithubActivityFeed(filter, search, projects, visible, timeline);
   const pull = useFeedPullToRefresh(scroller, IS_MOBILE_HOST && visible && !standalone && !!feed.catalog && !feed.setupError, feed.busy, feed.refresh);
+  const bookmarks = useActivityBookmarks(feed.asOf, feed.clock, feed.highWatermark);
   const projectsById = new Map(projects.map(project => [project.id, project]));
   const newPostProjects = [...new Set(feed.newPosts.map(post => post.projectId))].flatMap(id => {
     const project = projectsById.get(id);
@@ -229,7 +231,7 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
             {(feed.error || feed.setupError) && <div className="activity-feedback" role="alert">{feed.error || feed.setupError}<Button size="sm" variant="ghost" disabled={feed.busy} onClick={feed.retry}>Retry</Button></div>}
             {feed.preferenceError && !settings && <p className="activity-feedback" role="alert">{feed.preferenceError}</p>}
             {feed.notice && <p className="activity-feedback" role="status">{feed.notice}</p>}
-            {feed.items.map(post => <GithubActivityCard key={post.id} post={post} project={projectsById.get(post.projectId)} now={feed.clock} onUnavailable={feed.unavailable} saved={bookmarks.has(post.id)} onBookmark={() => setBookmarks(current => { const next = new Set(current); if (next.has(post.id)) next.delete(post.id); else next.add(post.id); return next; })} />)}
+            {feed.items.map(post => <GithubActivityCard key={post.id} post={post} query={feed.query} project={projectsById.get(post.projectId)} now={feed.clock} onUnavailable={feed.unavailable} saved={bookmarks.saved(post)} onBookmark={() => bookmarks.toggle(post)} />)}
             {!feed.loaded && !feed.error && !feed.setupError && <p className="activity-end" role="status">Loading activity…</p>}
             {feed.loaded && !feed.items.length && <div className="activity-empty"><Search aria-hidden="true" /><h3>{search || filter !== 'All' ? 'No matching updates' : 'No updates yet'}</h3>{(search || filter !== 'All') && <Button variant="ghost" onClick={() => { setSearch(''); setFilter('All'); }}>Clear filters</Button>}</div>}
             {feed.hasMore && <div className="activity-end"><Button variant="ghost" disabled={feed.busy} onClick={feed.loadMore}>{feed.busy ? 'Loading…' : 'Load more'}</Button></div>}

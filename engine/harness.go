@@ -265,6 +265,9 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 		guidance, err = conversationGuidance(&s)
 		if err == nil {
 			payload.Text = guidance + "\n\n" + payload.Text
+			a.mu.Lock()
+			payload.Text = a.topicContextLocked(a.state.session(s.ID)) + payload.Text
+			a.mu.Unlock()
 			if s.Role == sessionRoleGeneralAgent {
 				payload.Text = a.generalTurnSnapshot() + "\n\n" + payload.Text
 			}

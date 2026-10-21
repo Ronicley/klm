@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os/exec"
 	"sync"
@@ -67,6 +68,7 @@ func startInteractive(t *turn, b binary, args []string, cwd string, runtime *ses
 	}}
 	cmd.Stdout = lines
 	cmd.Stderr = &cappedBuffer{}
+	started := time.Now()
 	if err := cmd.Start(); err != nil {
 		cancel()
 		stdin.Close()
@@ -86,10 +88,19 @@ func startInteractive(t *turn, b binary, args []string, cwd string, runtime *ses
 		if ctx.Err() == nil {
 			_ = lines.flush()
 		}
-		if lines.err != nil {
-			p.err = lines.err
-		} else if err != nil {
-			p.err = errors.New("Harness process exited unsuccessfully. Check its authentication and configuration.")
+		p.err = lines.err
+		if err != nil {
+			// Only expose exit metadata, never argv, stderr or arbitrary Wait errors.
+			exit := "unavailable"
+			if state := cmd.ProcessState; state != nil && state.ExitCode() >= 0 {
+				exit = fmt.Sprintf("%d (0x%08X)", state.ExitCode(), uint32(state.ExitCode()))
+			}
+			reason := "Harness process exited unsuccessfully"
+			if errors.Is(err, exec.ErrWaitDelay) {
+				reason = "Harness process output did not close within the shutdown deadline"
+			}
+			p.err = errors.Join(p.err, fmt.Errorf("%s (exit code: %s; process lifetime: %s; process context cancelled: %t).",
+				reason, exit, time.Since(started).Round(time.Millisecond), ctx.Err() != nil))
 		}
 		close(frames)
 		close(done)
@@ -102,6 +113,9 @@ func (p *interactiveProcess) Send(value any) error {
 	defer p.mu.Unlock()
 	select {
 	case <-p.Done:
+		if p.err != nil {
+			return p.err
+		}
 		return errors.New("Harness connection has closed.")
 	default:
 	}

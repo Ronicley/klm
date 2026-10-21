@@ -40,11 +40,71 @@ and a React client. A project has a name, directory, and icon. Ordinary sessions
 to one project and use Pi, OpenCode, or Codex headlessly. The client presents the
 messages, exposed reasoning, commands, and MCP/tool events those harnesses emit.
 
-Top-level sessions and their visual grouping folders can be archived and restored.
-Archived content retains its history and runtime state but does not contribute error,
-waiting, or activity indicators to the project rail. Folder collapsed state remains
-local to each browser or WebView. Sessions can also be renamed and moved between
-active folders without changing their execution directory.
+Top-level sessions are grouped by persistent, project-scoped **topics**, replacing
+visual session folders. A new independent project session starts without a topic.
+During its ordinary turn, as soon as the objective is understood, its main agent
+sets a short initial topic name through the private `session_topic_set` tool.
+Agent assignment is one-time: repeated calls return the current topic unchanged.
+Only the user can edit its name/color or move a session to another existing active
+topic through UI. Equal names do not merge identities.
+The engine gives spawned sessions and further descendants the source main topic ID,
+including creation from a side chat. Spawn waits for initial assignment; it does not
+invent a topic or create an extra classification turn. The general agent has no
+topic and its newly created project sessions assign their own topics.
+
+The shared sidebar displays topic blocks with a colored left border and collapsible name headers,
+preserving session selection and runtime LEDs. Sessions without a topic appear in
+**Ungrouped**. Members are newest-created first with stable ID ties; groups initially
+use the newest-created persisted member, including archived members, with topic-ID
+ties. Users can drag a topic's header above/below another topic to save a manual
+project-wide order. Once positioned, topics retain that order even when members
+move; new unpositioned topics appear ahead of it. Messages and runtime disposal
+do not reorder them. Collapse is local per
+browser/WebView, engine, project and topic ID; old folder-name collapse preferences
+are not applied to the new topic namespace. Search includes topic names and titles
+and temporarily expands matches without overwriting collapse preferences.
+
+Desktop and browser session rows also display a recency subtitle below the title,
+using the mobile convention: the latest user/assistant message, relative minutes
+or hours, Yesterday, days up to 29, then a calendar date. Sessions without messages
+show No messages yet. Subtitles refresh every minute while visible and on return
+to the client; runtime LEDs remain independent, and recency does not reorder rows.
+
+On desktop and wide browser layouts, the sessions sidebar can be resized by dragging
+its right edge. Its width is remembered locally per browser origin and engine,
+shared across projects, with a 256px default and 200–520px bounds. The available
+window width and any docked side chat further limit expansion to preserve the main
+chat's usable area. Double-click resets the preferred width; a focused divider
+supports Left/Right, Home and End. Narrow navigation and the Flutter-hosted mobile
+layout retain their existing presentation without a resize handle. Temporary window
+constraints do not replace the saved preferred width.
+
+The chat navigation's topic tag opens a shared name/color editor. Colors use a small
+theme-aware palette (Neutral, Blue, Purple, Green, Amber, Rose), initially Neutral.
+Color is limited to group outlines/headers and tags; row selection and runtime LEDs
+retain their existing styles. Users can drag an active session onto another active
+topic, including a collapsed topic, which expands after a successful move. The
+session keeps its identity, history, runtime, settings and Library selection; its
+side chat follows the main's topic. Already-spawned sessions are not moved, while
+future spawns inherit its current topic. Menus provide Move up/Move down for topics
+and Move to topic for sessions as keyboard/touch alternatives. Ungrouped stays last;
+it can supply sessions to a topic but is not a destination for clearing an assigned
+topic. Archived content must be restored before moving/reordering. Legacy folder
+creation/move controls and manual ordering of sessions within a topic remain absent;
+global New session never inherits the selected topic.
+
+Sessions and topics can be archived and restored. Archived history remains readable,
+runtime state is retained, and archive is not Stop. Archived sessions/topics do not
+contribute rail/Happening now activity and cannot receive new execution without
+restoration. Pending linked answers and graph-result chat notifications remain
+deferred while archived; they can deliver after restoration without stopping
+independent work. Restoring a session in an archived topic requires restoring the topic
+first, without changing membership. Topic identity survives Stop, dispose and engine
+restart. A versioned durable migration converts each legacy project folder into a
+distinct topic, retaining archive state; Ungrouped remains absence of a topic.
+Historical spawn requests/receipts are retained unchanged. No history classification
+or graph execution-workspace changes are included. Delivery and compile evidence,
+with pending human acceptance, are recorded in `TOPICS_IMPLEMENTATION_PROGRESS.md`.
 
 Assistant message actions are hidden while that message is streaming. Completed
 assistant messages provide Copy and a durable Favorite toggle; like and dislike are
@@ -150,6 +210,19 @@ starts with all 56 event families enabled; local preferences are scoped to brows
 origin and engine URL and affect display only. The push-ruleset bypass preference
 uses the documented request discriminator; its canonical header is still unconfirmed.
 No local fixtures or internal agent posts appear in the live timeline.
+The KLM Agent can explicitly consult all available feed posts using its private
+`feed_read` tool, paginated newest first across nonremoved projects and independent
+of client-side category/event preferences. A post ID reads the same compact Details
+as the UI. Reads share the feed's release/retention rules, do not consume events,
+and do not trigger monitoring or execution. External post content is reference data,
+not agent instructions or user authorization.
+Workflow runs are projected as one stable card per explicit run/attempt identity,
+with independent actual job states and paginated Activity/Details. Deployments keep
+their own state and join a run/job only through an explicit unambiguous provider
+relationship. Unresolved checks/suites stay individual; other event families are not
+grouped. The projection is derived from retained original events before pagination,
+without persisted backfill or TTL changes. See `GITHUB_ACTIVITY_GROUPING_ROLLOUT.md`
+for the v2 card/member API and the still-pending activation/review procedure.
 When new posts arrive while reading below the top, the visible post keeps its
 position. A floating accent pill below the category bar shows an upward arrow and
 up to three distinct project icons (plus an overflow count). Clicking it scrolls
@@ -159,7 +232,7 @@ preferences disable smooth scrolling.
 **Happening now** uses the live session inventory across active projects.
 It includes normal top-level sessions with a running turn, a retained active runtime,
 pending permissions/questions, or a failed state, including independently spawned sessions,
-and excludes archived sessions, sessions in archived folders, removed projects,
+and excludes archived sessions, sessions in archived topics, removed projects,
 and general/side/subagent/graph-node conversations. Stopping a session or retaining
 an idle runtime does not close it, but an idle session without an active runtime or
 pending request is excluded. Cards show the real project icon, session title,
@@ -205,9 +278,9 @@ Clicking the translucent backdrop also closes the overlay and restores the gener
 Both chats remain subscribed while the overlay is open. Its header has Close and
 Open in project actions; the same project-navigation action appears on row hover
 or keyboard focus (always visible on touch). Navigation selects the owning project,
-expands the session's folder and opens that session's Chat tab. On compact screens,
+expands the session's topic and opens that session's Chat tab. On compact screens,
 opening an overlay switches Activity to Chat. Archiving the overlaid session or its
-folder, or removing its project, closes the overlay.
+topic, or removing its project, closes the overlay.
 
 The KLM logo at the top of Project Rail opens one persistent general-agent
 conversation per engine. Its identity and history are independent of the selected
@@ -258,10 +331,10 @@ cloning, Git initialization, dependency installation and project editing/removal
 outside it. Manual project registration keeps its existing HTTP contract.
 
 The general agent can send visible, self-contained instructions to project chats
-and ask questions with correlated replies. It can rename/move visual grouping,
+and ask questions with correlated replies. It can rename session titles,
 atomically update model/effort/YOLO between turns, select a graph without executing
 it, and answer the exact pending native question through its owning conversation.
-Moving a chat does not change its directory. Archived history is readable; sending
+Topic association and name/color editing are not exposed as its tools. Archived history is readable; sending
 and consulting require effective restoration. Engine-owned
 identity is not a synthetic project or a grant of harness permissions.
 
@@ -269,7 +342,7 @@ Its dedicated tools can create normal top-level sessions in an explicitly chosen
 registered project on the user's explicit creation request, with a self-contained
 prompt and a durable sender-scoped receipt referencing an actual human message in
 the general conversation. The child uses the project's registered directory;
-visual grouping defaults to Ungrouped. Harness/settings and YOLO inherit under the
+it starts without a topic and classifies itself during its normal turn. Harness/settings and YOLO inherit under the
 existing spawn rules, with explicit requested overrides applied before its first
 turn. Creation acceptance is not work completion and creates no subscription.
 
@@ -279,8 +352,8 @@ and reply to an exact pending permission through its owning conversation, includ
 projected graph requests. Stop pauses unsent input and cancels owned chat processes,
 not an independent graph. Uncertain native delivery requires the user's explicit
 retry choice and may duplicate delivery. Archive/restore is metadata and preserves
-runtime state; restoring under an archived folder requires an active destination
-folder or Ungrouped without restoring the whole folder. Send now requires effective
+runtime state; restoring under an archived topic requires the user to restore that
+topic first, preserving membership. Send now requires effective
 restoration; Stop, removal and replies to existing requests remain recovery controls.
 Permission decisions use only offered choices, preserve the user's requested scope,
 and retain native-session/project/global grant ownership, rollback and attributed
@@ -368,10 +441,10 @@ forward the session's chat-only floating window, keeping the main window minimiz
 The row's floating-window icon always opens or brings forward that same live
 session in an independent chat-only window within Focus, with its
 existing composer, draft, queue, requests and Stop. Closing this window does not
-stop the session. Session windows close when their session/folder is archived or
+stop the session. Session windows close when their session/topic is archived or
 their project is removed. Their geometry is retained locally for reopening.
-In Focus, the session navigation also has a floating-window icon to the left of the folder
-selector. It opens or brings forward that session's dedicated chat window and
+In Focus, the session navigation also has a floating-window icon to the left of the topic
+tag. It opens or brings forward that session's dedicated chat window and
 automatically minimizes the main window.
 
 The KLM Agent's Chat header and the minimized main-window bar also offer an
@@ -882,8 +955,8 @@ is saved with the Focus layout. Returning restores the parent chat's normal cont
 Spawned sessions inherit the sender's current YOLO mode by default. An explicit
 `yolo:false` implements the user's request for a non-YOLO child before its first
 turn; overrides are only made at the user's request. Later sender-mode changes do
-not change an existing child. Spawn options expose exact model IDs/efforts, visual
-folders and recent user message IDs. Validation rejects malformed or unavailable
+not change an existing child. Spawn options expose exact model IDs/efforts, the inherited
+topic and recent user message IDs. Validation rejects malformed or unavailable
 settings before creating a child and returns an actionable error to the agent for
 correction. OpenCode model IDs require `provider/model` format.
 

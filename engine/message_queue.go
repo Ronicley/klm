@@ -354,7 +354,7 @@ func (a *app) scheduleMessagesLocked() {
 		return
 	}
 	for _, s := range a.state.Sessions {
-		if a.runs[s.ID] != nil || len(s.Queue) == 0 {
+		if a.runs[s.ID] != nil || len(s.Queue) == 0 || a.state.conversationArchived(&s) {
 			continue
 		}
 		messages := steeringMessages(&s)

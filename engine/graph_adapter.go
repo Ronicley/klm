@@ -175,6 +175,9 @@ func (p *adapter) bridgeTools() []map[string]any {
 	}
 	if !p.graphNode() && p.role != "graph_node" && p.role != sessionRoleSubagent && p.role != sessionRoleGeneralAgent {
 		tools = append(tools, linkedTools()...)
+		if p.role == "" {
+			tools = append(tools, sessionTopicTool())
+		}
 	}
 	if p.graph != nil {
 		tools = append(tools, p.graph.hooks.Tools...)

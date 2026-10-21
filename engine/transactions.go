@@ -317,6 +317,9 @@ func (a *app) commitTransactionLocked(change func(*diskState) error) error {
 	if err := change(&next); err != nil {
 		return err
 	}
+	if err := validateTopicRecords(&next); err != nil {
+		return err
+	}
 	normalizeGraphWorkspaceRecords(&next)
 	normalizeTranscriptionSettings(&next.Transcription)
 	if a.graphValidation == nil {

@@ -255,7 +255,7 @@ func (a *app) scheduleGraphNotificationsLocked() {
 			continue
 		}
 		p := a.state.project(s.ProjectID)
-		if p == nil || p.Removed {
+		if p == nil || p.Removed || a.state.conversationArchived(s) {
 			continue
 		}
 		b, ok := a.binaries[s.Harness]

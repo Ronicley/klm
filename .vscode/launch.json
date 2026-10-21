@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Engine: Debug (Go)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/engine",
+      "cwd": "${workspaceFolder}/engine",
+      "buildFlags": "-tags=dev",
+      "args": ["__worker"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Frontend: Debug (Edge + Vite)",
+      "type": "msedge",
+      "request": "launch",
+      "url": "http://127.0.0.1:5173",
+      "webRoot": "${workspaceFolder}/clients/desktop",
+      "preLaunchTask": "Frontend: Vite",
+      "sourceMaps": true
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full stack: Debug",
+      "configurations": ["Engine: Debug (Go)", "Frontend: Debug (Edge + Vite)"],
+      "stopAll": true
+    }
+  ]
+}

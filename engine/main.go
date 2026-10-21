@@ -188,6 +188,11 @@ func runEngine(dir string) error {
 	a := &app{dir: dir, state: state, harnesses: harnesses, binaries: binaries,
 		runs: map[string]*turn{}, runtimes: map[string]*sessionRuntime{}, graphRuns: map[string]*graphExecution{}, listeners: map[string]map[chan struct{}]bool{},
 		historyJournal: map[string]*sessionJournal{}, journalBase: state.GraphRevision, picker: make(chan struct{}, 1), ctx: ctx}
+	if a.state.TopicSchema == 0 {
+		if err := a.commitLocked(migrateTopics); err != nil {
+			return fmt.Errorf("cannot migrate topics: %w", err)
+		}
+	}
 	a.indexMessageIDsLocked()
 	a.webhookWake = make(chan struct{}, 1)
 	a.webhookIngress = make(chan struct{}, 2)

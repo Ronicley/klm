@@ -313,7 +313,7 @@ func (a *app) scheduleLinkedLocked() {
 		}
 		s := a.state.session(id)
 		folder, available := a.state.conversationDirectory(s)
-		if !available || !delivery && a.state.conversationArchived(s) {
+		if !available || a.state.conversationArchived(s) {
 			continue
 		}
 		b, ok := a.binaries[s.Harness]

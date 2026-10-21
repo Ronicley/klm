@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -33,6 +34,24 @@ type codexSubagent struct {
 }
 
 func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error) {
+	started := time.Now()
+	phase := "process startup"
+	// Registered before cleanup so cancellation diagnostics also cover teardown.
+	defer func() {
+		if err == nil {
+			return
+		}
+		stage := map[string]string{
+			"klm-init": "initialization", "klm-thread": "thread start/resume",
+			"klm-mcp": "linked-agent tool discovery", "klm-turn": "turn submission",
+			"": "turn execution",
+		}[phase]
+		if stage == "" {
+			stage = phase
+		}
+		err = fmt.Errorf("Codex failed during %s (elapsed: %s; turn cancelled: %t): %w",
+			stage, time.Since(started).Round(time.Millisecond), p.turn.ctx.Err() != nil, err)
+	}()
 	p.app.mu.Lock()
 	native := p.app.state.Native[p.id]
 	sessionModel := p.model
@@ -161,7 +180,7 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			return err
 		}
 	}
-	phase := "klm-init"
+	phase = "klm-init"
 	if reused {
 		phase = "klm-thread"
 	}

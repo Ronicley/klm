@@ -7,6 +7,7 @@ import type { Project, Session } from '../../engine';
 import { IS_MOBILE_HOST, returnToHosts } from '../../platform';
 import { animateSortPositions, captureSortPositions, type SortPositions } from '../sortAnimation';
 import klmIcon from './klm-icon.png';
+import { topicArchived } from '../workspace/topics';
 
 function projectRuntimeState(project: Project, sessions: Session[]) {
   let state = 'off';
@@ -15,7 +16,7 @@ function projectRuntimeState(project: Project, sessions: Session[]) {
   for (const session of sessions) {
     const parent = session.parentId ? byId.get(session.parentId) : undefined;
     if (session.projectId !== project.id || session.role === 'graph_node' || session.role === 'subagent' || session.archived || parent?.archived) continue;
-    if (project.archivedFolders.includes(parent?.workspace ?? session.workspace)) continue;
+    if (topicArchived(project, parent ?? session)) continue;
     if (session.status === 'error') return { state: 'error', label: 'Session error' };
     if ((session.permissions?.length ?? 0) > 0 || (session.questions?.length ?? 0) > 0) state = 'waiting';
     else if (state === 'off' && (session.status === 'running' || session.runtimeActive)) state = 'active';

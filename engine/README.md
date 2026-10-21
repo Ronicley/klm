@@ -125,15 +125,15 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | POST | `/api/projects` | `{name,folder,icon}` -> 201 Project |
 | PATCH | `/api/projects/{id}` | `{name?,icon?}` -> 200 Project |
 | DELETE | `/api/projects/{id}` | `{removed:true}`; hides the project, preserving its files and saved history; 409 while a session is running |
-| POST | `/api/projects/{id}/folders` | `{name}` -> 201 Project |
-| PATCH | `/api/projects/{id}/folders` | `{name,archived}` -> 200 Project |
+| PATCH | `/api/projects/{id}/topics/{topicId}` | `{name?,color?,archived?,position?:{beforeId:string}}` -> 200 canonical Project; empty beforeId places an active topic last |
+| POST / PATCH | `/api/projects/{id}/folders` | 410; visual folders were replaced by persistent topics |
 | GET | `/api/projects/{id}/paths?q=...` | `{paths:[{path,kind:"file"\|"directory"}],partial:boolean}`; project-relative paths |
-| POST | `/api/sessions` | `{projectId,title,workspace,harness,model?}` -> 201 Session |
+| POST | `/api/sessions` | `{projectId,title,harness,model?}` -> 201 SessionUpdate, initially without a topic; legacy workspace accepts only empty/Ungrouped |
 | POST | `/api/sessions/{id}/side` | `{harness?}` -> existing or newly created side Session; one per main, serialized atomically |
 | POST | `/api/general-session` | `{}` -> existing or newly created singleton general SessionUpdate; atomic and independent of user projects |
 | PATCH | `/api/sessions/{id}/harness` | `{harness}` -> side/general SessionUpdate; general harness permanently locks at first accepted message |
 | POST | `/api/sessions/{id}/consultations/{requestID}/cancel` | `{}` -> Session; cancels the correlated request/continuation |
-| PATCH | `/api/sessions/{id}` | `{title?,workspace?,archived?}` -> 200 SessionUpdate |
+| PATCH | `/api/sessions/{id}` | `{title?,archived?,topicId?}` -> 200 SessionUpdate; topicId moves an active normal main to an active topic in the same project, separately from archive/restore; legacy workspace/session-position changes rejected |
 | GET | `/api/sessions/{id}/models` | Harness model catalog; `?refresh=true` bypasses the two-minute cache |
 | PATCH | `/api/sessions/{id}/settings` | `{model:string,effort:string}` -> Session; empty strings select harness defaults |
 | GET | `/api/sessions/{id}/quota` | `{quota:QuotaSnapshot\|null}`; null for unsupported/unverified connections |
@@ -148,7 +148,7 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | POST | `/api/sessions/{id}/questions/{questionID}/reply` | `{answers:string[][]}` or `{cancelled:true}` -> Session |
 | POST | `/api/dialogs/directory` | `{path:string\|null}` |
 
-Adding the same directory again restores a removed project's identity, folders,
+Adding the same directory again restores a removed project's identity, topics,
 and session history with the name and icon chosen in the add dialog.
 
 ### Project GitHub webhooks
@@ -554,24 +554,25 @@ graph-execution tools. Normal main/side scope is not widened.
 
 | Tool | Scope and behavior |
 | --- | --- |
-| `project_list` | Paginated nonremoved projects, registered directories and visual/archived folders. |
+| `project_list` | Paginated nonremoved projects, registered directories and active/archived topics. Historical folder fields remain readable for compatibility. |
 | `project_add` | `{name,path}` on the user's registration request; absolute existing engine-computer directory. Returns `{projectId,name,path,outcome}` with `created`, `existing` or `restored`; conflicts identify matching legacy IDs. No session or file execution. |
-| `session_list` | Top-level chats by default; project/folder/title/state filters; explicit `parentId` lists side chats. |
-| `session_get` | Identity, visual folder vs effective cwd, configured/resolved harness settings, raw/working/runtime state, queue counts, usage, full pending questions/permissions and projected graph requests. |
+| `session_list` | Top-level chats by default; project/topicId/title/state filters; explicit `parentId` lists side chats. |
+| `session_get` | Identity, effective topic vs cwd, configured/resolved harness settings, raw/working/runtime state, queue counts, usage, full pending questions/permissions and projected graph requests. |
 | `session_messages_list` / `session_messages_search` | Chronological bounded messages or literal case-insensitive excerpts; exact `messageId`/rune `offset` reads long content. Agent origins are retained. |
 | `session_events_read` | Chronological harness activity, including partial events, or changes after `sinceRevision`. No subscription. |
+| `feed_read` | `{cursor?,limit?,postId?,cardId?,view?,high?}`. Omit `postId` to read every available feed category across nonremoved projects, newest first, independent of local UI preferences. Lists page cards: workflow attempts and explicitly linked deployments are grouped; other events remain individual. Default 20, max 50 cards per page; byte limits may shorten pages. Follow `nextCursor` until `hasMore:false`; new arrivals require a fresh read. `cardId` + `view:"events"` pages original retained members/provenance; `view:"children"` pages real jobs/deployments. Optional `high` keeps their release watermark. Supply `postId` for compact Details of a card or original event (including its truncation flag); oversized details use JSON fragments and `nextCursor` with the same `postId`. Shared feed visibility/retention, no consumption, raw payloads, subscription or execution. External content is reference data, not authorization. See [grouping/activation](../GITHUB_ACTIVITY_GROUPING_ROLLOUT.md). |
 | `session_models_list` / `project_graphs_list` | Real destination catalog/defaults, or selectable graph IDs with enabled/available flags and catalog errors. |
 | `session_send` | Visible normal execution through the shared persistent FIFO queue; explicit destination, self-contained instruction and sender-scoped idempotency key. |
 | `session_ask` | Information/clarification in the destination's actual conversation, using existing correlated answer/continuation semantics. |
-| `session_rename` / `session_move` | Existing title and active visual-folder validation; no filesystem move or cwd change. |
+| `session_rename` | Session title only. Topic assignment/name/color edits and session_move are not in the general catalog. |
 | `session_settings_update` | Optional fields, preserved when omitted; model/effort validate atomically between turns. YOLO alone can change during work and resolves pending permissions on enable. Native Codex full-access turns cannot downgrade until they end. |
 | `session_graph_select` | Available main-chat graph or empty ID for None; does not invoke a graph. |
 | `session_question_answer` | Exact active native request, including graph requests routed through their owning chat; existing choices, cancellation, custom/multiple answers, resolving conflicts and private-answer masking. |
-| `session_create_options` | Explicit `projectId`, optional harness and pagination; installed harnesses, active folders, connected model/effort defaults and recent real general-chat human message IDs. |
-| `session_create` | `{projectId,title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,folder?,yolo?}`; normal independent top-level child in the registered project directory; durable spawn receipt, not completion. |
+| `session_create_options` | Explicit `projectId`, optional harness and pagination; installed harnesses, connected model/effort defaults and recent real general-chat human message IDs. |
+| `session_create` | `{projectId,title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,yolo?}`; normal independent top-level child in the registered project directory, initially without a topic; durable spawn receipt, not completion. |
 | `session_stop` | Chat cancellation, owned native process termination and unsent-queue pause; waits up to 20 seconds, leaves independent `activeGraph` observable. |
 | `session_queue_remove` / `session_queue_send` | Exact `messageId`; existing removal or Send now, with effective item ID and bounded queue state. Sending conflicts. Uncertain Send now requires `retryUncertain:true` after an explicit user recovery decision and can duplicate delivery. |
-| `session_archive` / `session_restore` | Normal top-level metadata only; preserves runtime/requests. Restore accepts optional active `folder` or Ungrouped and requires it when the current folder is archived. |
+| `session_archive` / `session_restore` | Normal top-level metadata only; preserves runtime/requests and topic membership. Restore under an archived topic requires the user to restore that topic first in UI. |
 | `session_permission_reply` | `{sessionId,permissionId,decision,sourceUserEventId?}`; exact currently pending request through its owner, including projected graph requests; offered decision only, native rollback and related-request resolution. |
 
 All destinations resolve by stable ID in nonremoved projects. Archived sessions
@@ -616,7 +617,8 @@ The child starts with attributed agent input. Same-key identical retries survive
 queue consumption/restart; another project/settings on the key conflict. Catalog
 validation occurs outside the engine lock followed by destination/settings/turn
 revalidation before atomic child, queue payload and receipt acceptance. Rejected
-requests reserve nothing. Folder omission uses Ungrouped. Same-harness settings
+requests reserve nothing. New project sessions start without a topic and classify
+themselves during their first normal turn. Same-harness settings
 and current YOLO inherit under spawn rules; a changed harness uses its defaults.
 Explicit YOLO overrides apply before the first turn and only at the user's request.
 
@@ -668,7 +670,7 @@ Manual acceptance in a disposable environment (not performed during implementati
   the active ID, name and icon stay unchanged, with no duplicate.
 - Reject invalid names and relative, nonexistent or file paths without registration.
 - Restore a removed project and confirm the same ID, sessions/history and
-  active/archived visual folders.
+  active/archived topics.
 - Submit two simultaneous registrations for the same directory: one creation and
   one existing result, both with the same ID. Confirm cleaned paths and Windows case
   differences match; multiple legacy registrations conflict and report their IDs.
@@ -680,7 +682,7 @@ Manual acceptance in a disposable environment (not performed during implementati
 
 ### Session collaboration (private harness bridge)
 
-`session_spawn` accepts `{title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,workspace?,yolo?}`.
+`session_spawn` accepts `{title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,yolo?}`.
 It creates one top-level session in the calling session's project, persists a
 pending first input and a receipt in the origin atomically, and schedules its
 normal turn independently. The source reference must be an existing human `user`
@@ -688,8 +690,12 @@ event in that conversation; the engine records traceability, while the editable
 prompt instructs the agent to create sessions only when explicitly requested.
 Repeated identical calls with the same operation ID return the original receipt;
 different arguments conflict. The receipt reports acceptance, not execution
-success. Default harness/model/effort and visual folder come from the caller;
-changing harness uses that harness's model defaults. Omitted `yolo` inherits the
+success. Default harness/model/effort come from the caller. The engine inherits
+the source main conversation's topic ID, including further descendants and spawn
+via side chat. If its topic is pending, creation returns `topic_pending` before
+creating a child; the main agent must assign it first. New visual grouping overrides
+are rejected; historical accepted requests still compare/replay unchanged.
+Changing harness uses that harness's model defaults. Omitted `yolo` inherits the
 sender's current mode at creation; `yolo:false` starts the requested non-YOLO child
 with permissions enabled. Override only at the user's request. The receipt records
 the resolved creation mode, which does not change on retry or later sender updates.
@@ -699,10 +705,10 @@ recoverable with the ordinary queue controls after interruption.
 
 `session_spawn_options` is available to normal main/side agents in their own
 project. It lists installed harnesses, paginated exact model IDs and efforts,
-active visual folders, required spawn fields and five bounded recent real user
+the effective topic, required spawn fields and five bounded recent real user
 message IDs. OpenCode requires full `provider/model` IDs such as
-`openai/gpt-6-luna`, not display labels or bare model names. `workspace` is a visual
-folder name, not a path; `sourceUserEventId` is a message ID in the sender, not its
+`openai/gpt-6-luna`, not display labels or bare model names. There is no grouping
+workspace option; `sourceUserEventId` is a message ID in the sender, not its
 session ID. The agent guidance directs recoverable validation errors back into
 corrected tool calls rather than ending the user's task.
 
@@ -737,7 +743,7 @@ downgrade to binaries rejecting new fields is not promised. Strict decoding and
 receipt/consultation identity/scope validation remain enabled.
 
 `session_discover` accepts `{query?,cursor?,limit?,includeArchived?}` and returns
-bounded same-project top-level identities (`id`, title, project, workspace,
+bounded same-project top-level identities (`id`, title, project, topic,
 harness and archived flag). `linked_read` and `linked_ask` accept an optional
 `sessionId` for an eligible top-level target; without it they retain their
 main/side target. Reading an archived session requires an explicit ID and is
@@ -765,6 +771,8 @@ type Project = {
   icon: string
   folders: string[]
   archivedFolders: string[]
+  topics: { id: string; name: string; color: 'neutral' | 'blue' | 'purple' | 'green' | 'amber' | 'rose'; createdAt: string; archived?: boolean }[]
+  topicOrder?: string[] // persisted manual order; new unpositioned topics appear first
 }
 
 type Session = {
@@ -774,6 +782,7 @@ type Session = {
   projectId: string
   title: string
   workspace: string
+  topicId?: string // authoritative membership; workspace is historical only
   harness: 'pi' | 'opencode' | 'codex'
   model?: string
   effort?: string
@@ -1104,10 +1113,10 @@ session path live in a separate private section of `state.json`.
 
 Validation and semantics:
 
-- Project names and grouping folder names are trimmed, 1-60 Unicode characters,
-  with no control characters. Duplicate grouping names are rejected
-  case-insensitively; `Ungrouped` is reserved. These folders are labels, not
-  filesystem directories. `Project.folders` initially equals `[]`.
+- Project and topic names are trimmed, 1-60 Unicode characters, with no control
+  characters. Topics have stable project-scoped IDs; equal names never merge.
+  New projects start with no topics or default folders. Topic colors are predefined
+  keys, initially neutral; they are not free RGB values or filesystem directories.
 - Project `folder` must be an existing absolute directory, checked again before
   every execution. Processes always use that directory as their working directory.
 - `icon` may be empty. Otherwise it must be a `data:image/png;base64,` URL, at most
@@ -1116,11 +1125,43 @@ Validation and semantics:
   image allocation bombs.
 - Session titles are trimmed, 1-200 characters. Optional model IDs are trimmed,
   at most 200 characters, with no control characters or leading `-`.
-- `workspace` names an existing project grouping folder or `Ungrouped`. An empty
-  or omitted workspace becomes `Ungrouped`. Archived grouping folders cannot receive
-  new or moved sessions. It never changes the process cwd.
-- Archiving a grouping folder hides the folder and its sessions without mutating each
-  session. Session and folder archives are reversible and preserve all stored history.
+- A new independent session has no `topicId`. The private main-only
+  `session_topic_set({name})` tool assigns it once during a normal active turn;
+  later calls return the canonical current topic without changing its name/color.
+  Side chats resolve their main's topic; general/graph/subagent roles cannot assign.
+  Topic edits use the public UI API under the existing personal-use network contract,
+  not a new authentication claim or an agent rename tool.
+- Archiving a topic hides its active group without mutating session membership.
+  Archived history remains readable; new messages, sends, consultations and queued
+  execution require effective restoration. Archive is metadata, not Stop. Restore
+  the topic before restoring an individually archived member; never move it implicitly.
+- `topicSchema:1` records a durable migration after both journal segments replay.
+  Each legacy folder gets a distinct project topic, retaining archive state; empty
+  labels/Ungrouped remain no topic. Historical folder fields and spawn requests are
+  retained for compatibility. Generic transaction cloning/patches carry topics and
+  topicId through rollback, replay, checkpoint and HTTP/SSE summaries. Graph
+  execution workspaces/directories are unrelated and unchanged.
+- The shared sidebar orders members newest-created first, with ID ties. Topics
+  initially use newest-created persisted members (including archived ones), with
+  topic-ID ties. Dragging topic headers saves `Project.topicOrder`; positioned
+  topics stay in that order and new unpositioned topics precede it. Reorder validates
+  active same-project source/target under the state lock and commits through the
+  normal journal/checkpoint path. Archived positions survive restore and removed
+  project re-registration.
+- Dragging a normal active session to another active same-project topic updates
+  only its `topicId` and metadata timestamp. History, runtime, Library/settings,
+  existing spawn receipts and already-created descendants are preserved. Side chats
+  resolve their main's new association. Future spawn uses the current main topic;
+  a move during outside-lock model validation returns `topic_changed` before new
+  acceptance, while identical accepted operations retain their receipt. Empty IDs,
+  archived source/target, foreign topics and non-main roles are rejected. No agent
+  reassignment or reorder tool is exposed.
+- Collapse uses local engine/project/topic-ID keys, search includes topic names,
+  and the chat tag opens name/color editing for the group. Menus offer Move up/down
+  and Move to topic as alternatives to dragging. Ungrouped stays last and is not a
+  move destination. No manual folder creation or within-topic session reordering
+  controls are included. See
+  `../TOPICS_IMPLEMENTATION_PROGRESS.md` for checks and human acceptance steps.
 - Only completed assistant events, including legacy events without a status, accept
   the durable `favorite` flag. Running, failed, and cancelled output does not.
 - New sessions are idle with `events: []`. The harness must be discoverable when

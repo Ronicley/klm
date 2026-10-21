@@ -204,6 +204,10 @@ func (h *openCodeHTTP) request(ctx context.Context, method, path string, body an
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		var transportError net.Error
+		if errors.As(err, &transportError) && transportError.Timeout() {
+			return nil, errors.New("OpenCode server request timed out while waiting for a response.")
+		}
 		// Neither diagnostics nor HTTP bodies are safe to expose as transport errors.
 		return nil, errors.New("Could not communicate with the owned OpenCode server.")
 	}
@@ -243,6 +247,9 @@ func (h *openCodeHTTP) jsonResponse(ctx context.Context, method, path string, bo
 	if err != nil {
 		if errors.Is(err, errOpenCodeResponseTooLarge) || errors.Is(err, errOpenCodeHistoryWireLimit) || errors.Is(err, errOpenCodeHistoryJSON) {
 			return failure(err)
+		}
+		if ctx.Err() != nil {
+			return failure(ctx.Err())
 		}
 		return failure(errors.New("could not read the response"))
 	}
@@ -542,8 +549,9 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 			return failed(errors.New("Owned OpenCode Library policy did not complete its handshake."))
 		}
 	}
+	bridgeStarted := time.Now()
 	if err := h.json(ctx, http.MethodPost, "/mcp", map[string]any{"name": "klm_linked", "config": map[string]any{"type": "remote", "url": p.bridge.url, "headers": map[string]string{"Authorization": "Bearer " + p.bridge.token}, "oauth": false, "enabled": true, "timeout": linkedToolClientTimeout.Milliseconds()}}, &bridgeStatus); err != nil {
-		return failed(errors.New("Could not configure the OpenCode linked-agent bridge."))
+		return failed(fmt.Errorf("Could not configure the OpenCode linked-agent bridge (elapsed: %s): %w", time.Since(bridgeStarted).Round(time.Millisecond), err))
 	}
 	if str(object(bridgeStatus["klm_linked"]), "status") != "connected" {
 		return failed(errors.New("OpenCode did not connect to the linked-agent bridge."))

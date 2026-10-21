@@ -5,6 +5,8 @@ import type { ConversationCapabilities } from './features/library/api';
 export const ENGINE_URL = resolveEngineURL();
 
 export type Project = {
+  topics?: Topic[];
+  topicOrder?: string[];
   id: string;
   name: string;
   folder: string;
@@ -12,6 +14,8 @@ export type Project = {
   folders: string[];
   archivedFolders: string[];
 };
+
+export type Topic = { id: string; name: string; color: 'neutral' | 'blue' | 'purple' | 'green' | 'amber' | 'rose'; createdAt: string; archived?: boolean };
 
 export type Harness = {
   id: 'pi' | 'opencode' | 'codex';
@@ -54,6 +58,7 @@ export type Session = {
   latestReasoningTitle?: string;
   lastMessageAt?: string;
   workspace: string;
+  topicId?: string;
   harness: Harness['id'];
   harnessLocked?: boolean;
   model?: string;
