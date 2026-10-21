@@ -36,6 +36,57 @@
       "runOptions": {
         "instanceLimit": 1
       }
+    },
+    {
+      "label": "Release: Windows installers (Engine + Desktop)",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "${workspaceFolder}/distribution/windows/build-release.ps1",
+        "-Version", "${input:releaseVersion}"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "Release: Engine installer",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "${workspaceFolder}/distribution/windows/build-engine.ps1",
+        "-Version", "${input:releaseVersion}"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "Release: Desktop installer (project version)",
+      "type": "shell",
+      "command": "npm.cmd",
+      "args": ["run", "desktop:build", "--", "--", "--locked"],
+      "options": { "cwd": "${workspaceFolder}/clients/desktop" },
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "runOptions": { "instanceLimit": 1 }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "releaseVersion",
+      "type": "promptString",
+      "description": "Release version (major.minor.patch, e.g. 0.5.1)",
+      "default": "0.5.0"
     }
   ]
 }
