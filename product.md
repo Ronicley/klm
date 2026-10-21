@@ -41,7 +41,8 @@ to one project and use Pi, OpenCode, or Codex headlessly. The client presents th
 messages, exposed reasoning, commands, and MCP/tool events those harnesses emit.
 
 Top-level sessions are grouped by persistent, project-scoped **topics**, replacing
-visual session folders. A new independent project session starts without a topic.
+visual session folders. A new independent project session starts without a topic
+unless the user explicitly creates it inside an existing topic.
 During its ordinary turn, as soon as the objective is understood, its main agent
 sets a short initial topic name through the private `session_topic_set` tool.
 Agent assignment is one-time: repeated calls return the current topic unchanged.
@@ -81,6 +82,16 @@ constraints do not replace the saved preferred width.
 
 The chat navigation's topic tag opens a shared name/color editor. Colors use a small
 theme-aware palette (Neutral, Blue, Purple, Green, Amber, Rose), initially Neutral.
+The Add topic icon, immediately left of Search sessions, opens the same name/color
+dialog in creation mode. It creates a persistent empty topic at the top of the list
+without creating, assigning or starting any session. An expanded active topic with
+no active sessions shows a New session button inside its empty body; creating from
+it associates the new session with that topic atomically. That empty-state button is
+absent when collapsed, when sessions are present or merely filtered out by search,
+and from Ungrouped/archived sections. Active topic headers also offer an Add session
+icon beside More, including while collapsed or populated; it uses the same creation
+flow with the topic already selected. Topic name, Add session and More share one
+header hover/focus background. Global New session retains the no-topic default.
 Color is limited to group outlines/headers and tags; row selection and runtime LEDs
 retain their existing styles. Users can drag an active session onto another active
 topic, including a collapsed topic, which expands after a successful move. The

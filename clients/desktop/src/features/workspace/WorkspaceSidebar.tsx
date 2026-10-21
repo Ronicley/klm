@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ListTodo, MoreHorizontal, PanelLeftClose, Pencil, Search, Settings, SquarePen, Workflow } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ListTodo, MoreHorizontal, PanelLeftClose, Pencil, Plus, Search, Settings, SquarePen, Workflow } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Menu, MenuItem } from '../../design-system/Menu';
@@ -31,9 +31,9 @@ function sessionRuntimeState(session: Session) {
   return { state: 'off', label: 'Runtime stopped' };
 }
 
-export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onRename, onEditTopic, onArchiveSession, onArchiveTopic, onMoveSession, onReorderTopic, onClose, onAgents, onGraphs, onProjectSettings, onActivityBoard, hasTaskProvider }: {
+export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onRename, onEditTopic, onCreateTopic, onArchiveSession, onArchiveTopic, onMoveSession, onReorderTopic, onClose, onAgents, onGraphs, onProjectSettings, onActivityBoard, hasTaskProvider }: {
   project: Project; sessions: Session[]; activeId: string; collapsed: string[]; archivedCollapsed: boolean; onCollapsedChange: Dispatch<SetStateAction<string[]>>; onArchivedCollapsedChange: (collapsed: boolean) => void;
-  onSelect: (id: string) => void; onNew: () => void; onRename: (session: Session) => void; onEditTopic: (topic: Topic) => void;
+  onSelect: (id: string) => void; onNew: (topic?: Topic) => void; onRename: (session: Session) => void; onEditTopic: (topic: Topic) => void; onCreateTopic: () => void;
   onArchiveSession: (session: Session, archived: boolean) => Promise<boolean>; onArchiveTopic: (topic: Topic, archived: boolean) => Promise<boolean>;
   onMoveSession: (session: Session, topic: Topic) => Promise<boolean>; onReorderTopic: (topic: Topic, beforeId: string) => Promise<boolean>;
   onClose: () => void; activeSection: 'chat' | 'design' | 'agents' | 'graphs' | 'activity-board'; onAgents: () => void; onGraphs: () => void;
@@ -158,20 +158,20 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
         if (item.kind === 'session') { const session = sessions.find(session => session.id === item.id); if (session) void moveSession(session, target); }
         else { const topic = activeTopics.find(topic => topic.id === item.id); if (topic && topic.id !== target.id) reorderTopic(topic, after ? activeTopics[index + 1]?.id ?? '' : target.id); }
       }}>
-      <div className="workspace-folder-row topic-heading">
+      <div className={`workspace-folder-row topic-heading ${group.topic && !archived && topicMenu === group.id ? 'has-open-menu' : ''}`}>
         <button className="workspace-folder" title={group.name} aria-expanded={expanded} draggable={!!group.topic && !archived && !busyAction && search === null}
           onDragStart={event => { event.stopPropagation(); suppressClick.current = true; setSessionMenu(''); setTopicMenu(''); setDragging({ kind: 'topic', id: group.id }); setDrop(null); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-klm-topic', group.id); }} onDragEnd={endDrag}
           onClick={() => { if (search === null && !suppressClick.current) onCollapsedChange(collapsed.includes(collapseKey) ? collapsed.filter(item => item !== collapseKey) : [...collapsed, collapseKey]); }}>{expanded ? <ChevronDown /> : <ChevronRight />}<span>{group.name}</span></button>
         {group.topic && (group.topic.archived
           ? <IconButton label={`Restore topic ${group.name}`} disabled={!!busyAction} onClick={() => void runAction(`restore-topic:${group.id}`, () => onArchiveTopic(group.topic!, false), 'Could not restore the topic. Try again.')}><ArchiveRestore /></IconButton>
-          : !archived && <Menu label={`${group.name} actions`} role="menu" className="workspace-action-menu" open={topicMenu === group.id} onOpenChange={open => { setActionError(''); setTopicMenu(open ? group.id : ''); }} side="bottom" trigger={props => <IconButton {...props} label={`${group.name} actions`}><MoreHorizontal /></IconButton>}>
+          : !archived && <><IconButton label={`Add session to ${group.name}`} disabled={!!busyAction} onClick={() => { setTopicMenu(''); onNew(group.topic); }}><Plus /></IconButton><Menu label={`${group.name} actions`} role="menu" className="workspace-action-menu" open={topicMenu === group.id} onOpenChange={open => { setActionError(''); setTopicMenu(open ? group.id : ''); }} side="bottom" trigger={props => <IconButton {...props} label={`${group.name} actions`}><MoreHorizontal /></IconButton>}>
             <MenuItem role="menuitem" onClick={() => { setTopicMenu(''); onEditTopic(group.topic!); }}><Pencil />Edit topic</MenuItem>
             <MenuItem role="menuitem" disabled={!!busyAction || index <= 0} onClick={() => reorderTopic(group.topic!, activeTopics[index - 1].id)}><ArrowUp />Move up</MenuItem>
             <MenuItem role="menuitem" disabled={!!busyAction || index === activeTopics.length - 1} onClick={() => reorderTopic(group.topic!, activeTopics[index + 2]?.id ?? '')}><ArrowDown />Move down</MenuItem>
             <MenuItem role="menuitem" disabled={!!busyAction} onClick={() => void runAction(`archive-topic:${group.id}`, () => onArchiveTopic(group.topic!, true), 'Could not archive the topic. Try again.')}><Archive />Archive</MenuItem>
-          </Menu>)}
+          </Menu></>)}
       </div>
-      {expanded && <div className="session-list">{matches.map(session => sessionRow(session, archived, !!group.topic?.archived))}{!matches.length && <p className="empty-workspace">No sessions</p>}</div>}
+      {expanded && <div className="session-list">{matches.map(session => sessionRow(session, archived, !!group.topic?.archived))}{!matches.length && (group.topic && !archived && !group.topic.archived && !group.sessions.some(session => !session.archived) ? <Button className="topic-new-session" variant="ghost" size="sm" onClick={() => onNew(group.topic)}><SquarePen />New session</Button> : <p className="empty-workspace">No sessions</p>)}</div>}
     </section>;
   }
 
@@ -179,13 +179,13 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
     <div className="brand-row"><div className="project-sidebar-heading"><strong title={project.name}>{project.name}</strong><IconButton label="Project settings" className="project-settings-button" onClick={() => onProjectSettings(project)}><Settings /></IconButton></div><IconButton label="Close sessions" onClick={onClose}><PanelLeftClose /></IconButton></div>
     <p className="project-folder-label" title={project.folder}><bdi dir="ltr">{project.folder}</bdi></p>
     <nav className="sidebar-navigation" aria-label="Project navigation">
-      <Button variant="ghost" size="sm" onClick={onNew}><SquarePen />New session</Button>
+      <Button variant="ghost" size="sm" onClick={() => onNew()}><SquarePen />New session</Button>
       {hasTaskProvider && <Button variant="ghost" size="sm" aria-current={activeSection === 'activity-board' ? 'page' : undefined} onClick={onActivityBoard}><ListTodo />Tasks</Button>}
       <Button variant="ghost" size="sm" aria-current={activeSection === 'agents' ? 'page' : undefined} onClick={onAgents}><Bot />Agents</Button>
       <Button variant="ghost" size="sm" aria-current={activeSection === 'graphs' ? 'page' : undefined} onClick={onGraphs}><Workflow />Graphs</Button>
     </nav>
     <div className="workspace-list">
-      <div className="workspace-heading"><h2>Sessions</h2><IconButton label="Search sessions" aria-expanded={search !== null} onClick={() => setSearch(search === null ? '' : null)}><Search /></IconButton></div>
+      <div className="workspace-heading"><h2>Sessions</h2><div className="workspace-heading-actions"><IconButton label="Add topic" disabled={!!busyAction} onClick={() => { setSearch(null); onCreateTopic(); }}><Plus /></IconButton><IconButton label="Search sessions" aria-expanded={search !== null} onClick={() => setSearch(search === null ? '' : null)}><Search /></IconButton></div></div>
       {search !== null && <input autoFocus className="search-input" aria-label="Search sessions" placeholder="Find a session..." value={search} onChange={event => setSearch(event.target.value)} />}
       {groups.filter(group => !group.topic?.archived).map(group => groupView(group, false))}
       <div className="workspace-group">

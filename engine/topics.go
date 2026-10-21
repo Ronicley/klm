@@ -176,6 +176,47 @@ func (p *adapter) setSessionTopic(raw json.RawMessage) (any, error) {
 	return t, nil
 }
 
+func (a *app) createTopic(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name  string `json:"name"`
+		Color string `json:"color"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	name, ok := cleanLabel(body.Name, 60)
+	if !ok {
+		fail(w, 400, "Topic name must contain 1 to 60 characters.")
+		return
+	}
+	if body.Color == "" {
+		body.Color = "neutral"
+	}
+	if !validTopicColor(body.Color) {
+		fail(w, 400, "Choose a predefined topic color.")
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	projectID := r.PathValue("id")
+	p := a.state.project(projectID)
+	if p == nil || p.Removed {
+		fail(w, 404, "Project not found.")
+		return
+	}
+	topic := Topic{ID: newID(), Name: name, Color: body.Color, CreatedAt: now()}
+	order := append([]string{topic.ID}, orderedTopicIDs(&a.state, p)...)
+	if err := a.commitLocked(func(d *diskState) {
+		project := d.project(projectID)
+		project.Topics = append(project.Topics, topic)
+		project.TopicOrder = order
+	}); err != nil {
+		fail(w, 503, err.Error())
+		return
+	}
+	respond(w, 201, *a.state.project(projectID))
+}
+
 func (a *app) patchTopic(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name     *string `json:"name"`

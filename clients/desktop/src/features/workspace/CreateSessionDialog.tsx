@@ -3,9 +3,9 @@ import { X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import type { Harness, Project } from '../../engine';
 
-export function CreateSessionDialog({ project, harnesses, onCreate, onClose }: {
-  project: Project; harnesses: Harness[];
-  onCreate: (input: { projectId: string; title: string; harness: Harness['id']; model?: string }) => Promise<string | null>;
+export function CreateSessionDialog({ project, harnesses, topicId, onCreate, onClose }: {
+  project: Project; harnesses: Harness[]; topicId?: string;
+  onCreate: (input: { projectId: string; title: string; harness: Harness['id']; model?: string; topicId?: string }) => Promise<string | null>;
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -21,7 +21,7 @@ export function CreateSessionDialog({ project, harnesses, onCreate, onClose }: {
       if (busy || !selected?.available) return;
       setBusy(true); setError('');
       try {
-        const failure = await onCreate({ projectId: project.id, title: title.trim() || 'New session', harness });
+        const failure = await onCreate({ projectId: project.id, title: title.trim() || 'New session', harness, ...(topicId ? { topicId } : {}) });
         if (failure) setError(failure); else onClose();
       } catch (error) { setError(error instanceof Error ? error.message : 'Could not create the session.'); }
       finally { setBusy(false); }

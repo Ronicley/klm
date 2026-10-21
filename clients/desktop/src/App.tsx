@@ -217,9 +217,10 @@ export function App() {
   const [projectSettingsSection, setProjectSettingsSection] = useState<ProjectSettingsSection>('general');
   const settingsProject = projects.find(item => item.id === projectSettingsId);
   useEffect(() => { if (projectSettingsId && !settingsProject) setProjectSettingsId(''); }, [projectSettingsId, settingsProject?.id]);
-  const [creatingSession, setCreatingSession] = useState<{ projectId: string } | null>(null);
+  const [creatingSession, setCreatingSession] = useState<{ projectId: string; topicId?: string } | null>(null);
   const [renamingSession, setRenamingSession] = useState<Session | null>(null);
   const [editingTopic, setEditingTopic] = useState<{ projectId: string; topic: Topic } | null>(null);
+  const [creatingTopicProjectId, setCreatingTopicProjectId] = useState('');
   const project = projects.find(item => item.id === activeProjectId) ?? projects[0];
   const projectSessions = sessions.filter(item => item.projectId === project?.id && !item.parentId && item.role !== 'graph_node');
   const visibleProjectSessions = projectSessions.filter(item => !item.archived && !topicArchived(project, item)).sort(newestSessionFirst);
@@ -533,10 +534,10 @@ export function App() {
     return () => { covered.forEach(element => { element.inert = false; }); document.removeEventListener('keydown', onKey); window.removeEventListener('resize', resize); previous?.focus(); };
   }, [sidebarOpen, project?.id]);
   useEffect(() => { if (sideVisible && session) void ensureSide(session); }, [sideVisible, activeId]);
-  function newSession() {
+  function newSession(topic?: Topic) {
     if (!project) return;
     navigation.current += 1;
-    setCreatingSession({ projectId: project.id });
+    setCreatingSession({ projectId: project.id, topicId: topic?.id });
     setSidebarOpen(false);
   }
   function generalHarnessBlocked(target: Session) {
@@ -840,7 +841,7 @@ export function App() {
       return null;
     } catch (error) { return errorMessage(error); }
   }
-  async function createSession(input: { projectId: string; title: string; harness: Harness['id']; model?: string }): Promise<string | null> {
+  async function createSession(input: { projectId: string; title: string; harness: Harness['id']; model?: string; topicId?: string }): Promise<string | null> {
     const selection = navigation.current;
     try {
       const next = await request<SessionResponse>('/api/sessions', 'POST', input);
@@ -851,6 +852,14 @@ export function App() {
         setMobileNavigationOpen(false);
         setView('chat');
       }
+      return null;
+    } catch (error) { return errorMessage(error); }
+  }
+  async function createTopic(projectId: string, input: Pick<Topic, 'name' | 'color'>): Promise<string | null> {
+    try {
+      const next = await request<Project>(`/api/projects/${encodeURIComponent(projectId)}/topics`, 'POST', input);
+      projectRevision.current += 1;
+      setEngine(current => ({ ...current, projects: current.projects.map(item => item.id === projectId ? next : item) }));
       return null;
     } catch (error) { return errorMessage(error); }
   }
@@ -917,6 +926,7 @@ export function App() {
       onCollapsedChange={topics => setWorkspaceNavigation(current => ({ ...current, collapsedTopics: { ...current.collapsedTopics, [project.id]: typeof topics === 'function' ? topics(current.collapsedTopics[project.id] ?? []) : topics } }))}
       onArchivedCollapsedChange={collapsed => setWorkspaceNavigation(current => ({ ...current, collapsedArchivedProjects: collapsed ? [...new Set([...current.collapsedArchivedProjects, project.id])] : current.collapsedArchivedProjects.filter(id => id !== project.id) }))}
       onNew={newSession} onRename={setRenamingSession} onEditTopic={topic => setEditingTopic({ projectId: project.id, topic })}
+      onCreateTopic={() => setCreatingTopicProjectId(project.id)}
       onArchiveSession={async (target, archived) => (await patchSession(target, { archived })) === null}
       onArchiveTopic={async (topic, archived) => (await patchTopic(project.id, topic, { archived })) === null}
       onMoveSession={async (target, topic) => (await patchSession(target, { topicId: topic.id })) === null}
@@ -991,7 +1001,8 @@ export function App() {
     {addingProject !== null && <ProjectDialog initialFolder={addingProject} onSave={addProject} onClose={() => { navigation.current += 1; setAddingProject(null); }} />}
     {editingProject && <ProjectDialog key={`edit-project:${editingProject.id}`} initialFolder={editingProject.folder} project={editingProject} onSave={input => editProject(editingProject.id, input)} onClose={() => setEditingProject(null)} />}
     {settingsProject && <ProjectSettingsDialog key={`${settingsProject.id}:${projectSettingsSection}`} project={settingsProject} initialSection={projectSettingsSection} tasks={tasksBoard} onSave={editProject} onRemove={removeProject} onClose={() => setProjectSettingsId('')} />}
-    {creatingSession && createProject && <CreateSessionDialog project={createProject} harnesses={harnesses} onCreate={createSession} onClose={() => { navigation.current += 1; setCreatingSession(null); }} />}
+    {creatingSession && createProject && <CreateSessionDialog project={createProject} harnesses={harnesses} topicId={creatingSession.topicId} onCreate={createSession} onClose={() => { navigation.current += 1; setCreatingSession(null); }} />}
+    {creatingTopicProjectId && <TopicDialog key={`new-topic:${creatingTopicProjectId}`} onSave={input => createTopic(creatingTopicProjectId, input)} onClose={() => setCreatingTopicProjectId('')} />}
     {editingTopic && <TopicDialog key={editingTopic.topic.id} topic={editingTopic.topic} onSave={input => patchTopic(editingTopic.projectId, editingTopic.topic, input)} onClose={() => setEditingTopic(null)} />}
   </div>
     {mobileChats.map(({ session: mobileChatSession, ...sheet }) => <BottomSheet key={sheet.id} title={sheet.title} className="mobile-session-chat-sheet" onClose={() => closeMobileChatSheet(sheet.id)}>

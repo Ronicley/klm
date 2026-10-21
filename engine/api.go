@@ -90,6 +90,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/projects/{id}/folders", a.createFolder)
 	mux.HandleFunc("PATCH /api/projects/{id}/folders", a.patchFolder)
 	mux.HandleFunc("PATCH /api/projects/{id}/topics/{topicId}", a.patchTopic)
+	mux.HandleFunc("POST /api/projects/{id}/topics", a.createTopic)
 	mux.HandleFunc("GET /api/projects/{id}/paths", a.projectPaths)
 	mux.HandleFunc("GET /api/projects/{id}/authoring", a.authoring)
 	mux.HandleFunc("GET /api/projects/{id}/models/{harness}", a.projectModels)
@@ -515,6 +516,7 @@ func workspace(p *Project, name string) (string, bool) {
 func (a *app) createSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ProjectID string `json:"projectId"`
+		TopicID   string `json:"topicId"`
 		Title     string `json:"title"`
 		Workspace string `json:"workspace"`
 		Harness   string `json:"harness"`
@@ -545,8 +547,15 @@ func (a *app) createSession(w http.ResponseWriter, r *http.Request) {
 	group := "Ungrouped"
 	if body.Workspace != "" && body.Workspace != "Ungrouped" {
 		a.mu.Unlock()
-		fail(w, 400, "New independent sessions start without a topic. Omit workspace.")
+		fail(w, 400, "Omit workspace. Use topicId to choose an existing topic.")
 		return
+	}
+	if body.TopicID != "" {
+		if topic := p.topic(body.TopicID); topic == nil || topic.Archived {
+			a.mu.Unlock()
+			fail(w, 400, "Choose an existing active topic in the same project.")
+			return
+		}
 	}
 	if _, ok := a.binaries[body.Harness]; !ok {
 		a.mu.Unlock()
@@ -554,6 +563,7 @@ func (a *app) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := newTopLevelSession(p.ID, title, group, body.Harness, model, "")
+	s.TopicID = body.TopicID
 	if err := a.commitLocked(func(d *diskState) {
 		a.appendTopLevelSession(d, s)
 	}); err != nil {

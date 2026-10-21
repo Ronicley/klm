@@ -126,9 +126,10 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | PATCH | `/api/projects/{id}` | `{name?,icon?}` -> 200 Project |
 | DELETE | `/api/projects/{id}` | `{removed:true}`; hides the project, preserving its files and saved history; 409 while a session is running |
 | PATCH | `/api/projects/{id}/topics/{topicId}` | `{name?,color?,archived?,position?:{beforeId:string}}` -> 200 canonical Project; empty beforeId places an active topic last |
+| POST | `/api/projects/{id}/topics` | `{name,color?}` -> 201 canonical Project; creates an empty topic first in the saved order, color defaults to neutral |
 | POST / PATCH | `/api/projects/{id}/folders` | 410; visual folders were replaced by persistent topics |
 | GET | `/api/projects/{id}/paths?q=...` | `{paths:[{path,kind:"file"\|"directory"}],partial:boolean}`; project-relative paths |
-| POST | `/api/sessions` | `{projectId,title,harness,model?}` -> 201 SessionUpdate, initially without a topic; legacy workspace accepts only empty/Ungrouped |
+| POST | `/api/sessions` | `{projectId,title,harness,model?,topicId?}` -> 201 SessionUpdate; omitted topicId starts unassigned, explicit topicId must be an active topic in that project; legacy workspace accepts only empty/Ungrouped |
 | POST | `/api/sessions/{id}/side` | `{harness?}` -> existing or newly created side Session; one per main, serialized atomically |
 | POST | `/api/general-session` | `{}` -> existing or newly created singleton general SessionUpdate; atomic and independent of user projects |
 | PATCH | `/api/sessions/{id}/harness` | `{harness}` -> side/general SessionUpdate; general harness permanently locks at first accepted message |
@@ -1125,7 +1126,14 @@ Validation and semantics:
   image allocation bombs.
 - Session titles are trimmed, 1-200 characters. Optional model IDs are trimmed,
   at most 200 characters, with no control characters or leading `-`.
-- A new independent session has no `topicId`. The private main-only
+- A new independent session has no `topicId` by default. The UI's Add topic action
+  (left of Search sessions) can first create a persistent empty topic with name/color.
+  Only an expanded active topic without active sessions shows the in-topic New session
+  action; search filtering alone does not make it empty. This action uses the normal
+  create-session API with an explicit same-project active `topicId`, atomically
+  assigning the new session before any turn. Creating a topic starts no session or
+  agent turn. These UI actions add no private agent creation/assignment capability.
+  The private main-only
   `session_topic_set({name})` tool assigns it once during a normal active turn;
   later calls return the canonical current topic without changing its name/color.
   Side chats resolve their main's topic; general/graph/subagent roles cannot assign.
