@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -66,6 +65,8 @@ func loopbackHost(hostport string) bool {
 
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
+	a.libraryRoutes(mux)
+	a.activityBoardRoutes(mux)
 	mux.HandleFunc("GET /api/health", a.health)
 	mux.HandleFunc("GET /api/state", a.getState)
 	mux.HandleFunc("GET /api/transcription/settings", a.getTranscriptionSettings)
@@ -74,8 +75,22 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/projects", a.createProject)
 	mux.HandleFunc("PATCH /api/projects/{id}", a.updateProject)
 	mux.HandleFunc("DELETE /api/projects/{id}", a.removeProject)
+	mux.HandleFunc("GET /api/projects/{id}/webhooks", a.listWebhooks)
+	mux.HandleFunc("POST /api/projects/{id}/webhooks", a.createWebhook)
+	mux.HandleFunc("PATCH /api/projects/{id}/webhooks/{webhookId}", a.patchWebhook)
+	mux.HandleFunc("DELETE /api/projects/{id}/webhooks/{webhookId}", a.deleteWebhook)
+	mux.HandleFunc("GET /api/projects/{id}/webhooks/{webhookId}/events", a.listWebhookEvents)
+	mux.HandleFunc("GET /api/projects/{id}/webhooks/{webhookId}/events/{eventId}", a.getWebhookEvent)
+	mux.HandleFunc("GET /api/projects/{id}/webhook-events", a.listWebhookReleases)
+	mux.HandleFunc("POST /api/webhooks/github/{webhookId}", a.receiveGithubWebhook)
+	mux.HandleFunc("GET /api/activity/github", a.listGithubActivity)
+	mux.HandleFunc("GET /api/activity/github/catalog", a.getGithubActivityCatalog)
+	mux.HandleFunc("GET /api/activity/github/bookmarks", a.getGithubActivityBookmarks)
+	mux.HandleFunc("GET /api/activity/github/{eventId}", a.getGithubActivity)
 	mux.HandleFunc("POST /api/projects/{id}/folders", a.createFolder)
 	mux.HandleFunc("PATCH /api/projects/{id}/folders", a.patchFolder)
+	mux.HandleFunc("PATCH /api/projects/{id}/topics/{topicId}", a.patchTopic)
+	mux.HandleFunc("POST /api/projects/{id}/topics", a.createTopic)
 	mux.HandleFunc("GET /api/projects/{id}/paths", a.projectPaths)
 	mux.HandleFunc("GET /api/projects/{id}/authoring", a.authoring)
 	mux.HandleFunc("GET /api/projects/{id}/models/{harness}", a.projectModels)
@@ -129,9 +144,16 @@ func (a *app) routes() http.Handler {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			_, pattern := mux.Handler(r)
+			// Signed ingress owns its raw-body/media/admission validation.
+			if pattern == "POST /api/webhooks/github/{webhookId}" {
+				mux.ServeHTTP(w, r)
+				return
+			}
+			webhookDelete := pattern == "DELETE /api/projects/{id}/webhooks/{webhookId}"
 			transcriptionUpload := r.Method == http.MethodPost && r.URL.Path == "/api/transcriptions"
 			kind, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-			if (!transcriptionUpload && (err != nil || kind != "application/json")) ||
+			if (!transcriptionUpload && !webhookDelete && (err != nil || kind != "application/json")) ||
 				(transcriptionUpload && (err != nil || kind != "multipart/form-data")) {
 				if transcriptionUpload {
 					fail(w, 415, "Transcriptions require multipart/form-data.")
@@ -328,36 +350,21 @@ func (a *app) createProject(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	name, ok := cleanLabel(body.Name, 60)
-	if !ok {
-		fail(w, 400, "Project name must contain 1 to 60 characters.")
-		return
-	}
-	folder, err := existingDirectory(body.Folder)
+	p, err := prepareProject(body.Name, body.Folder, body.Icon)
 	if err != nil {
 		fail(w, 400, err.Error())
 		return
 	}
-	if !validIcon(body.Icon) {
-		fail(w, 400, "Icon must be a PNG data URL, at most 128 KiB and 1024 by 1024 pixels.")
-		return
-	}
-	p := Project{ID: newID(), Name: name, Folder: folder, Icon: body.Icon, Folders: []string{}, ArchivedFolders: []string{}}
 	a.mu.Lock()
-	for _, previous := range a.state.Projects {
-		sameFolder := previous.Folder == folder || (runtime.GOOS == "windows" && strings.EqualFold(previous.Folder, folder))
-		if previous.Removed && sameFolder {
-			p.ID, p.Folders, p.ArchivedFolders = previous.ID, previous.Folders, previous.ArchivedFolders
+	var previous *Project
+	for i := range a.state.Projects {
+		candidate := &a.state.Projects[i]
+		if candidate.Removed && sameProjectFolder(candidate.Folder, p.Folder) {
+			previous = candidate
 			break
 		}
 	}
-	err = a.commitLocked(func(d *diskState) {
-		if previous := d.project(p.ID); previous != nil {
-			*previous = p
-		} else {
-			d.Projects = append(d.Projects, p)
-		}
-	})
+	p, err = a.registerProjectLocked(p, previous)
 	a.mu.Unlock()
 	if err != nil {
 		fail(w, 503, err.Error())
@@ -451,7 +458,17 @@ func (a *app) removeProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !p.Removed {
-		if err := a.commitLocked(func(d *diskState) { d.project(id).Removed = true }); err != nil {
+		if err := a.commitLocked(func(d *diskState) {
+			d.project(id).Removed = true
+			for connectionID, c := range d.ActivityBoardConnections {
+				if c.ProjectID == id {
+					s := d.ActivityBoardSync[connectionID]
+					s.Stale = true
+					d.ActivityBoardSync[connectionID] = s
+				}
+			}
+			d.ActivityBoardConfig.Projection++
+		}); err != nil {
 			a.mu.Unlock()
 			fail(w, 503, err.Error())
 			return
@@ -462,137 +479,19 @@ func (a *app) removeProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) createFolder(w http.ResponseWriter, r *http.Request) {
-	var body struct{ Name string }
-	if !decode(w, r, &body) {
-		return
-	}
-	name, ok := cleanLabel(body.Name, 60)
-	if !ok || strings.EqualFold(name, "Ungrouped") {
-		fail(w, 400, "Folder name must contain 1 to 60 characters and cannot be Ungrouped.")
-		return
-	}
-	a.mu.Lock()
-	p := a.state.project(r.PathValue("id"))
-	if p == nil || p.Removed {
-		a.mu.Unlock()
-		fail(w, 404, "Project not found.")
-		return
-	}
-	for _, f := range p.Folders {
-		if strings.EqualFold(f, name) {
-			a.mu.Unlock()
-			fail(w, 409, "Folder already exists.")
-			return
-		}
-	}
-	id := p.ID
-	if err := a.commitLocked(func(d *diskState) {
-		p := d.project(id)
-		p.Folders = append(p.Folders, name)
-	}); err != nil {
-		a.mu.Unlock()
-		fail(w, 503, err.Error())
-		return
-	}
-	response := *a.state.project(id)
-	a.mu.Unlock()
-	respond(w, 201, response)
+	fail(w, 410, "Visual folders were replaced by topics assigned during a conversation.")
+	return
 }
 
 func (a *app) patchFolder(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Name     string `json:"name"`
-		Archived *bool  `json:"archived"`
-		Position *struct {
-			Before string `json:"before"`
-		} `json:"position"`
-	}
-	if !decode(w, r, &body) {
-		return
-	}
-	if body.Archived == nil && body.Position == nil {
-		fail(w, 400, "Provide archived or position to update the folder.")
-		return
-	}
-	a.mu.Lock()
-	p := a.state.project(r.PathValue("id"))
-	if p == nil || p.Removed {
-		a.mu.Unlock()
-		fail(w, 404, "Project not found.")
-		return
-	}
-	name := ""
-	for _, folder := range p.Folders {
-		if strings.EqualFold(folder, strings.TrimSpace(body.Name)) {
-			name = folder
-			break
-		}
-	}
-	if name == "" {
-		a.mu.Unlock()
-		fail(w, 404, "Session folder not found.")
-		return
-	}
-	isArchived := false
-	for _, folder := range p.ArchivedFolders {
-		if folder == name {
-			isArchived = true
-			break
-		}
-	}
-	if body.Position != nil {
-		if isArchived {
-			a.mu.Unlock()
-			fail(w, 400, "Archived folders cannot be reordered.")
-			return
-		}
-		if body.Position.Before != "" {
-			beforeFound := false
-			for _, folder := range p.Folders {
-				if folder == body.Position.Before && !folderArchived(p, folder) {
-					beforeFound = true
-					break
-				}
-			}
-			if !beforeFound {
-				a.mu.Unlock()
-				fail(w, 400, "Position target must be an active session folder.")
-				return
-			}
-		}
-	}
-	if (body.Archived != nil && isArchived != *body.Archived) || body.Position != nil {
-		id := p.ID
-		if err := a.commitLocked(func(d *diskState) {
-			project := d.project(id)
-			if body.Archived != nil {
-				if *body.Archived {
-					project.ArchivedFolders = append(project.ArchivedFolders, name)
-				} else {
-					folders := project.ArchivedFolders[:0]
-					for _, folder := range project.ArchivedFolders {
-						if folder != name {
-							folders = append(folders, folder)
-						}
-					}
-					project.ArchivedFolders = folders
-				}
-			}
-			if body.Position != nil && body.Position.Before != name {
-				project.Folders = moveStringBefore(project.Folders, name, body.Position.Before)
-			}
-		}); err != nil {
-			a.mu.Unlock()
-			fail(w, 503, err.Error())
-			return
-		}
-	}
-	response := *a.state.project(p.ID)
-	a.mu.Unlock()
-	respond(w, 200, response)
+	fail(w, 410, "Visual folders were replaced by topics. Use the topic controls.")
+	return
 }
 
 func folderArchived(p *Project, name string) bool {
+	if p == nil {
+		return false
+	}
 	for _, folder := range p.ArchivedFolders {
 		if folder == name {
 			return true
@@ -617,6 +516,7 @@ func workspace(p *Project, name string) (string, bool) {
 func (a *app) createSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ProjectID string `json:"projectId"`
+		TopicID   string `json:"topicId"`
 		Title     string `json:"title"`
 		Workspace string `json:"workspace"`
 		Harness   string `json:"harness"`
@@ -644,11 +544,18 @@ func (a *app) createSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "Project not found.")
 		return
 	}
-	group, ok := workspace(p, body.Workspace)
-	if !ok {
+	group := "Ungrouped"
+	if body.Workspace != "" && body.Workspace != "Ungrouped" {
 		a.mu.Unlock()
-		fail(w, 400, "Workspace must be Ungrouped or an existing project folder name.")
+		fail(w, 400, "Omit workspace. Use topicId to choose an existing topic.")
 		return
+	}
+	if body.TopicID != "" {
+		if topic := p.topic(body.TopicID); topic == nil || topic.Archived {
+			a.mu.Unlock()
+			fail(w, 400, "Choose an existing active topic in the same project.")
+			return
+		}
 	}
 	if _, ok := a.binaries[body.Harness]; !ok {
 		a.mu.Unlock()
@@ -656,6 +563,7 @@ func (a *app) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := newTopLevelSession(p.ID, title, group, body.Harness, model, "")
+	s.TopicID = body.TopicID
 	if err := a.commitLocked(func(d *diskState) {
 		a.appendTopLevelSession(d, s)
 	}); err != nil {
@@ -671,6 +579,7 @@ func (a *app) createSession(w http.ResponseWriter, r *http.Request) {
 func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title     *string `json:"title"`
+		TopicID   *string `json:"topicId"`
 		Workspace *string `json:"workspace"`
 		Archived  *bool   `json:"archived"`
 		Position  *struct {
@@ -681,8 +590,12 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Title == nil && body.Workspace == nil && body.Archived == nil && body.Position == nil {
-		fail(w, 400, "Provide title, workspace, archived, or position.")
+	if body.Workspace != nil || body.Position != nil {
+		fail(w, 400, "Legacy folder and session-order overrides are not supported. Use topicId to change topic.")
+		return
+	}
+	if body.Title == nil && body.Archived == nil && body.TopicID == nil {
+		fail(w, 400, "Provide title, archived or topicId.")
 		return
 	}
 	a.mu.Lock()
@@ -692,11 +605,19 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "Session not found.")
 		return
 	}
-	archiveFolder := body.Workspace
-	if archiveFolder == nil && body.Position != nil {
-		archiveFolder = &body.Position.Workspace
+	if body.TopicID != nil {
+		if body.Archived != nil {
+			a.mu.Unlock()
+			fail(w, 400, "Move and archive/restore the session in separate requests.")
+			return
+		}
+		if err := validateSessionTopicMove(&a.state, s, *body.TopicID); err != nil {
+			a.mu.Unlock()
+			failSessionControl(w, err)
+			return
+		}
 	}
-	if err := sessionArchiveLabels(&a.state, s, body.Archived, archiveFolder); err != nil {
+	if err := sessionArchiveLabels(&a.state, s, body.Archived, nil); err != nil {
 		a.mu.Unlock()
 		failSessionControl(w, err)
 		return
@@ -706,44 +627,17 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "The general conversation cannot be renamed, moved, reordered or archived.")
 		return
 	}
-	if body.Position != nil && (s.ParentID != "" || s.Role == "graph_node" || s.Archived) {
-		a.mu.Unlock()
-		fail(w, 400, "Only active top-level sessions can be reordered.")
-		return
-	}
-	title, group, err := sessionLabels(&a.state, s, body.Title, body.Workspace)
+	title, group, err := sessionLabels(&a.state, s, body.Title, nil)
 	if err != nil {
 		a.mu.Unlock()
 		failSessionControl(w, err)
 		return
 	}
-	var ok bool
-	if body.Position != nil {
-		group, ok = workspace(a.state.project(s.ProjectID), body.Position.Workspace)
-		if !ok {
-			a.mu.Unlock()
-			fail(w, 400, "Position workspace must be Ungrouped or an existing project folder name.")
-			return
-		}
-		if body.Workspace != nil && group != strings.TrimSpace(*body.Workspace) {
-			a.mu.Unlock()
-			fail(w, 400, "Workspace and position workspace must match.")
-			return
-		}
-		if body.Position.BeforeID != "" {
-			before := a.state.session(body.Position.BeforeID)
-			if before == nil || before.ID == s.ID || before.ProjectID != s.ProjectID || before.ParentID != "" || before.Role == "graph_node" || before.Archived || before.Workspace != group {
-				a.mu.Unlock()
-				fail(w, 400, "Position target must be another active session in the destination folder.")
-				return
-			}
-		}
-	}
 	id := s.ID
 	if err := a.commitLocked(func(d *diskState) {
 		applySessionLabels(d, id, title, group, body.Archived, nil)
-		if body.Position != nil {
-			d.Sessions = moveSessionBefore(d.Sessions, id, body.Position.BeforeID)
+		if body.TopicID != nil {
+			d.session(id).TopicID = *body.TopicID
 		}
 	}); err != nil {
 		a.mu.Unlock()
@@ -819,8 +713,11 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Mode != "" && body.Mode != "queue" && body.Mode != "steer" {
-		fail(w, 400, "Message mode must be queue or steer.")
+	if body.Mode == "" {
+		body.Mode = "steer"
+	}
+	if body.Mode != "queue" && body.Mode != "steer" && body.Mode != "interrupt" {
+		fail(w, 400, "Message mode must be queue, steer or interrupt.")
 		return
 	}
 	if body.ClientID != "" && (len(body.ClientID) > 128 || strings.IndexFunc(body.ClientID, func(r rune) bool {
@@ -866,6 +763,11 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	if _, available := a.state.conversationDirectory(s); !available {
 		a.mu.Unlock()
 		fail(w, 404, "Project not found.")
+		return
+	}
+	if a.state.conversationArchived(s) {
+		a.mu.Unlock()
+		fail(w, 409, "Restore the conversation and its topic before sending messages.")
 		return
 	}
 	if a.closing {
@@ -919,12 +821,22 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "Message identity is already in use.")
 		return
 	}
+	if t := a.runs[id]; t != nil && t.ctx.Err() != nil {
+		a.mu.Unlock()
+		fail(w, 409, "Execution is still stopping. Retry the message when ready.")
+		return
+	}
 	if a.stopVersions[id] != stopVersion {
 		a.mu.Unlock()
 		fail(w, 409, "Message preparation interrupted by Stop. Send it again when ready.")
 		return
 	}
 	currentFolder, available := a.state.conversationDirectory(s)
+	if a.state.conversationArchived(s) {
+		a.mu.Unlock()
+		fail(w, 409, "Restore the conversation and its topic before sending messages.")
+		return
+	}
 	if s == nil || !available || s.ProjectID != projectID || currentFolder != folder || s.Harness != harness {
 		a.mu.Unlock()
 		fail(w, 409, "Conversation or project changed. Retry the message.")
@@ -943,6 +855,11 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	guidance, err := conversationGuidance(s)
+	// Queue payloads may wait behind another turn that assigns a topic. Keep
+	// their saved guidance static; execute injects current topic metadata.
+	if s.Role != sessionRoleGeneralAgent {
+		guidance, err = sessionCollaborationPrompt()
+	}
 	if err != nil {
 		a.mu.Unlock()
 		fail(w, 503, err.Error())
@@ -961,13 +878,24 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mode, status := body.Mode, "queued"
-	if mode == "" {
-		mode = "queue"
-	}
 	if mode == "steer" {
 		status = "steering"
 	}
 	q := QueuedMessage{ID: identity, Text: body.Text, Mode: mode, Status: status, Sources: body.Sources, Mentions: body.Mentions}
+	if mode == "steer" {
+		inputs := []submission{}
+		for _, pending := range steeringMessages(s) {
+			inputs = append(inputs, a.state.QueuePayloads[pending.ID].Submission)
+		}
+		inputs = append(inputs, payload)
+		batch := combineSubmissions(inputs)
+		batch.Text = guidance + "\n\n" + batch.Text
+		if err := validateSubmissionSize(batch, harness); err != nil {
+			a.mu.Unlock()
+			fail(w, 400, "Pending steering messages exceed the batch transport limit. Reduce the message or attachments.")
+			return
+		}
+	}
 	if err := a.commitLocked(func(d *diskState) {
 		if d.AcceptedMessages == nil {
 			d.AcceptedMessages = map[string]string{}
@@ -983,10 +911,16 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 			d.QueuePayloads = map[string]queuedPayload{}
 		}
 		d.QueuePayloads[q.ID] = queuedPayload{Submission: payload, Harness: harness, Directory: folder}
+		if mode == "interrupt" {
+			prepareMessageInterrupt(d, id, q.ID, a.runs[id] != nil)
+		}
 	}); err != nil {
 		a.mu.Unlock()
 		fail(w, 503, err.Error())
 		return
+	}
+	if mode == "interrupt" {
+		a.interruptForMessageLocked(id, q.ID)
 	}
 	a.wakeSteeringLocked(id)
 	a.scheduleMessagesLocked()
@@ -1030,12 +964,13 @@ func (a *app) stopSessionLocked(id string, origin *SpawnOrigin) (*turn, error) {
 	t := a.runs[id]
 	// Cancellation must not depend on a successful history/queue write.
 	if t != nil {
+		t.restartMessageID = "" // Explicit Stop cancels a pending Send now continuation.
 		t.cancel()
 	}
 	if err := a.commitLocked(func(d *diskState) {
 		s := d.session(id)
 		for i := range s.Queue {
-			if s.Queue[i].Status == "queued" || s.Queue[i].Status == "steering" {
+			if s.Queue[i].Status == "queued" || s.Queue[i].Status == "steering" || s.Queue[i].Status == "interrupting" {
 				s.Queue[i].Status, s.Queue[i].Error = "paused", "Execution stopped. Send queued messages when ready."
 			}
 		}

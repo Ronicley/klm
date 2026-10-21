@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ImagePlus, X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { pickDirectory, type Project } from '../../engine';
+import { prepareProjectIcon } from './projectIcon';
 
 export function ProjectDialog({ initialFolder, project, onSave, onClose }: {
   initialFolder: string; project?: Project;
@@ -42,22 +43,11 @@ export function ProjectDialog({ initialFolder, project, onSave, onClose }: {
   async function chooseIcon(file: File | undefined) {
     if (!file) return;
     setError('');
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) {
-      setError('Choose a PNG, JPEG, or WebP image smaller than 5 MB.'); return;
-    }
     setBusy(true);
-    const url = URL.createObjectURL(file);
     try {
-      const image = new Image(); image.src = url; await image.decode();
-      const canvas = document.createElement('canvas'); canvas.width = 96; canvas.height = 96;
-      const context = canvas.getContext('2d');
-      if (!context) throw new Error('Image processing unavailable');
-      // Crop to a small square so stored project icons do not consume the storage quota.
-      const size = Math.min(image.naturalWidth, image.naturalHeight);
-      context.drawImage(image, (image.naturalWidth - size) / 2, (image.naturalHeight - size) / 2, size, size, 0, 0, 96, 96);
-      setIcon(canvas.toDataURL('image/png'));
-    } catch { setError('This image could not be opened. Please choose another image.'); }
-    finally { URL.revokeObjectURL(url); setBusy(false); }
+      setIcon(await prepareProjectIcon(file));
+    } catch (error) { setError(error instanceof Error ? error.message : 'This image could not be opened. Please choose another image.'); }
+    finally { setBusy(false); }
   }
 
   return <dialog ref={dialog} className="settings-dialog add-project-dialog" aria-labelledby="project-dialog-title" onCancel={event => { if (busy) event.preventDefault(); else onClose(); }} onClose={onClose}>

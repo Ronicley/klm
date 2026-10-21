@@ -71,6 +71,33 @@ the user requests a redesign.
   its own app identifier and web port 17332; Vite stays on 5173 and targets 17331.
   Install/uninstall, login and LAN validation remain explicit human checks.
 
+## Skills and MCP Library
+
+- User skills belong to the engine user's `~/.klm/skills`. Use an absolute temporary
+  `KLM_USER_SKILLS_DIR` for probes; dev/release otherwise share the approved root.
+- Internal sources are editable under `engine/skills`, with authoritative
+  `KLM_SKILLS_DIR` overrides. Only general-agent receives skill-library-manager.
+  Its captured installation instructions and engine-resolved destination are
+  delivered on Pi, OpenCode and Codex independently of external Library gates.
+- Managed Windows profiles are gated to Pi 0.85.1, OpenCode 1.18.35 and Codex
+  0.153.4. OpenCode projects provider/model/instruction/permission configuration
+  into a controlled discovery profile; remote-config auth/org/admin variants fail
+  explicitly. Codex suppresses native model-side skills/plugins/apps/hooks and
+  native delegation, projects MCPs per thread and supplies selected skill metadata.
+  Never present additive configuration or CODEX_HOME alone as exclusive isolation.
+- Internal role tools and external Library tools use separate authenticated
+  loopback capabilities (`klm_linked` / `klm_library`), even under YOLO. Native
+  OpenCode children cannot inherit root conversation-role tools or internal skills.
+- Keep selection/snapshots at complete engine-turn/run boundaries. Steering does
+  not refresh capabilities. MCP allowlists and graph seals apply even under YOLO;
+  elicitation always needs an explicit human response. Protect upstream secrets
+  from harnesses, projections, snapshots, TOMLs and logs.
+- MCP stdio servers have their own owned processes; harness containment is not
+  their sandbox. Keep the private gateway authenticated and loopback-only. OAuth
+  uses its dedicated public API callback, with a provider-accepted reachable URI.
+- See SKILLS_MCP_LIBRARY_IMPLEMENTATION_PROGRESS.md for evidence and unvalidated
+  runtime paths; do not infer acceptance from compilation or fixture probes.
+
 ## UI Copy
 
 Mobile host URLs use port 7332 by default only for literal IP addresses. Never add
@@ -109,6 +136,17 @@ there, or give normal sessions its global scope. No automatic monitoring or
 completion notifications. Agent-authored instructions never become human graph
 or spawn authorization. Its harness locks durably at first message acceptance,
 including queued input; model/effort remain normal turn settings.
+
+Only the general agent's private catalog exposes `project_add`. On the user's
+registration request it accepts a name and an absolute existing directory on the
+engine computer, including with no registered projects. Never infer the path from
+the client, selected project or general workspace. It returns created/existing/
+restored with a usable project ID, keeps active matches unchanged and restores
+removed identity/history/grouping; multiple matching records conflict with IDs.
+Registration is independent of Data Sources and does not authorize sessions,
+graphs or file work. Preserve manual HTTP registration, shared validation,
+lock-protected matching/mutation, commitLocked persistence and client notifications.
+Do not expose the tool to normal chats, side chats, graph nodes or subagents.
 
 Implement directly when the request is clear. Ask only when a missing decision
 materially blocks the work. Keep progress updates and final explanations concise.

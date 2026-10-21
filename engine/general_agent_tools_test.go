@@ -21,6 +21,12 @@ func generalControlFixture(t *testing.T) *app {
 			{ID: "target", ProjectID: "p2", Title: "Target", Harness: "pi", Status: "idle", Events: []Event{}},
 		},
 	}}
+	initializeActivityBoardRecords(&a.state)
+	for i := range a.state.Sessions {
+		if err := normalizeSelection(&a.state.Sessions[i].Capabilities.Desired); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := saveState(a.dir, &a.state); err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +86,59 @@ func TestGeneralToolScopeAndAtomicSettings(t *testing.T) {
 	yolo = false
 	if err := a.changeSessionSettings(context.Background(), "target", &model, &effort, &yolo); err == nil || !a.state.session("target").YOLO {
 		t.Fatal("busy destination model settings changed")
+	}
+}
+
+func TestGeneralFeedRead(t *testing.T) {
+	activeTurn := &turn{ctx: context.Background()}
+	a := &app{runs: map[string]*turn{"general": activeTurn}, state: diskState{
+		Projects: []Project{{ID: "p1", Name: "First"}, {ID: "p2", Name: "Second"}},
+		Sessions: []Session{{ID: "general", Role: sessionRoleGeneralAgent}},
+	}}
+	initializeWebhookRecords(&a.state)
+	ids := []string{strings.Repeat("1", 32), strings.Repeat("2", 32)}
+	for i, project := range a.state.Projects {
+		a.state.WebhookConnections[project.ID] = WebhookConnection{ID: project.ID, ProjectID: project.ID}
+		a.state.WebhookEvents[ids[i]] = WebhookStoredEvent{ID: ids[i], ProjectID: project.ID, WebhookID: project.ID,
+			EventType: "issues", Action: "opened", Payload: `{"issue":{"title":"Feed issue","body":"Details from GitHub"}}`}
+		a.state.WebhookReleases[ids[i]] = WebhookRelease{EventID: ids[i], ReleaseSequence: uint64(i + 1)}
+	}
+	a.state.WebhookReleaseSequence = 2
+	bridge := &linkedBridge{}
+	bridge.bind(&adapter{app: a, id: "general", role: sessionRoleGeneralAgent, turn: activeTurn})
+	value, err := bridge.call(context.Background(), "feed_read", []byte(`{"limit":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := value.(githubActivityPage)
+	if len(first.Items) != 1 || first.Items[0].ProjectID != "p2" || !first.HasMore || first.NextCursor == "" {
+		t.Fatalf("unexpected first page: %+v", first)
+	}
+	args, _ := json.Marshal(map[string]any{"limit": 1, "cursor": first.NextCursor})
+	value, err = bridge.call(context.Background(), "feed_read", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := value.(githubActivityPage)
+	if len(last.Items) != 1 || last.Items[0].ProjectID != "p1" || last.HasMore || last.NextCursor != "" {
+		t.Fatalf("unexpected last page: %+v", last)
+	}
+	args, _ = json.Marshal(map[string]any{"postId": ids[0]})
+	value, err = bridge.call(context.Background(), "feed_read", args)
+	if err != nil || value.(map[string]any)["details"].(githubActivityDetails).Body != "Details from GitHub" {
+		t.Fatal("post details unavailable", err)
+	}
+	event := a.state.WebhookEvents[ids[0]]
+	event.ExpiresAt = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	a.state.WebhookEvents[ids[0]] = event
+	if _, err := bridge.call(context.Background(), "feed_read", args); err == nil {
+		t.Fatal("expired post remains available")
+	}
+	for _, role := range []string{"", "side", sessionRoleSubagent, "graph_node"} {
+		bridge.bind(&adapter{app: a, id: "general", role: role, turn: activeTurn})
+		if _, err := bridge.call(context.Background(), "feed_read", []byte(`{}`)); err == nil {
+			t.Fatalf("feed tool leaked to role %q", role)
+		}
 	}
 }
 

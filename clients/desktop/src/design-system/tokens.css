@@ -37,7 +37,17 @@
   --color-text-muted: #5b6472;
   --color-text-faint: #667085;
   --color-focus-ring: var(--color-accent);
-  --gradient-canvas: radial-gradient(ellipse at 15% 15%, #dbeafe 0%, transparent 55%), radial-gradient(ellipse at 85% 85%, #c4b5fd 0%, transparent 55%), linear-gradient(135deg, #c7d2fe, #e0f2fe 50%, #a5b4fc);
+  --topic-neutral: #596273;
+  --topic-blue: #245fba;
+  --topic-purple: #8245a0;
+  --topic-green: #247043;
+  --topic-amber: #8a5a0b;
+  --topic-rose: #b23c60;
+  --gradient-canvas: var(--gradient-canvas-default);
+  --gradient-canvas-default: radial-gradient(ellipse at 15% 15%, #dbeafe 0%, transparent 55%), radial-gradient(ellipse at 85% 85%, #c4b5fd 0%, transparent 55%), linear-gradient(135deg, #c7d2fe, #e0f2fe 50%, #a5b4fc);
+  --gradient-canvas-ocean: radial-gradient(ellipse at 15% 20%, #c3f3e7 0%, transparent 60%), radial-gradient(ellipse at 85% 80%, #a5c9ee 0%, transparent 55%), linear-gradient(135deg, #d9f5ef, #d9edf9 50%, #b4d8ed);
+  --gradient-canvas-rose: radial-gradient(ellipse at 20% 15%, #ffe5ce 0%, transparent 55%), radial-gradient(ellipse at 85% 85%, #e7b8d4 0%, transparent 60%), linear-gradient(135deg, #f9d4cf, #fbe9df 50%, #dbc7ed);
+  --gradient-canvas-forest: radial-gradient(ellipse at 15% 20%, #eaf0c9 0%, transparent 55%), radial-gradient(ellipse at 85% 80%, #a9ccc0 0%, transparent 60%), linear-gradient(135deg, #dbe7ca, #e5eee1 50%, #bed8ca);
   --font-sans: 'Inter', sans-serif;
   --font-mono: Consolas, monospace;
   --font-family-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
@@ -75,7 +85,110 @@
 }
 
 :root[data-theme="dark"] {
+  --topic-neutral: #a5ada8;
+  --topic-blue: #89b9f6;
+  --topic-purple: #c998e3;
+  --topic-green: #8dcea3;
+  --topic-amber: #dfb86c;
+  --topic-rose: #ee9bb5;
   color-scheme: dark;
+  --color-canvas: #050606;
+  --color-surface: #101111;
+  --color-sidebar: #080808;
+  --color-subtle: #191a1a;
+  --color-selected: #232424;
+  --color-border: #292a2a;
+  --color-divider: #202121;
+  --color-text: #e3e6e4;
+  --color-heading: #f5f6f5;
+  --color-muted: #a6aaa9;
+  --color-faint: #949997;
+  --color-accent: #91adff;
+  --color-accent-soft: #182238;
+  --color-success: #74c99a;
+  --color-warning: #d6ad72;
+  --color-danger: #f0939e;
+  --color-rail: #050505;
+  --color-elevated: #171818;
+  --color-bubble: #1c1d1d;
+  --color-code: #0b0c0c;
+  --color-permission: var(--color-elevated);
+  --color-permission-icon: var(--color-warning);
+  --color-on-accent: #080808;
+  --color-on-badge: #080808;
+  --color-accent-hover: #22304b;
+  --color-danger-soft: #2b171b;
+  --color-overlay: #00000080;
+  --color-modal-overlay: #000000b3;
+  --color-border-strong: #494d4b;
+  --color-text-secondary: var(--color-text);
+  --color-text-muted: var(--color-muted);
+  --color-text-faint: var(--color-faint);
+  --gradient-canvas: var(--gradient-canvas-default);
+  --gradient-canvas-default: radial-gradient(ellipse at 15% 15%, #1a2a46 0%, transparent 55%), radial-gradient(ellipse at 85% 85%, #302844 0%, transparent 55%), linear-gradient(135deg, #101522, #1c2637 50%, #171a28);
+  --gradient-canvas-ocean: radial-gradient(ellipse at 15% 20%, #124044 0%, transparent 60%), radial-gradient(ellipse at 85% 80%, #162e50 0%, transparent 55%), linear-gradient(135deg, #071518, #102831 50%, #090f20);
+  --gradient-canvas-rose: radial-gradient(ellipse at 20% 15%, #492921 0%, transparent 55%), radial-gradient(ellipse at 85% 85%, #3e203d 0%, transparent 60%), linear-gradient(135deg, #1b1012, #2c1b24 50%, #170f20);
+  --gradient-canvas-forest: radial-gradient(ellipse at 15% 20%, #293e28 0%, transparent 55%), radial-gradient(ellipse at 85% 80%, #123a33 0%, transparent 60%), linear-gradient(135deg, #0d170f, #1b2b20 50%, #081a18);
+  --shadow-window: 0 16px 64px #00000066;
+  --shadow-sm: 0 1px 3px #00000026;
+  --shadow-card: 0 4px 12px #00000038;
+  --shadow-menu: 0 8px 24px #00000050;
+}
+
+/* Variants change the interface palette; background gradients remain independent. */
+:root[data-theme="light"][data-theme-variant="sand"] {
+  --color-surface: #fffcf5;
+  --color-sidebar: #f5f0e6;
+  --color-subtle: #eee5d6;
+  --color-selected: #e5d8c4;
+  --color-border: #ddd2bf;
+  --color-divider: #ece3d5;
+  --color-text: #3c352c;
+  --color-heading: #29231c;
+  --color-muted: #756956;
+  --color-faint: #867760;
+  --color-accent: #95602c;
+  --color-accent-soft: #f2e2c9;
+  --color-accent-hover: #e8d3b1;
+  --color-success: #397547;
+  --color-warning: #956020;
+  --color-danger: #b33b35;
+  --color-danger-soft: #fbe7de;
+  --color-overlay: #29231c30;
+  --color-modal-overlay: #29231c50;
+  --color-border-strong: #bca98b;
+  --color-text-secondary: #534939;
+  --color-text-muted: #6e614e;
+  --color-text-faint: #796a55;
+}
+
+:root[data-theme="light"][data-theme-variant="mist"] {
+  --color-surface: #f5faf9;
+  --color-sidebar: #edf4f2;
+  --color-subtle: #ddeae7;
+  --color-selected: #cfdfdb;
+  --color-border: #cbdcd7;
+  --color-divider: #e0ebe7;
+  --color-text: #293d39;
+  --color-heading: #182f2a;
+  --color-muted: #5d756e;
+  --color-faint: #6c807a;
+  --color-accent: #23756c;
+  --color-accent-soft: #d5ebe5;
+  --color-accent-hover: #bddfd5;
+  --color-success: #307449;
+  --color-warning: #92621d;
+  --color-danger: #ba424b;
+  --color-danger-soft: #fbe6e7;
+  --color-overlay: #182f2a30;
+  --color-modal-overlay: #182f2a50;
+  --color-border-strong: #9bb5ac;
+  --color-text-secondary: #3d5750;
+  --color-text-muted: #506b62;
+  --color-text-faint: #5c776e;
+}
+
+:root[data-theme="dark"][data-theme-variant="slate"] {
   --color-canvas: #101522;
   --color-surface: #1b1d23;
   --color-sidebar: #17191e;
@@ -87,17 +200,11 @@
   --color-heading: #f4f5f7;
   --color-muted: #a0a8b8;
   --color-faint: #8992a3;
-  --color-accent: #91adff;
   --color-accent-soft: #2a3550;
-  --color-success: #74c99a;
-  --color-warning: #d6ad72;
-  --color-danger: #f0939e;
   --color-rail: #111318;
   --color-elevated: #242730;
   --color-bubble: #2b2f39;
   --color-code: #14161b;
-  --color-permission: var(--color-elevated);
-  --color-permission-icon: var(--color-warning);
   --color-on-accent: #111827;
   --color-on-badge: #17191e;
   --color-accent-hover: #344360;
@@ -105,12 +212,33 @@
   --color-overlay: #05070c80;
   --color-modal-overlay: #05070ca6;
   --color-border-strong: #596273;
-  --color-text-secondary: var(--color-text);
-  --color-text-muted: var(--color-muted);
-  --color-text-faint: var(--color-faint);
-  --gradient-canvas: radial-gradient(ellipse at 15% 15%, #1a2a46 0%, transparent 55%), radial-gradient(ellipse at 85% 85%, #302844 0%, transparent 55%), linear-gradient(135deg, #101522, #1c2637 50%, #171a28);
-  --shadow-window: 0 16px 64px #00000066;
-  --shadow-sm: 0 1px 3px #00000026;
-  --shadow-card: 0 4px 12px #00000038;
-  --shadow-menu: 0 8px 24px #00000050;
+}
+
+:root[data-theme="dark"][data-theme-variant="dusk"] {
+  --color-surface: #211c29;
+  --color-sidebar: #19151f;
+  --color-subtle: #302838;
+  --color-selected: #393044;
+  --color-border: #403548;
+  --color-divider: #322a3a;
+  --color-text: #e9e2ef;
+  --color-heading: #faf3ff;
+  --color-muted: #b6a8c0;
+  --color-faint: #aa9ab5;
+  --color-accent: #c9aff0;
+  --color-accent-soft: #3b2b4c;
+  --color-success: #94cda8;
+  --color-warning: #e0ba86;
+  --color-danger: #ef9ba9;
+  --color-rail: #15111a;
+  --color-elevated: #2b2334;
+  --color-bubble: #332a3d;
+  --color-code: #1a1521;
+  --color-on-accent: #21132e;
+  --color-on-badge: #21132e;
+  --color-accent-hover: #4a365c;
+  --color-danger-soft: #422631;
+  --color-overlay: #100b1780;
+  --color-modal-overlay: #100b17b3;
+  --color-border-strong: #71607f;
 }

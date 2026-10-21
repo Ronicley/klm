@@ -11,6 +11,12 @@
       } catch {
         document.documentElement.dataset.theme = 'light';
       }
+      try {
+        const mode = document.documentElement.dataset.theme;
+        const variants = mode === 'dark' ? ['onyx', 'slate', 'dusk'] : ['pearl', 'sand', 'mist'];
+        const saved = JSON.parse(localStorage.getItem('klm.theme-variants.v1') || 'null');
+        document.documentElement.dataset.themeVariant = variants.includes(saved?.[mode]) ? saved[mode] : variants[0];
+      } catch { /* Default palettes also work without a saved variant. */ }
     </script>
     <title>KLM | Agent Workspace</title>
   </head>

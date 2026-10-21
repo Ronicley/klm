@@ -155,7 +155,6 @@ func (r *sessionRuntime) getInteractive(harness, model, effort, tools string) (*
 		if alive && current.harness == harness && current.model == model && current.effort == effort && current.tools == tools {
 			process := current.process
 			r.mu.Unlock()
-			process.ResetTurn()
 			return process, true
 		}
 		r.interactive = nil
@@ -423,6 +422,11 @@ func (a *app) sessionViewLocked(id string) *Session {
 	view := a.state.sessionView(id)
 	if view != nil {
 		view.RuntimeActive = a.runtimes[id] != nil && a.runtimes[id].active()
+		if view.Role == sessionRoleSideAgent {
+			if topic := a.state.sessionTopic(a.state.session(id)); topic != nil {
+				view.TopicID = topic.ID
+			}
+		}
 	}
 	return view
 }
@@ -446,6 +450,6 @@ func (p *adapter) markRuntimeInfrastructure() {
 }
 
 func (p *adapter) runtimeToolKey() string {
-	encoded, _ := json.Marshal(map[string]any{"tools": p.bridgeTools(), "yolo": p.yolo})
+	encoded, _ := json.Marshal(map[string]any{"tools": p.bridgeTools(), "yolo": p.yolo, "capabilities": p.capabilities, "internalSkills": p.internalSkills})
 	return string(encoded)
 }

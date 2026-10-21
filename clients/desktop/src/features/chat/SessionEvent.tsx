@@ -1,12 +1,13 @@
 import { Atom, CircleAlert, Plug, Terminal, Wrench } from 'lucide-react';
 import type { EngineEvent } from '../../engine';
 import { ChatMessage } from './ChatMessage';
+import { SessionSpawnEvent } from './SessionSpawnEvent';
 
 export function SessionEvent({ event, onFavorite }: { event: EngineEvent; onFavorite?: (favorite: boolean) => Promise<void> }) {
   const origin = event.data?.origin as { title?: string; sessionId?: string; kind?: string } | undefined;
   const originLabel = origin?.kind === 'instruction' ? 'Instruction' : origin?.kind === 'question_answer' ? 'Question response' : 'Initial prompt';
   if (event.type === 'consultation' || event.type === 'subagent') return null;
-  if (event.type === 'session_spawn') return <p className="event-status">{event.title} <span className="muted">({String(event.data?.sessionId ?? '')})</span></p>;
+  if (event.type === 'session_spawn') return <SessionSpawnEvent event={event} />;
   if (event.type === 'user' || event.type === 'assistant' || event.type === 'agent_prompt') return <div>
     {event.type === 'agent_prompt' && <small className="muted">{originLabel} from {origin?.title ?? 'another session'} ({origin?.sessionId ?? ''})</small>}
     {Array.isArray(event.data?.sources) && <details className="sent-selection-context"><summary>Selected context</summary>{event.data.sources.map((source: unknown, index: number) => source && typeof source === 'object' && 'passage' in source && typeof source.passage === 'string' ? <blockquote key={index}>{source.passage}</blockquote> : null)}</details>}

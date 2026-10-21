@@ -24,6 +24,9 @@ func TestSessionSpawnYOLOInheritanceAndRecovery(t *testing.T) {
 			a.closing = true // Freeze scheduling: fixtures never execute a harness.
 			if err := a.commitLocked(func(d *diskState) {
 				s := d.session("source")
+				d.TopicSchema = 1
+				d.project(s.ProjectID).Topics = []Topic{{ID: "source-topic", Name: "Work", Color: "neutral", CreatedAt: now()}}
+				s.TopicID = "source-topic"
 				s.YOLO = tc.parent
 				s.Events = append(s.Events, Event{ID: "spawn-user", Type: "user", Text: "Create a validation session with the requested YOLO preference.", CreatedAt: now()})
 				s.UpdatedAt = now()
@@ -43,6 +46,9 @@ func TestSessionSpawnYOLOInheritanceAndRecovery(t *testing.T) {
 			if a.state.session(id).YOLO != tc.want || first.(map[string]any)["yolo"] != tc.want || a.state.SessionSpawns[0].YOLO != tc.want {
 				t.Fatal("YOLO did not reach the session and receipt")
 			}
+			if a.state.session(id).TopicID != "source-topic" || a.state.SessionSpawns[0].TopicID != "source-topic" {
+				t.Fatal("topic identity did not reach the child and receipt")
+			}
 			var retry spawnArgs
 			_ = json.Unmarshal([]byte(raw), &retry) // New pointer; compare values, not addresses.
 			if _, err := a.spawnSessionLocked(a.state.session("source"), retry); err != nil || len(a.state.SessionSpawns) != 1 {
@@ -59,16 +65,19 @@ func TestSessionSpawnYOLOInheritanceAndRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			reloaded, err := loadState(a.dir)
-			if err != nil || reloaded.session(id).YOLO != tc.want {
-				t.Fatal("YOLO was lost on reload", err)
+			if err != nil || reloaded.session(id).YOLO != tc.want || reloaded.session(id).TopicID != "source-topic" {
+				t.Fatal("YOLO or topic identity was lost on reload", err)
 			}
 			a.state = reloaded
-			if err := a.commitLocked(func(d *diskState) { d.session("source").YOLO = !tc.parent }); err != nil {
+			if err := a.commitLocked(func(d *diskState) {
+				d.project("p1").Topics = append(d.project("p1").Topics, Topic{ID: "moved-topic", Name: "Other work", Color: "neutral", CreatedAt: now()})
+				d.session("source").YOLO, d.session("source").TopicID = !tc.parent, "moved-topic"
+			}); err != nil {
 				t.Fatal(err)
 			}
 			result, err := a.spawnSessionLocked(a.state.session("source"), retry)
-			if err != nil || result.(map[string]any)["yolo"] != tc.want || len(a.state.SessionSpawns) != 1 {
-				t.Fatal("retry changed the original mode after parent update", err)
+			if err != nil || result.(map[string]any)["yolo"] != tc.want || result.(map[string]any)["topicId"] != "source-topic" || len(a.state.SessionSpawns) != 1 {
+				t.Fatal("retry changed the original mode or topic after parent update", err)
 			}
 		})
 	}
@@ -78,6 +87,9 @@ func TestSessionSpawnInvalidModelReturnsCorrectionBeforeCreation(t *testing.T) {
 	a := generalControlFixture(t)
 	if err := a.commitLocked(func(d *diskState) {
 		s := d.session("source")
+		d.TopicSchema = 1
+		d.project(s.ProjectID).Topics = []Topic{{ID: "source-topic", Name: "Work", Color: "neutral", CreatedAt: now()}}
+		s.TopicID = "source-topic"
 		s.Harness = "opencode"
 		s.Events = append(s.Events, Event{ID: "spawn-user", Type: "user", Text: "Create a new session.", CreatedAt: now()})
 		s.UpdatedAt = now()

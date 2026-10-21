@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useContext, useEffect, useId, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
@@ -9,9 +9,13 @@ import { Textarea } from '../../design-system/Textarea';
 import { HarnessIcon } from '../chat/HarnessIcon';
 import type { Harness } from '../../engine';
 import { agentSlug, type Agent } from './demo';
-import { useAgentModels } from './catalog';
+import { AuthoringProject, useAgentModels } from './catalog';
+import { CapabilitySelector } from '../library/CapabilitySelector';
+import type { MCPSelection } from '../library/api';
 
 type AgentDraft = {
+  skills: string[];
+  mcpConnections: MCPSelection[];
   name: string;
   description: string;
   defaultHarness: Harness['id'];
@@ -31,6 +35,7 @@ export function AgentEditorDialog({ agent, agents, onSave, onClose }: {
   onClose: () => void;
 }) {
   const id = useId();
+  const projectId = useContext(AuthoringProject);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { dialog.current?.showModal(); }, []);
   const [draft, setDraft] = useState<Omit<AgentDraft, 'defaultHarness'> & { defaultHarness?: Harness['id'] }>(() => ({
@@ -40,6 +45,8 @@ export function AgentEditorDialog({ agent, agents, onSave, onClose }: {
     model: agent?.model ?? '',
     effort: agent?.effort ?? '',
     prompt: agent?.prompt ?? '',
+    skills: agent?.skills ?? [],
+    mcpConnections: agent?.mcpConnections ?? [],
   }));
   const slug = agentSlug(draft.name);
   const duplicate = !!slug && agents.some(item => item.id !== agent?.id && (item.id === slug || agentSlug(item.name) === slug));
@@ -84,6 +91,7 @@ export function AgentEditorDialog({ agent, agents, onSave, onClose }: {
         {draft.defaultHarness && <div className="agent-editor-field agent-editor-wide"><label htmlFor={`${id}-model`}>Model</label><SearchSelect key={draft.defaultHarness} id={`${id}-model`} label="Model" value={draft.model} options={models.map(model => ({ value: model.id, label: model.name, description: model.provider }))} onChange={selectModel} placeholder={loading ? 'Loading models...' : 'Select model'} searchPlaceholder="Search models" emptyMessage={loading ? 'Loading models...' : 'No models available from connected providers'} />{catalogError && <p className="form-error" role="alert">{catalogError} <Button size="sm" onClick={retry}>Retry</Button></p>}</div>}
         {!!efforts.length && <div className="agent-editor-wide"><Slider label="Effort level" min={0} max={Math.max(0, efforts.length - 1)} value={Math.max(0, efforts.indexOf(draft.effort))} valueText={effortLabel(draft.effort)} marks={efforts.map((effort, index) => ({ value: index, label: effortLabel(effort) }))} onValueChange={index => setDraft(current => ({ ...current, effort: efforts[index] }))} /></div>}
         <div className="agent-editor-field agent-editor-wide"><label htmlFor={`${id}-prompt`}>Prompt</label><Textarea id={`${id}-prompt`} required rows={6} value={draft.prompt} onChange={event => setDraft(current => ({ ...current, prompt: event.target.value }))} /></div>
+        {projectId && <div className="agent-editor-wide"><h3>Library</h3><CapabilitySelector harness={draft.defaultHarness} value={{ skills: draft.skills, mcpConnections: draft.mcpConnections }} onChange={selection => setDraft(current => ({ ...current, ...selection }))} /></div>}
       </div>
       {saveError && <p className="form-error" role="alert">{saveError}</p>}
       <div className="agent-editor-actions"><Button disabled={saving} onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={!valid || saving}>{saving ? 'Saving...' : agent ? 'Save changes' : 'Create agent'}</Button></div>

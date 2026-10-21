@@ -16,7 +16,10 @@ import (
 )
 
 type turn struct {
-	steerWake            chan struct{} // protected by app.mu
+	reasoningStart       *int                // Event boundary for this turn; protected by app.mu.
+	steerWake            chan struct{}       // protected by app.mu
+	steeringBatches      map[string][]string // Native request -> durable input IDs; protected by app.mu.
+	restartMessageID     string              // Send now continuation after confirmed shutdown; protected by app.mu.
 	graphNotificationID  string
 	prompt               string // complete submission; graphConversationHooks prepends internal instructions
 	consultationID       string
@@ -32,6 +35,19 @@ type turn struct {
 }
 
 type app struct {
+	activityBoardBusy  map[string]bool // One scan or move per connection; guarded by mu.
+	activityBoardSlots chan struct{}
+
+	libraryMu         sync.Mutex
+	oauthMu           sync.Mutex
+	credentialMu      sync.Mutex
+	oauthTransactions map[string]*mcpOAuthTransaction
+	githubActivity    githubActivityCache
+	webhookWake       chan struct{}
+	webhookIngress    chan struct{}
+	webhookDeliveries map[webhookDeliveryKey]string
+	webhookBytes      int64
+
 	authoringMu     sync.Mutex
 	mu              sync.Mutex
 	checkpointMu    sync.Mutex
@@ -96,6 +112,9 @@ func runEngine(dir string) error {
 		return fmt.Errorf("cannot replay stream journal: %w", err)
 	}
 	if err := recoverGraphCatalogChanges(dir, &state); err != nil {
+		return err
+	}
+	if err := recoverLibraryDeletions(dir, &state); err != nil {
 		return err
 	}
 	recoveryRevision := state.GraphRevision
@@ -169,7 +188,19 @@ func runEngine(dir string) error {
 	a := &app{dir: dir, state: state, harnesses: harnesses, binaries: binaries,
 		runs: map[string]*turn{}, runtimes: map[string]*sessionRuntime{}, graphRuns: map[string]*graphExecution{}, listeners: map[string]map[chan struct{}]bool{},
 		historyJournal: map[string]*sessionJournal{}, journalBase: state.GraphRevision, picker: make(chan struct{}, 1), ctx: ctx}
+	if a.state.TopicSchema == 0 {
+		if err := a.commitLocked(migrateTopics); err != nil {
+			return fmt.Errorf("cannot migrate topics: %w", err)
+		}
+	}
 	a.indexMessageIDsLocked()
+	a.webhookWake = make(chan struct{}, 1)
+	a.webhookIngress = make(chan struct{}, 2)
+	a.indexWebhooksLocked()
+	// Expired records disappear durably before any HTTP request is served.
+	if err := a.cleanExpiredWebhooks(); err != nil {
+		return err
+	}
 	// Pay snapshot validation/compilation once at startup, before serving commands.
 	a.graphValidation = map[string]validatedGraphSnapshot{}
 	if err := validateGraphRecordsCached(&a.state, a.graphValidation); err != nil {
@@ -185,6 +216,11 @@ func runEngine(dir string) error {
 		return err
 	}
 	defer control.Close()
+	if err := a.startActivityBoard(); err != nil {
+		return err
+	}
+	a.wg.Add(1)
+	go func() { defer a.wg.Done(); a.webhookWorker() }()
 	a.wg.Add(1)
 	go func() { defer a.wg.Done(); a.checkpointStreamJournal() }()
 	server := &http.Server{Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second,

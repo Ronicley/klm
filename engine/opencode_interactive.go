@@ -37,7 +37,7 @@ var openCodePermissionsPlugin string
 
 func (p *adapter) openCodeGraphConfig() (string, func(), error) {
 	config := map[string]any{}
-	if existing := os.Getenv("OPENCODE_CONFIG_CONTENT"); strings.TrimSpace(existing) != "" {
+	if existing := os.Getenv("OPENCODE_CONFIG_CONTENT"); strings.TrimSpace(existing) != "" && !(p.capabilities != nil && p.harness == "opencode") {
 		if json.Unmarshal([]byte(existing), &config) != nil || config == nil {
 			return "", nil, errors.New("Cannot safely extend OPENCODE_CONFIG_CONTENT for the owned graph plugin.")
 		}
@@ -47,13 +47,20 @@ func (p *adapter) openCodeGraphConfig() (string, func(), error) {
 		return "", nil, errors.New("Cannot create the owned graph plugin directory.")
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
+	if p.capabilities != nil && p.harness == "opencode" {
+		p.openCodeLibraryEnv, err = p.configureOpenCodeLibrary(config, dir)
+		if err != nil {
+			cleanup()
+			return "", nil, err
+		}
+	}
 	pluginPath := filepath.Join(dir, "klm-policy.mjs")
 	data, _ := json.Marshal(map[string]string{"url": p.bridge.url, "token": p.bridge.token})
 	plugin := strings.Replace(openCodeGraphPlugin, "/*KLM_GRAPH_CONFIG*/{}", string(data), 1)
 	if !p.graphNode() {
 		plugin = "export default async function () { return {}; }"
 	}
-	policyData, _ := json.Marshal(map[string]any{"url": p.bridge.url, "token": p.bridge.token, "yolo": p.yolo})
+	policyData, _ := json.Marshal(map[string]any{"url": p.bridge.url, "token": p.bridge.token, "yolo": p.yolo, "graphNode": p.graphNode(), "library": p.capabilities != nil && p.harness == "opencode"})
 	plugin = strings.Replace(plugin, "export default async function", "async function graphPlugin", 1) + "\n" +
 		strings.Replace(openCodePermissionsPlugin, "/*KLM_PERMISSION_CONFIG*/{}", string(policyData), 1)
 	if err := os.WriteFile(pluginPath, []byte(plugin), 0600); err != nil {
@@ -105,6 +112,40 @@ type openCodeSubagent struct {
 	infos   map[string]map[string]any
 	parts   map[string]map[string]any
 	usage   *openCodeUsage
+	taskKey string
+	tasks   map[string]string
+}
+
+func (child *openCodeSubagent) updateTask(p *adapter, key, status string) error {
+	if child.tasks == nil {
+		child.tasks = map[string]string{}
+	}
+	if child.tasks[key] == status {
+		return nil
+	}
+	active := status == "running" || status == "pending" || status == "started"
+	if active {
+		// A native child can serve several task calls. Reopening its session
+		// belongs to the new call, not to repeated updates of an older call.
+		if previous := child.tasks[key]; previous == "completed" || previous == "error" || previous == "cancelled" {
+			return nil
+		}
+		if err := p.startSubagent(child.adapter); err != nil {
+			return err
+		}
+		child.taskKey = key
+	} else if status == "completed" || status == "error" || status == "cancelled" {
+		// message.updated and final reconciliation replay old task parts.
+		// Their terminal state must never settle a newer invocation.
+		if child.taskKey == "" || child.taskKey == key {
+			if err := p.finishSubagentInvocation(child.adapter, status, p.keys[key]); err != nil {
+				return err
+			}
+			child.taskKey = key
+		}
+	}
+	child.tasks[key] = status
+	return nil
 }
 
 func (s *openCodeServer) Alive() bool {
@@ -163,6 +204,10 @@ func (h *openCodeHTTP) request(ctx context.Context, method, path string, body an
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		var transportError net.Error
+		if errors.As(err, &transportError) && transportError.Timeout() {
+			return nil, errors.New("OpenCode server request timed out while waiting for a response.")
+		}
 		// Neither diagnostics nor HTTP bodies are safe to expose as transport errors.
 		return nil, errors.New("Could not communicate with the owned OpenCode server.")
 	}
@@ -202,6 +247,9 @@ func (h *openCodeHTTP) jsonResponse(ctx context.Context, method, path string, bo
 	if err != nil {
 		if errors.Is(err, errOpenCodeResponseTooLarge) || errors.Is(err, errOpenCodeHistoryWireLimit) || errors.Is(err, errOpenCodeHistoryJSON) {
 			return failure(err)
+		}
+		if ctx.Err() != nil {
+			return failure(ctx.Err())
 		}
 		return failure(errors.New("could not read the response"))
 	}
@@ -382,6 +430,9 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 	cmd.Dir = cwd
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
+		if len(p.openCodeLibraryEnv) > 0 && (strings.HasPrefix(strings.ToUpper(key), "OPENCODE_") || strings.EqualFold(key, "XDG_CONFIG_HOME")) {
+			continue
+		}
 		if strings.EqualFold(key, "OPENCODE_CONFIG_CONTENT") {
 			continue
 		}
@@ -392,6 +443,7 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 	}
 	cmd.Env = append(cmd.Env, "OPENCODE_SERVER_USERNAME=opencode", "OPENCODE_SERVER_PASSWORD="+h.password, "OPENCODE_ENABLE_QUESTION_TOOL=true")
 	cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+graphConfig)
+	cmd.Env = append(cmd.Env, p.openCodeLibraryEnv...)
 	var owner *ownedProcess
 	if p.runtime == nil {
 		owner, err = prepareOwnedProcess(cmd)
@@ -489,11 +541,28 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 		}
 	}
 	var bridgeStatus map[string]any
+	if p.capabilities != nil {
+		if err := p.verifyOpenCodeLibrary(h); err != nil {
+			return failed(err)
+		}
+		if !p.openCodeLibraryReady.Load() {
+			return failed(errors.New("Owned OpenCode Library policy did not complete its handshake."))
+		}
+	}
+	bridgeStarted := time.Now()
 	if err := h.json(ctx, http.MethodPost, "/mcp", map[string]any{"name": "klm_linked", "config": map[string]any{"type": "remote", "url": p.bridge.url, "headers": map[string]string{"Authorization": "Bearer " + p.bridge.token}, "oauth": false, "enabled": true, "timeout": linkedToolClientTimeout.Milliseconds()}}, &bridgeStatus); err != nil {
-		return failed(errors.New("Could not configure the OpenCode linked-agent bridge."))
+		return failed(fmt.Errorf("Could not configure the OpenCode linked-agent bridge (elapsed: %s): %w", time.Since(bridgeStarted).Round(time.Millisecond), err))
 	}
 	if str(object(bridgeStatus["klm_linked"]), "status") != "connected" {
 		return failed(errors.New("OpenCode did not connect to the linked-agent bridge."))
+	}
+	if p.capabilities != nil {
+		if err := h.json(ctx, http.MethodPost, "/mcp", map[string]any{"name": "klm_library", "config": map[string]any{"type": "remote", "url": p.bridge.libraryURL, "headers": map[string]string{"Authorization": "Bearer " + p.bridge.libraryToken}, "oauth": false, "enabled": true, "timeout": 330000}}, &bridgeStatus); err != nil {
+			return failed(err)
+		}
+		if len(bridgeStatus) != 2 || str(object(bridgeStatus["klm_library"]), "status") != "connected" {
+			return failed(errors.New("OpenCode gateway-only Library connection was not confirmed."))
+		}
 	}
 	server.mcpPrefixes = openCodeMCPToolPrefixes(bridgeStatus)
 	if err := p.bridge.waitReady(ctx); err != nil {
@@ -527,7 +596,7 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 
 	server, reused := (*openCodeServer)(nil), false
 	toolKey := p.runtimeToolKey()
-	if p.runtime != nil {
+	if p.runtime != nil && p.capabilities == nil {
 		server, reused = p.runtime.getOpenCode(toolKey)
 	}
 	if !reused {
@@ -559,7 +628,11 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 			abortSettled = h.json(abortCtx, http.MethodPost, "/session/"+url.PathEscape(sessionID)+"/abort", nil, nil) == nil
 			abortCancel()
 		}
-		if p.runtime == nil {
+		if p.runtime != nil && p.capabilities != nil {
+			shutdownErr := p.runtime.shutdown()
+			p.processesDrained = shutdownErr == nil
+			err = errors.Join(err, shutdownErr)
+		} else if p.runtime == nil {
 			server.Close()
 			p.processesDrained = owner.Drained()
 		} else {
@@ -816,6 +889,8 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 			return errors.New("OpenCode message part exceeded the 2 MiB limit.")
 		}
 		kind, title, body, status := str(part, "type"), "", str(part, "text"), "running"
+		key := "opencode/" + messageID + "/" + partID
+		var taskChild *openCodeSubagent
 		raw := map[string]any{"type": kind, "partID": partID, "messageID": messageID}
 		switch kind {
 		case "text", "reasoning":
@@ -869,11 +944,7 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 							}
 							children[nativeChildID] = &openCodeSubagent{adapter: child, infos: map[string]map[string]any{}, parts: map[string]map[string]any{}, usage: &openCodeUsage{messages: map[string]map[string]any{}, steps: map[string]map[string]map[string]any{}, windows: windows}}
 						}
-						if status == "completed" || status == "error" || status == "cancelled" {
-							if err := p.finishSubagent(child, status); err != nil {
-								return err
-							}
-						}
+						taskChild = children[nativeChildID]
 					}
 				}
 			} else if title == "bash" {
@@ -886,13 +957,31 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 			}
 			// Opaque tool names stay intact; do not guess that every custom tool is MCP.
 			raw["tool"], raw["callID"], raw["state"] = toolName, part["callID"], state
+			if label, metadata, ok := p.libraryToolPresentation(toolName); ok {
+				kind, title = "mcp", label
+				for key, value := range metadata {
+					raw[key] = value
+				}
+			}
 		default:
 			return nil
 		}
-		return target.put("opencode/"+messageID+"/"+partID, kind, title, body, status, false, raw)
+		if err := target.put(key, kind, title, body, status, false, raw); err != nil {
+			return err
+		}
+		if taskChild != nil {
+			return taskChild.updateTask(p, key, status)
+		}
+		return nil
 	}
 
 	prompt := map[string]any{"parts": payload.openCodeParts()}
+	if p.capabilities != nil {
+		prompt["agent"] = p.openCodeManagedAgent()
+		if err := p.markCapabilitiesApplied(); err != nil {
+			return err
+		}
+	}
 	if p.model != "" {
 		provider, model, ok := strings.Cut(p.model, "/")
 		if !ok || provider == "" || model == "" {
@@ -918,69 +1007,15 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 	}
 	// Events queued during prompt_async are processed only after submission succeeds.
 	busy, ownedMessage := false, false
-	steering := p.steeringChannel()
-	steeringMessageID, steeringQueueID := "", ""
-	latestSteeringID := ""
-	steeringHTTPPending := false
-	steeringResult := make(chan error, 1)
-	var deferredIdle map[string]any
-	steeringTimer := time.NewTimer(15 * time.Second)
-	steeringTimer.Stop()
-	defer steeringTimer.Stop()
-	var steeringDeadline <-chan time.Time
+	// The owned plugin pulls and persists steering at the native model boundary.
+	// SSE is observation only; delayed headers cannot gate delivery or erase payloads.
 	choiceStop := p.graphStop()
 	choiceInterrupted := false
 	for {
 		if p.completed && !p.graphMCPPending() {
 			return nil
 		}
-		nextEvents := events
-		if deferredIdle != nil && steeringMessageID == "" && !steeringHTTPPending {
-			replay := make(chan map[string]any, 1)
-			replay <- deferredIdle
-			deferredIdle, nextEvents = nil, replay
-		}
-		var inputReady <-chan struct{}
-		if !steeringHTTPPending {
-			inputReady = steering
-		}
 		select {
-		case <-inputReady:
-			q, payload, err := p.takeSteering()
-			if err != nil {
-				return err
-			}
-			if q == nil {
-				continue
-			}
-			steeringQueueID = q.ID
-			steeringMessageID = fmt.Sprintf("msg_%012x%s", (uint64(time.Now().UnixMilli())*0x1000+1)&0xffffffffffff, q.ID[:14])
-			latestSteeringID = steeringMessageID
-			steeringHTTPPending = true
-			steeringTimer.Reset(15 * time.Second)
-			steeringDeadline = steeringTimer.C
-			nextPrompt := map[string]any{"messageID": steeringMessageID, "parts": payload.openCodeParts()}
-			if model, ok := prompt["model"]; ok {
-				nextPrompt["model"] = model
-			}
-			if variant, ok := prompt["variant"]; ok {
-				nextPrompt["variant"] = variant
-			}
-			go func() {
-				sendCtx, sendCancel := context.WithTimeout(ctx, 15*time.Second)
-				defer sendCancel()
-				steeringResult <- h.json(sendCtx, http.MethodPost, sessionPath+"/prompt_async", nextPrompt, nil)
-			}()
-		case <-steeringDeadline:
-			return errors.New("OpenCode did not confirm the steering message before the delivery deadline.")
-		case sendErr := <-steeringResult:
-			steeringHTTPPending = false
-			p.app.mu.Lock()
-			p.app.wakeSteeringLocked(p.id)
-			p.app.mu.Unlock()
-			if sendErr != nil && steeringMessageID != "" {
-				return fmt.Errorf("OpenCode message delivery was not confirmed: %w", sendErr)
-			}
 		case <-choiceStop:
 			choiceStop = nil
 			if p.completed {
@@ -998,7 +1033,7 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 			return err
 		case err := <-streamFailed:
 			return err
-		case event := <-nextEvents:
+		case event := <-events:
 			typ, properties := str(event, "type"), object(event["properties"])
 			// Route human waits before the display-only child-session filter.
 			// Replies remain on the owning conversation, keyed by native request ID.
@@ -1151,14 +1186,6 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 				if id == "" || baseline[id] {
 					continue
 				}
-				if id == steeringMessageID && str(info, "role") == "user" {
-					if err := p.finishSteering(steeringQueueID, ""); err != nil {
-						return err
-					}
-					steeringMessageID, steeringQueueID = "", ""
-					steeringTimer.Stop()
-					steeringDeadline = nil
-				}
 				ownedMessage = true
 				infos[id] = info
 				usage.message(info)
@@ -1225,10 +1252,6 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 				if (typ != "session.idle" && status != "idle") || (!busy && !ownedMessage) {
 					continue
 				}
-				if steeringMessageID != "" || steeringHTTPPending {
-					deferredIdle = event
-					continue
-				}
 				// Retain only this turn, then reconcile oldest first for UI ordering.
 				var history []map[string]any
 				if err := h.walkMessages(ctx, sessionID, baseline, func(message map[string]any) error {
@@ -1246,7 +1269,6 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 					}
 				}
 				latestCreated, latestID := float64(-1), ""
-				latestParentID := ""
 				nativeFailure := false
 				err := p.withFinalBatch(func() error {
 					for i := len(history) - 1; i >= 0; i-- {
@@ -1272,7 +1294,6 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 						created, _ := object(info["time"])["created"].(float64)
 						if created > latestCreated || (created == latestCreated && id > latestID) {
 							latestCreated, latestID = created, id
-							latestParentID = str(info, "parentID")
 							finish := str(info, "finish")
 							terminalAssistant = completed && finish != "" && finish != "tool-calls" && finish != "unknown"
 							if choiceInterrupted && completed && str(object(info["error"]), "name") == "MessageAbortedError" {
@@ -1310,9 +1331,6 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 				}
 				if err := p.setUsage(usage.snapshot()); err != nil {
 					return err
-				}
-				if latestSteeringID != "" && (latestParentID != latestSteeringID || incomplete || !terminalAssistant) {
-					continue
 				}
 				if incomplete || !terminalAssistant {
 					return errors.New("OpenCode became idle without a completed assistant response.")

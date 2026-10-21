@@ -131,6 +131,12 @@ func (a *app) sideConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := Session{ID: newID(), ParentID: main.ID, ProjectID: main.ProjectID, Title: "Side agent", Workspace: main.Workspace, Role: sessionRoleSideAgent, Harness: harness, Model: model, Effort: effort, Status: "idle", Events: []Event{}, CreatedAt: now(), UpdatedAt: now()}
+	if len(a.state.LibraryDeletions) > 0 {
+		a.mu.Unlock()
+		fail(w, 409, "A library deletion needs recovery before inheriting capabilities.")
+		return
+	}
+	s.Capabilities = inheritedCapabilities(main)
 	if err := a.commitLocked(func(d *diskState) {
 		d.Sessions = append(d.Sessions, s)
 		if harness == "pi" {
@@ -307,7 +313,7 @@ func (a *app) scheduleLinkedLocked() {
 		}
 		s := a.state.session(id)
 		folder, available := a.state.conversationDirectory(s)
-		if !available || !delivery && a.state.conversationArchived(s) {
+		if !available || a.state.conversationArchived(s) {
 			continue
 		}
 		b, ok := a.binaries[s.Harness]

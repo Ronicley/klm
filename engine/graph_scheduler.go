@@ -163,6 +163,11 @@ func (a *app) startReservedGraphActivity(ctx context.Context, id string) error {
 	// durable run reservation. External editors are still checked by revisions.
 	a.authoringMu.Lock()
 	defer a.authoringMu.Unlock()
+	a.libraryMu.Lock()
+	defer a.libraryMu.Unlock()
+	if err = a.revalidateGraphCapabilities(snapshot); err != nil {
+		return fail(err)
+	}
 	a.mu.Lock()
 	project := a.state.project(activity.ProjectID)
 	if project == nil || project.Removed {
@@ -250,7 +255,7 @@ func (a *app) scheduleGraphNotificationsLocked() {
 			continue
 		}
 		p := a.state.project(s.ProjectID)
-		if p == nil || p.Removed {
+		if p == nil || p.Removed || a.state.conversationArchived(s) {
 			continue
 		}
 		b, ok := a.binaries[s.Harness]

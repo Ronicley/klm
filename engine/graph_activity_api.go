@@ -78,7 +78,7 @@ func (a *app) getGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 		sort.SliceStable(events, func(i, j int) bool { return events[i].CreatedAt < events[j].CreatedAt })
 		detail = &graphActivityDetail{graphActivitySummary: graphActivitySummary{x.ID, x.Occurrence, x.Status}, Input: x.Input, Submission: x.Submission, Events: events, Error: x.Error, CreatedAt: x.CreatedAt, UpdatedAt: updatedAt}
 	}
-	response := map[string]any{"runActive": graphRunActive(run.Status), "activations": summaries, "activation": detail}
+	response := map[string]any{"runActive": graphRunActive(run.Status), "activations": summaries, "activation": detail, "capabilities": run.Snapshot.Capabilities[nodeID]}
 	a.mu.Unlock()
 	respond(w, 200, response)
 }

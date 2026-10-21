@@ -35,17 +35,17 @@ class KlmColors {
     danger: Color(0xffdc2626),
   );
   static const dark = KlmColors(
-    surface: Color(0xff1b1d23),
-    sidebar: Color(0xff17191e),
-    subtle: Color(0xff2b2f39),
-    border: Colors.transparent,
-    text: Color(0xffe3e6ed),
-    heading: Color(0xfff4f5f7),
-    muted: Color(0xffa0a8b8),
-    faint: Color(0xff8992a3),
+    surface: Color(0xff101111),
+    sidebar: Color(0xff080808),
+    subtle: Color(0xff191a1a),
+    border: Color(0xff292a2a),
+    text: Color(0xffe3e6e4),
+    heading: Color(0xfff5f6f5),
+    muted: Color(0xffa6aaa9),
+    faint: Color(0xff949997),
     accent: Color(0xff91adff),
-    accentSoft: Color(0xff2a3550),
-    onAccent: Color(0xff111827),
+    accentSoft: Color(0xff182238),
+    onAccent: Color(0xff080808),
     danger: Color(0xfff0939e),
   );
 

@@ -16,6 +16,8 @@ import (
 )
 
 type Project struct {
+	Topics          []Topic  `json:"topics"`
+	TopicOrder      []string `json:"topicOrder,omitempty"`
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
 	Folder          string   `json:"folder"`
@@ -38,35 +40,37 @@ type Event struct {
 }
 
 type Session struct {
-	Queue           []QueuedMessage         `json:"queue"`
-	Role            string                  `json:"role,omitempty"`
-	GraphRunID      string                  `json:"graphRunId,omitempty"`
-	GraphNodeID     string                  `json:"graphNodeId,omitempty"`
-	ExecutionCWD    string                  `json:"executionCwd,omitempty"`
-	SelectedGraphID string                  `json:"selectedGraphId,omitempty"`
-	Graph           *ConversationGraphState `json:"graph,omitempty"` // HTTP/SSE view only
-	ParentID        string                  `json:"parentId,omitempty"`
-	Sources         []SourceReference       `json:"sources,omitempty"`
-	ID              string                  `json:"id"`
-	ProjectID       string                  `json:"projectId"`
-	Title           string                  `json:"title"`
-	Workspace       string                  `json:"workspace"`
-	Harness         string                  `json:"harness"`
-	HarnessLocked   bool                    `json:"harnessLocked,omitempty"`
-	YOLO            bool                    `json:"yolo,omitempty"`
-	Model           string                  `json:"model,omitempty"`
-	Effort          string                  `json:"effort,omitempty"`
-	ResolvedModel   string                  `json:"resolvedModel,omitempty"`
-	ResolvedEffort  string                  `json:"resolvedEffort,omitempty"`
-	Status          string                  `json:"status"`
-	Archived        bool                    `json:"archived,omitempty"`
-	RuntimeActive   bool                    `json:"runtimeActive,omitempty"` // HTTP/SSE view only
-	Events          []Event                 `json:"events"`
-	Permissions     []Permission            `json:"permissions,omitempty"`
-	Questions       []QuestionRequest       `json:"questions,omitempty"`
-	Usage           *SessionUsage           `json:"usage,omitempty"`
-	CreatedAt       string                  `json:"createdAt"`
-	UpdatedAt       string                  `json:"updatedAt"`
+	Capabilities    ConversationCapabilities `json:"capabilities"`
+	Queue           []QueuedMessage          `json:"queue"`
+	Role            string                   `json:"role,omitempty"`
+	GraphRunID      string                   `json:"graphRunId,omitempty"`
+	GraphNodeID     string                   `json:"graphNodeId,omitempty"`
+	ExecutionCWD    string                   `json:"executionCwd,omitempty"`
+	SelectedGraphID string                   `json:"selectedGraphId,omitempty"`
+	Graph           *ConversationGraphState  `json:"graph,omitempty"` // HTTP/SSE view only
+	ParentID        string                   `json:"parentId,omitempty"`
+	Sources         []SourceReference        `json:"sources,omitempty"`
+	ID              string                   `json:"id"`
+	ProjectID       string                   `json:"projectId"`
+	Title           string                   `json:"title"`
+	Workspace       string                   `json:"workspace"`
+	TopicID         string                   `json:"topicId,omitempty"`
+	Harness         string                   `json:"harness"`
+	HarnessLocked   bool                     `json:"harnessLocked,omitempty"`
+	YOLO            bool                     `json:"yolo,omitempty"`
+	Model           string                   `json:"model,omitempty"`
+	Effort          string                   `json:"effort,omitempty"`
+	ResolvedModel   string                   `json:"resolvedModel,omitempty"`
+	ResolvedEffort  string                   `json:"resolvedEffort,omitempty"`
+	Status          string                   `json:"status"`
+	Archived        bool                     `json:"archived,omitempty"`
+	RuntimeActive   bool                     `json:"runtimeActive,omitempty"` // HTTP/SSE view only
+	Events          []Event                  `json:"events"`
+	Permissions     []Permission             `json:"permissions,omitempty"`
+	Questions       []QuestionRequest        `json:"questions,omitempty"`
+	Usage           *SessionUsage            `json:"usage,omitempty"`
+	CreatedAt       string                   `json:"createdAt"`
+	UpdatedAt       string                   `json:"updatedAt"`
 }
 
 type nativeSession struct {
@@ -89,7 +93,27 @@ type TranscriptionSettings struct {
 }
 
 type diskState struct {
-	tx                  *stateTransaction
+	tx          *stateTransaction
+	TopicSchema int `json:"topicSchema,omitempty"`
+
+	ActivityBoardConfig      activityBoardConfig                `json:"activityBoardConfig,omitempty"`
+	ActivityBoardConnections map[string]activityBoardConnection `json:"activityBoardConnections,omitempty"`
+	ActivityBoardCredentials map[string][]byte                  `json:"activityBoardCredentials,omitempty"`
+	ActivityBoardItems       map[string]activityBoardItem       `json:"activityBoardItems,omitempty"`
+	ActivityBoardSync        map[string]activityBoardSync       `json:"activityBoardSync,omitempty"`
+	ActivityBoardMoves       map[string]activityBoardMove       `json:"activityBoardMoves,omitempty"`
+
+	MCPConnections   map[string]MCPConnection `json:"mcpConnections,omitempty"`
+	MCPCredentials   map[string][]byte        `json:"mcpCredentials,omitempty"`
+	LibraryDeletions []LibraryDeletion        `json:"libraryDeletions,omitempty"`
+
+	WebhookConnections      map[string]WebhookConnection  `json:"webhookConnections,omitempty"`
+	WebhookEvents           map[string]WebhookStoredEvent `json:"webhookEvents,omitempty"`
+	WebhookPending          map[string]WebhookPending     `json:"webhookPending,omitempty"`
+	WebhookReleases         map[string]WebhookRelease     `json:"webhookReleases,omitempty"`
+	WebhookReceivedSequence uint64                        `json:"webhookReceivedSequence,omitempty"`
+	WebhookReleaseSequence  uint64                        `json:"webhookReleaseSequence,omitempty"`
+
 	JournalFormat       int                      `json:"journalFormat,omitempty"`
 	AcceptedMessages    map[string]string        `json:"acceptedMessages,omitempty"`
 	SessionSpawns       []SessionSpawn           `json:"sessionSpawns,omitempty"`
@@ -161,6 +185,8 @@ func loadState(dir string) (diskState, error) {
 		Transcription: TranscriptionSettings{Model: defaultTranscriptionModel, Vocabulary: []TranscriptionVocabularyEntry{}}}
 	b, err := os.ReadFile(filepath.Join(dir, "state.json"))
 	if errors.Is(err, os.ErrNotExist) {
+		initializeWebhookRecords(&d)
+		initializeActivityBoardRecords(&d)
 		return d, nil
 	}
 	if err != nil {
@@ -214,6 +240,10 @@ func loadState(dir string) (diskState, error) {
 	generalCount := 0
 	for i := range d.Sessions {
 		s := &d.Sessions[i]
+		if err := normalizeSelection(&s.Capabilities.Desired); err != nil {
+			return d, errors.New("Invalid persisted library selection.")
+		}
+		s.Capabilities.Preparing = nil // An interrupted preparation is never an applied turn.
 		engineOwned := s.Role == sessionRoleGeneralAgent || s.Role == sessionRoleSubagent && s.ProjectID == "" && d.session(s.ParentID) != nil && d.session(s.ParentID).Role == sessionRoleGeneralAgent
 		if s.Role == sessionRoleGeneralAgent {
 			generalCount++
@@ -281,6 +311,14 @@ func loadState(dir string) (diskState, error) {
 	if err := validateSessionSpawns(&d); err != nil {
 		return d, err
 	}
+	if err := validateWebhookRecords(&d); err != nil {
+		return d, err
+	}
+	initializeWebhookRecords(&d)
+	initializeActivityBoardRecords(&d)
+	if err := validateActivityBoardRecords(&d); err != nil {
+		return d, err
+	}
 	normalizeGraphWorkspaceRecords(&d)
 	if err := validateGraphRecords(&d); err != nil {
 		return d, err
@@ -295,8 +333,17 @@ func loadState(dir string) (diskState, error) {
 }
 
 func saveState(dir string, d *diskState) error {
+	if err := validateTopicRecords(d); err != nil {
+		return err
+	}
+	if err := validateActivityBoardRecords(d); err != nil {
+		return err
+	}
 	if d.Version != 2 {
 		return errors.New("refusing to write unsupported state version")
+	}
+	if err := validateWebhookRecords(d); err != nil {
+		return err
 	}
 	// Old binaries use DisallowUnknownFields and must refuse this storage rather
 	// than start without replaying the transaction/possibly sealed journal.

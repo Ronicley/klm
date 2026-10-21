@@ -1,10 +1,26 @@
-import { Archive, ArchiveRestore, Bot, Folder, FolderPlus, MoreHorizontal, PanelLeftClose, Pencil, Plus, Search, Settings, SquarePen, Workflow, X } from 'lucide-react';
-import { Fragment, useLayoutEffect, useRef, useState } from 'react';
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ListTodo, MoreHorizontal, PanelLeftClose, Pencil, Plus, Search, Settings, SquarePen, Workflow } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Menu, MenuItem } from '../../design-system/Menu';
-import { ProjectActionsMenu } from '../projects/ProjectActionsMenu';
-import type { Session, Project } from '../../engine';
-import { animateSortPositions, captureSortPositions, type SortPositions } from '../sortAnimation';
+import { ENGINE_URL, type Session, type Project, type Topic } from '../../engine';
+import { IS_MOBILE_HOST } from '../../platform';
+import { MobileSessionSubtitle, SessionRecencySubtitle } from './MobileSessionSubtitle';
+import { topicGroups } from './topics';
+
+const minimumSidebarWidth = 200;
+const defaultSidebarWidth = 256;
+const maximumSidebarWidth = 520;
+const minimumChatWidth = 400;
+const sidebarWidthKey = `klm.sessions.width.v1:${ENGINE_URL}`;
+type SidebarDrag = { kind: 'topic' | 'session'; id: string };
+type TopicDrop = { topicId: string; side: 'before' | 'after' | 'inside' };
+
+function readSidebarWidth() {
+  try {
+    const width = Number(localStorage.getItem(sidebarWidthKey));
+    return Number.isFinite(width) && width >= minimumSidebarWidth ? Math.min(width, maximumSidebarWidth) : defaultSidebarWidth;
+  } catch { return defaultSidebarWidth; }
+}
 
 function sessionRuntimeState(session: Session) {
   if (session.status === 'error') return { state: 'error', label: 'Runtime error' };
@@ -15,225 +31,191 @@ function sessionRuntimeState(session: Session) {
   return { state: 'off', label: 'Runtime stopped' };
 }
 
-type DragItem = { kind: 'session'; id: string } | { kind: 'folder'; name: string };
-
-function folderBeforeAt(container: HTMLElement, draggingName: string, clientY: number) {
-  const rows = container.querySelectorAll<HTMLElement>('[data-folder-name]');
-  for (const row of rows) {
-    const name = row.dataset.folderName;
-    if (!name || name === draggingName) continue;
-    const bounds = row.getBoundingClientRect();
-    if (clientY < bounds.top + bounds.height / 2) return name === 'Ungrouped' ? '' : name;
-  }
-  return '';
-}
-
-function sessionBeforeAt(container: HTMLElement, draggingId: string, clientY: number) {
-  const rows = container.querySelectorAll<HTMLElement>('[data-session-id]');
-  for (const row of rows) {
-    const id = row.dataset.sessionId;
-    if (!id || id === draggingId) continue;
-    const bounds = row.getBoundingClientRect();
-    if (clientY < bounds.top + bounds.height / 2) return id;
-  }
-  return '';
-}
-
-export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onCreateFolder, onRename, onPosition, onReorderFolder, onArchiveSession, onArchiveFolder, onClose, onAgents, onGraphs, onEditProject, onRemoveProject }: {
-  project: Project; sessions: Session[]; activeId: string; collapsed: string[]; archivedCollapsed: boolean; onCollapsedChange: (folders: string[]) => void; onArchivedCollapsedChange: (collapsed: boolean) => void;
-  onSelect: (id: string) => void; onNew: (folder?: string) => void; onCreateFolder: (name: string) => Promise<string | null>;
-  onRename: (session: Session) => void; onPosition: (session: Session, folder: string, beforeId: string) => Promise<boolean>;
-  onReorderFolder: (folder: string, before: string) => Promise<boolean>;
-  onArchiveSession: (session: Session, archived: boolean) => Promise<boolean>; onArchiveFolder: (folder: string, archived: boolean) => Promise<boolean>;
-  onClose: () => void; activeSection: 'chat' | 'design' | 'agents' | 'graphs'; onAgents: () => void; onGraphs: () => void;
-  onEditProject: (project: Project) => void; onRemoveProject: (project: Project) => Promise<string | null>;
+export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onRename, onEditTopic, onCreateTopic, onArchiveSession, onArchiveTopic, onMoveSession, onReorderTopic, onClose, onAgents, onGraphs, onProjectSettings, onActivityBoard, hasTaskProvider }: {
+  project: Project; sessions: Session[]; activeId: string; collapsed: string[]; archivedCollapsed: boolean; onCollapsedChange: Dispatch<SetStateAction<string[]>>; onArchivedCollapsedChange: (collapsed: boolean) => void;
+  onSelect: (id: string) => void; onNew: (topic?: Topic) => void; onRename: (session: Session) => void; onEditTopic: (topic: Topic) => void; onCreateTopic: () => void;
+  onArchiveSession: (session: Session, archived: boolean) => Promise<boolean>; onArchiveTopic: (topic: Topic, archived: boolean) => Promise<boolean>;
+  onMoveSession: (session: Session, topic: Topic) => Promise<boolean>; onReorderTopic: (topic: Topic, beforeId: string) => Promise<boolean>;
+  onClose: () => void; activeSection: 'chat' | 'design' | 'agents' | 'graphs' | 'activity-board'; onAgents: () => void; onGraphs: () => void;
+  onActivityBoard: () => void; hasTaskProvider: boolean; onProjectSettings: (project: Project) => void;
 }) {
-  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const panel = useRef<HTMLElement>(null);
+  const panelId = useId();
+  const resize = useRef<{ pointerId: number; x: number; width: number } | null>(null);
+  const [savedWidth, setSavedWidth] = useState(readSidebarWidth);
+  const [maximumWidth, setMaximumWidth] = useState(maximumSidebarWidth);
+  const width = Math.min(savedWidth, maximumWidth);
+  const clampWidth = (value: number) => Math.max(minimumSidebarWidth, Math.min(maximumWidth, value));
+  useLayoutEffect(() => {
+    if (IS_MOBILE_HOST) return;
+    const shell = panel.current?.parentElement;
+    if (!shell) return;
+    const main = shell.querySelector<HTMLElement>('.main-panel');
+    const measure = () => {
+      const railWidth = shell.querySelector('.project-rail')?.getBoundingClientRect().width ?? 0;
+      const sideWidth = shell.querySelector('.side-chat-panel:not(.side-chat-panel--full)')?.getBoundingClientRect().width ?? 0;
+      const dividerWidth = sideWidth ? shell.querySelector('.side-chat-divider')?.getBoundingClientRect().width ?? 0 : 0;
+      setMaximumWidth(Math.max(minimumSidebarWidth, Math.min(maximumSidebarWidth, shell.clientWidth - railWidth - sideWidth - dividerWidth - minimumChatWidth)));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(shell);
+    if (main) observer.observe(main);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    if (IS_MOBILE_HOST) return;
+    try { localStorage.setItem(sidebarWidthKey, String(savedWidth)); } catch { /* Resizing still works without local storage. */ }
+  }, [savedWidth]);
   const [sessionMenu, setSessionMenu] = useState('');
-  const [folderMenu, setFolderMenu] = useState('');
+  const [topicMenu, setTopicMenu] = useState('');
   const [search, setSearch] = useState<string | null>(null);
-  const [addingFolder, setAddingFolder] = useState(false);
-  const [folderName, setFolderName] = useState('');
-  const [folderError, setFolderError] = useState('');
-  const [savingFolder, setSavingFolder] = useState(false);
   const [busyAction, setBusyAction] = useState('');
   const [actionError, setActionError] = useState('');
-  const [dragging, setDragging] = useState<DragItem | null>(null);
-  const [folderDropTarget, setFolderDropTarget] = useState('');
-  const [sessionDropPosition, setSessionDropPosition] = useState<{ workspace: string; beforeId: string } | null>(null);
-  const [folderDropBefore, setFolderDropBefore] = useState<string | null>(null);
-  const workspaceList = useRef<HTMLDivElement>(null);
-  const folderPositions = useRef<SortPositions>(new Map());
-  const sessionPositions = useRef<SortPositions>(new Map());
-  const archivedFolders = new Set(project.archivedFolders);
-  const activeFolders = project.folders.filter(folder => !archivedFolders.has(folder));
-  const archivedSessions = sessions.filter(session => session.archived && !archivedFolders.has(session.workspace));
-  const query = (search ?? '').toLowerCase();
-  const matchingArchivedFolders = project.archivedFolders.filter(folder => folder.toLowerCase().includes(query));
-  const matchingArchivedSessions = archivedSessions.filter(session => session.title.toLowerCase().includes(query));
-
-  useLayoutEffect(() => {
-    if (workspaceList.current) animateSortPositions(workspaceList.current, '[data-folder-sort-key]', 'folderSortKey', folderPositions.current);
-  }, [folderDropBefore]);
-
-  useLayoutEffect(() => {
-    if (workspaceList.current) animateSortPositions(workspaceList.current, '[data-session-sort-key]', 'sessionSortKey', sessionPositions.current);
-  }, [sessionDropPosition?.workspace, sessionDropPosition?.beforeId]);
-
-  function changeSessionDrop(position: { workspace: string; beforeId: string } | null) {
-    if (sessionDropPosition?.workspace === position?.workspace && sessionDropPosition?.beforeId === position?.beforeId) return;
-    if (workspaceList.current) sessionPositions.current = captureSortPositions(workspaceList.current, '[data-session-sort-key]', 'sessionSortKey');
-    setSessionDropPosition(position);
-  }
+  const [dragging, setDragging] = useState<SidebarDrag | null>(null);
+  const [drop, setDrop] = useState<TopicDrop | null>(null);
+  const suppressClick = useRef(false);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const refresh = () => { if (!document.hidden) setNow(Date.now()); };
+    const timer = window.setInterval(refresh, 60000);
+    window.addEventListener('focus', refresh); document.addEventListener('visibilitychange', refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
+  }, []);
+  const query = (search ?? '').trim().toLowerCase();
+  const groups = topicGroups(project, sessions);
+  const activeTopics = groups.flatMap(group => group.topic && !group.topic.archived ? [group.topic] : []);
 
   async function runAction(key: string, action: () => Promise<boolean>, failure: string) {
     if (busyAction) return false;
     setBusyAction(key); setActionError('');
-    try {
-      const succeeded = await action();
-      if (succeeded) { setSessionMenu(''); setFolderMenu(''); }
-      else setActionError(failure);
-      return succeeded;
-    } catch { setActionError(failure); return false; }
+    try { if (await action()) { setSessionMenu(''); setTopicMenu(''); return true; } setActionError(failure); return false; }
+    catch { setActionError(failure); return false; }
     finally { setBusyAction(''); }
   }
 
-  async function positionSession(session: Session, workspace: string, beforeId: string) {
-    setFolderDropTarget(''); changeSessionDrop(null);
-    if (await runAction(`move:${session.id}`, () => onPosition(session, workspace, beforeId), 'Could not move the session. Try again.')) {
-      onCollapsedChange(collapsed.filter(folder => folder !== workspace));
-    }
+  async function moveSession(session: Session, topic: Topic) {
+    if (session.topicId === topic.id) return;
+    if (await runAction(`move:${session.id}`, () => onMoveSession(session, topic), 'Could not move the session. Restore archived content first, then try again.')) onCollapsedChange(current => current.filter(id => id !== topic.id));
   }
 
-  function sessionRow(session: Session, archived = false) {
+  function reorderTopic(topic: Topic, beforeId: string) {
+    if (topic.id === beforeId) return;
+    void runAction(`reorder:${topic.id}`, () => onReorderTopic(topic, beforeId), 'Could not reorder the topic. Try again.');
+  }
+
+  function endDrag() {
+    setDragging(null); setDrop(null);
+    window.setTimeout(() => { suppressClick.current = false; }, 0);
+  }
+
+  function sessionRow(session: Session, archived = false, topicIsArchived = false) {
     const runtime = sessionRuntimeState(session);
-    return <div key={session.id} data-session-id={session.id} data-session-sort-key={session.id} className={`session-row ${dragging?.kind === 'session' && dragging.id === session.id ? 'is-dragging' : ''} ${sessionMenu === session.id ? 'has-open-menu' : ''}`} draggable={!archived && !busyAction && search === null}
+    return <div key={session.id} className={`session-row ${session.id === activeId ? 'is-active' : ''} ${sessionMenu === session.id ? 'has-open-menu' : ''} ${dragging?.kind === 'session' && dragging.id === session.id ? 'is-dragging' : ''}`} draggable={!archived && !busyAction}
       onDragStart={event => {
-        const peers = sessions.filter(item => !item.archived && item.workspace === session.workspace);
-        const index = peers.findIndex(item => item.id === session.id);
-        setDragging({ kind: 'session', id: session.id }); setSessionDropPosition({ workspace: session.workspace, beforeId: peers[index + 1]?.id ?? '' });
-        event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-klm-session', session.id);
-      }}
-      onDragEnd={() => { setDragging(null); setFolderDropTarget(''); changeSessionDrop(null); setFolderDropBefore(null); }}>
-      <button className={`session-item ${session.id === activeId ? 'is-active' : ''}`} disabled={archived} aria-current={session.id === activeId ? 'page' : undefined} onClick={() => onSelect(session.id)}>
-        <span>{session.title}</span>{!archived && <i className={`session-runtime-led is-${runtime.state}`} role="img" aria-label={runtime.label} title={runtime.label} />}
+        if (event.target instanceof HTMLElement && event.target.closest('.menu-anchor')) { event.preventDefault(); return; }
+        event.stopPropagation(); suppressClick.current = true; setSessionMenu(''); setTopicMenu(''); setDrop(null);
+        setDragging({ kind: 'session', id: session.id }); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-klm-session', session.id);
+      }} onDragEnd={endDrag}>
+      <button className="session-item" aria-current={session.id === activeId ? 'page' : undefined} title={session.title} onClick={() => { if (!suppressClick.current) onSelect(session.id); }}>
+        {IS_MOBILE_HOST ? <span className="mobile-session-copy"><span className="mobile-session-title">{session.title}</span><MobileSessionSubtitle session={session} now={now} archived={archived} /></span> : <span className="session-copy"><span className="session-title">{session.title}</span><span className="session-meta">{!archived && <i className={`session-runtime-led is-${runtime.state}`} role="img" aria-label={runtime.label} title={runtime.label} />}<SessionRecencySubtitle session={session} now={now} /></span></span>}
       </button>
       {archived
-        ? <IconButton label={`Restore ${session.title}`} disabled={!!busyAction} onClick={() => void runAction(`restore:${session.id}`, () => onArchiveSession(session, false), 'Could not restore the session. Try again.')}><ArchiveRestore /></IconButton>
+        ? !topicIsArchived && <IconButton label={`Restore ${session.title}`} disabled={!!busyAction} onClick={() => void runAction(`restore:${session.id}`, () => onArchiveSession(session, false), 'Could not restore the session. Try again.')}><ArchiveRestore /></IconButton>
         : <Menu label={`${session.title} actions`} role="menu" className="workspace-action-menu" open={sessionMenu === session.id} onOpenChange={open => { setActionError(''); setSessionMenu(open ? session.id : ''); }} side="bottom" trigger={props => <IconButton {...props} label={`${session.title} actions`}><MoreHorizontal /></IconButton>}>
           <MenuItem role="menuitem" disabled={!!busyAction} onClick={() => { setSessionMenu(''); onRename(session); }}><Pencil />Rename</MenuItem>
+          {activeTopics.some(topic => topic.id !== session.topicId) && <div className="topic-move-options" role="group" aria-label="Move to topic"><span className="topic-move-heading" aria-hidden="true">Move to topic</span>{activeTopics.filter(topic => topic.id !== session.topicId).map(topic => <MenuItem key={topic.id} role="menuitem" disabled={!!busyAction} title={topic.name} onClick={() => void moveSession(session, topic)}>{topic.name}</MenuItem>)}</div>}
           <MenuItem role="menuitem" disabled={!!busyAction} onClick={() => void runAction(`archive:${session.id}`, () => onArchiveSession(session, true), 'Could not archive the session. Try again.')}><Archive />Archive</MenuItem>
         </Menu>}
     </div>;
   }
 
-  return <aside className="workspace-sidebar" aria-label="Sessions">
-    <div className="brand-row"><div className="project-sidebar-heading"><strong title={project.name}>{project.name}</strong><ProjectActionsMenu project={project} onEdit={onEditProject} onRemove={onRemoveProject} open={projectMenuOpen} onOpenChange={setProjectMenuOpen} side="bottom" trigger={props => <IconButton {...props} label="Project settings" className="project-settings-button"><Settings /></IconButton>} /></div><IconButton label="Close sessions" onClick={onClose}><PanelLeftClose /></IconButton></div>
+  function groupView(group: ReturnType<typeof topicGroups>[number], archived: boolean) {
+    const matches = group.sessions.filter(session => (group.topic?.archived || !!session.archived === archived) && (group.name.toLowerCase().includes(query) || session.title.toLowerCase().includes(query)));
+    if (query && !matches.length && !group.name.toLowerCase().includes(query)) return null;
+    if (archived && !matches.length && !group.topic?.archived) return null;
+    const collapseKey = `${archived ? 'archived:' : ''}${group.id}`;
+    const expanded = search !== null || !collapsed.includes(collapseKey);
+    const dropSide = !archived && drop?.topicId === group.id ? drop.side : undefined;
+    const index = activeTopics.findIndex(topic => topic.id === group.id);
+    return <section key={collapseKey} className={`workspace-group topic-group ${group.topic ? `topic-color-${group.topic.color}` : 'is-ungrouped'} ${dropSide ? `topic-drop-${dropSide}` : ''} ${!archived && dragging?.kind === 'topic' && dragging.id === group.id ? 'is-dragging' : ''}`} aria-label={group.name}
+      onDragOver={event => {
+        if (busyAction || archived || !group.topic || !dragging) return;
+        if (dragging.kind === 'topic' && dragging.id === group.id || dragging.kind === 'session' && sessions.find(session => session.id === dragging.id)?.topicId === group.id) return;
+        event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move';
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const side = dragging.kind === 'session' ? 'inside' : event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after';
+        setDrop(current => current?.topicId === group.id && current.side === side ? current : { topicId: group.id, side });
+      }}
+      onDragLeave={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDrop(current => current?.topicId === group.id ? null : current); }}
+      onDrop={event => {
+        if (busyAction || archived || !group.topic || !dragging) return;
+        event.preventDefault(); event.stopPropagation();
+        const item = dragging; const target = group.topic;
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const after = event.clientY >= bounds.top + bounds.height / 2;
+        endDrag();
+        if (item.kind === 'session') { const session = sessions.find(session => session.id === item.id); if (session) void moveSession(session, target); }
+        else { const topic = activeTopics.find(topic => topic.id === item.id); if (topic && topic.id !== target.id) reorderTopic(topic, after ? activeTopics[index + 1]?.id ?? '' : target.id); }
+      }}>
+      <div className={`workspace-folder-row topic-heading ${group.topic && !archived && topicMenu === group.id ? 'has-open-menu' : ''}`}>
+        <button className="workspace-folder" title={group.name} aria-expanded={expanded} draggable={!!group.topic && !archived && !busyAction && search === null}
+          onDragStart={event => { event.stopPropagation(); suppressClick.current = true; setSessionMenu(''); setTopicMenu(''); setDragging({ kind: 'topic', id: group.id }); setDrop(null); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-klm-topic', group.id); }} onDragEnd={endDrag}
+          onClick={() => { if (search === null && !suppressClick.current) onCollapsedChange(collapsed.includes(collapseKey) ? collapsed.filter(item => item !== collapseKey) : [...collapsed, collapseKey]); }}>{expanded ? <ChevronDown /> : <ChevronRight />}<span>{group.name}</span></button>
+        {group.topic && (group.topic.archived
+          ? <IconButton label={`Restore topic ${group.name}`} disabled={!!busyAction} onClick={() => void runAction(`restore-topic:${group.id}`, () => onArchiveTopic(group.topic!, false), 'Could not restore the topic. Try again.')}><ArchiveRestore /></IconButton>
+          : !archived && <><IconButton label={`Add session to ${group.name}`} disabled={!!busyAction} onClick={() => { setTopicMenu(''); onNew(group.topic); }}><Plus /></IconButton><Menu label={`${group.name} actions`} role="menu" className="workspace-action-menu" open={topicMenu === group.id} onOpenChange={open => { setActionError(''); setTopicMenu(open ? group.id : ''); }} side="bottom" trigger={props => <IconButton {...props} label={`${group.name} actions`}><MoreHorizontal /></IconButton>}>
+            <MenuItem role="menuitem" onClick={() => { setTopicMenu(''); onEditTopic(group.topic!); }}><Pencil />Edit topic</MenuItem>
+            <MenuItem role="menuitem" disabled={!!busyAction || index <= 0} onClick={() => reorderTopic(group.topic!, activeTopics[index - 1].id)}><ArrowUp />Move up</MenuItem>
+            <MenuItem role="menuitem" disabled={!!busyAction || index === activeTopics.length - 1} onClick={() => reorderTopic(group.topic!, activeTopics[index + 2]?.id ?? '')}><ArrowDown />Move down</MenuItem>
+            <MenuItem role="menuitem" disabled={!!busyAction} onClick={() => void runAction(`archive-topic:${group.id}`, () => onArchiveTopic(group.topic!, true), 'Could not archive the topic. Try again.')}><Archive />Archive</MenuItem>
+          </Menu></>)}
+      </div>
+      {expanded && <div className="session-list">{matches.map(session => sessionRow(session, archived, !!group.topic?.archived))}{!matches.length && (group.topic && !archived && !group.topic.archived && !group.sessions.some(session => !session.archived) ? <Button className="topic-new-session" variant="ghost" size="sm" onClick={() => onNew(group.topic)}><SquarePen />New session</Button> : <p className="empty-workspace">No sessions</p>)}</div>}
+    </section>;
+  }
+
+  return <aside ref={panel} id={panelId} className="workspace-sidebar" aria-label="Sessions" style={{ '--sidebar-width': `${width}px` } as CSSProperties}>
+    <div className="brand-row"><div className="project-sidebar-heading"><strong title={project.name}>{project.name}</strong><IconButton label="Project settings" className="project-settings-button" onClick={() => onProjectSettings(project)}><Settings /></IconButton></div><IconButton label="Close sessions" onClick={onClose}><PanelLeftClose /></IconButton></div>
     <p className="project-folder-label" title={project.folder}><bdi dir="ltr">{project.folder}</bdi></p>
     <nav className="sidebar-navigation" aria-label="Project navigation">
       <Button variant="ghost" size="sm" onClick={() => onNew()}><SquarePen />New session</Button>
+      {hasTaskProvider && <Button variant="ghost" size="sm" aria-current={activeSection === 'activity-board' ? 'page' : undefined} onClick={onActivityBoard}><ListTodo />Tasks</Button>}
       <Button variant="ghost" size="sm" aria-current={activeSection === 'agents' ? 'page' : undefined} onClick={onAgents}><Bot />Agents</Button>
       <Button variant="ghost" size="sm" aria-current={activeSection === 'graphs' ? 'page' : undefined} onClick={onGraphs}><Workflow />Graphs</Button>
     </nav>
-    <div ref={workspaceList} className="workspace-list"
-      onDragOver={event => {
-        if (dragging?.kind !== 'folder') return;
-        event.preventDefault(); event.dataTransfer.dropEffect = 'move';
-        const before = folderBeforeAt(event.currentTarget, dragging.name, event.clientY);
-        if (before === folderDropBefore) return;
-        folderPositions.current = captureSortPositions(event.currentTarget, '[data-folder-sort-key]', 'folderSortKey');
-        setFolderDropBefore(before);
-      }}
-      onDrop={event => {
-        if (dragging?.kind !== 'folder') return;
-        event.preventDefault();
-        const folder = dragging.name;
-        const before = folderBeforeAt(event.currentTarget, folder, event.clientY);
-        folderPositions.current = captureSortPositions(event.currentTarget, '[data-folder-sort-key]', 'folderSortKey');
-        setFolderDropBefore(null);
-        void runAction(`reorder-folder:${folder}`, () => onReorderFolder(folder, before), 'Could not reorder the folder. Try again.');
-      }}>
-      <div className="workspace-heading"><h2>Sessions</h2><div className="workspace-heading-actions"><IconButton label="Search sessions" aria-expanded={search !== null} onClick={() => setSearch(search === null ? '' : null)}><Search /></IconButton><IconButton label="Create session folder" aria-expanded={addingFolder} onClick={() => setAddingFolder(!addingFolder)}><FolderPlus /></IconButton></div></div>
-      {addingFolder && <form className="new-folder-form" onSubmit={async event => {
-        event.preventDefault();
-        if (!folderName.trim() || savingFolder) return;
-        setSavingFolder(true);
-        try {
-          const failure = await onCreateFolder(folderName.trim());
-          if (failure) { setFolderError(failure); return; }
-          setFolderName(''); setFolderError(''); setAddingFolder(false);
-        } finally { setSavingFolder(false); }
-      }}><input autoFocus required maxLength={60} disabled={savingFolder} aria-label="Session folder name" placeholder="Topic name" value={folderName} onChange={event => setFolderName(event.target.value)} /><div><Button type="submit" size="sm" disabled={!folderName.trim() || savingFolder}>Create folder</Button><IconButton label="Cancel creating folder" disabled={savingFolder} onClick={() => setAddingFolder(false)}><X /></IconButton></div>{folderError && <p role="alert" className="form-error">{folderError}</p>}</form>}
+    <div className="workspace-list">
+      <div className="workspace-heading"><h2>Sessions</h2><div className="workspace-heading-actions"><IconButton label="Add topic" disabled={!!busyAction} onClick={() => { setSearch(null); onCreateTopic(); }}><Plus /></IconButton><IconButton label="Search sessions" aria-expanded={search !== null} onClick={() => setSearch(search === null ? '' : null)}><Search /></IconButton></div></div>
       {search !== null && <input autoFocus className="search-input" aria-label="Search sessions" placeholder="Find a session..." value={search} onChange={event => setSearch(event.target.value)} />}
-      {[...activeFolders, 'Ungrouped'].map(workspace => {
-        const matches = sessions.filter(session => !session.archived && session.workspace === workspace && session.title.toLowerCase().includes(query));
-        const expanded = search !== null || !collapsed.includes(workspace);
-        const isDropTarget = folderDropTarget === workspace;
-        return <Fragment key={workspace}>
-          {dragging?.kind === 'folder' && (folderDropBefore === workspace || workspace === 'Ungrouped' && folderDropBefore === '') ? <div className="workspace-folder-placeholder" aria-hidden="true" /> : null}
-          <div className={`workspace-group ${isDropTarget ? 'is-drop-target' : ''}`} data-folder-sort-key={workspace}
-          onDragOver={event => { if (dragging?.kind !== 'session') return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; changeSessionDrop(null); setFolderDropTarget(workspace); }}
-          onDragLeave={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setFolderDropTarget(''); }}
-          onDrop={event => {
-            if (dragging?.kind !== 'session') return;
-            event.preventDefault();
-            const session = sessions.find(item => item.id === dragging.id);
-            if (session) void positionSession(session, workspace, '');
-          }}>
-          <div className={`workspace-folder-row ${dragging?.kind === 'folder' && dragging.name === workspace ? 'is-dragging' : ''}`} data-folder-name={workspace}
-            onDragStart={event => {
-              if (workspace === 'Ungrouped') return;
-              const index = activeFolders.indexOf(workspace);
-              setDragging({ kind: 'folder', name: workspace }); setFolderDropBefore(activeFolders[index + 1] ?? '');
-              event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-klm-folder', workspace);
-            }}
-            onDragEnd={() => {
-              if (workspaceList.current) folderPositions.current = captureSortPositions(workspaceList.current, '[data-folder-sort-key]', 'folderSortKey');
-              setDragging(null); setFolderDropTarget(''); changeSessionDrop(null); setFolderDropBefore(null);
-            }}
-            onDragOver={event => {
-              if (dragging?.kind !== 'session') return;
-              event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move'; changeSessionDrop(null); setFolderDropTarget(workspace);
-            }}
-            onDrop={event => {
-              if (dragging?.kind !== 'session') return;
-              event.preventDefault(); event.stopPropagation();
-              const session = sessions.find(item => item.id === dragging.id);
-              if (session) void positionSession(session, workspace, '');
-            }}>
-            <button className="workspace-folder" draggable={workspace !== 'Ungrouped' && !busyAction && search === null} aria-expanded={expanded} onClick={() => { if (search === null) onCollapsedChange(collapsed.includes(workspace) ? collapsed.filter(item => item !== workspace) : [...collapsed, workspace]); }}><Folder />{workspace}</button><IconButton label={`New session in ${workspace}`} onClick={() => { onCollapsedChange(collapsed.filter(item => item !== workspace)); onNew(workspace); }}><Plus /></IconButton>{workspace !== 'Ungrouped' && <Menu label={`${workspace} actions`} role="menu" className="workspace-action-menu" open={folderMenu === workspace} onOpenChange={open => { setActionError(''); setFolderMenu(open ? workspace : ''); }} side="bottom" trigger={props => <IconButton {...props} label={`${workspace} actions`}><MoreHorizontal /></IconButton>}><MenuItem role="menuitem" disabled={!!busyAction} onClick={() => void runAction(`archive-folder:${workspace}`, () => onArchiveFolder(workspace, true), 'Could not archive the folder. Try again.')}><Archive />Archive</MenuItem></Menu>}
-          </div>
-          {expanded && <div className="session-list"
-            onDragOver={event => {
-              if (dragging?.kind !== 'session') return;
-              event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move'; setFolderDropTarget('');
-              changeSessionDrop({ workspace, beforeId: sessionBeforeAt(event.currentTarget, dragging.id, event.clientY) });
-            }}
-            onDrop={event => {
-              if (dragging?.kind !== 'session') return;
-              event.preventDefault(); event.stopPropagation();
-              const moved = sessions.find(item => item.id === dragging.id);
-              if (moved) void positionSession(moved, workspace, sessionBeforeAt(event.currentTarget, dragging.id, event.clientY));
-            }}>
-            {matches.map(session => <Fragment key={session.id}>
-              {dragging?.kind === 'session' && sessionDropPosition?.workspace === workspace && sessionDropPosition.beforeId === session.id ? <div className="session-drop-placeholder" aria-hidden="true" /> : null}
-              {sessionRow(session)}
-            </Fragment>)}
-            {dragging?.kind === 'session' && sessionDropPosition?.workspace === workspace && sessionDropPosition.beforeId === '' ? <div className="session-drop-placeholder" aria-hidden="true" /> : null}
-            {matches.length === 0 && !(dragging?.kind === 'session' && sessionDropPosition?.workspace === workspace) ? <p className="empty-workspace">No sessions</p> : null}
-          </div>}
-        </div>
-        </Fragment>;
-      })}
+      {groups.filter(group => !group.topic?.archived).map(group => groupView(group, false))}
       <div className="workspace-group">
         <div className="workspace-folder-row"><button className="workspace-folder" aria-expanded={search !== null || !archivedCollapsed} onClick={() => { if (search === null) onArchivedCollapsedChange(!archivedCollapsed); }}><Archive />Archived</button></div>
-        {(search !== null || !archivedCollapsed) && <div className="session-list">
-          {matchingArchivedFolders.map(folder => <div className="archived-row" key={folder}><span><Folder />{folder}</span><IconButton label={`Restore ${folder}`} disabled={!!busyAction} onClick={() => void runAction(`restore-folder:${folder}`, () => onArchiveFolder(folder, false), 'Could not restore the folder. Try again.')}><ArchiveRestore /></IconButton></div>)}
-          {matchingArchivedSessions.map(session => sessionRow(session, true))}
-          {matchingArchivedFolders.length === 0 && matchingArchivedSessions.length === 0 && <p className="empty-workspace">No sessions</p>}
-        </div>}
+        {(search !== null || !archivedCollapsed) && <div className="archived-topic-list">{groups.map(group => groupView(group, true))}{!sessions.some(session => session.archived) && !project.topics?.some(topic => topic.archived) && <p className="empty-workspace">No sessions</p>}</div>}
       </div>
       {actionError && <p role="alert" className="form-error sidebar-action-error">{actionError}</p>}
     </div>
+    {!IS_MOBILE_HOST && <div className="session-rail-resize" role="separator" aria-label="Resize sessions" aria-orientation="vertical" aria-controls={panelId} aria-valuemin={minimumSidebarWidth} aria-valuemax={Math.round(maximumWidth)} aria-valuenow={Math.round(width)} aria-valuetext={`${Math.round(width)} pixels`} tabIndex={0}
+      onPointerDown={event => {
+        if (event.button !== 0 || !event.isPrimary) return;
+        resize.current = { pointerId: event.pointerId, x: event.clientX, width };
+        event.currentTarget.setPointerCapture(event.pointerId);
+        event.currentTarget.dataset.resizing = 'true';
+        event.currentTarget.focus();
+        event.preventDefault();
+      }}
+      onPointerMove={event => { const start = resize.current; if (start?.pointerId === event.pointerId) setSavedWidth(clampWidth(start.width + event.clientX - start.x)); }}
+      onPointerUp={event => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        resize.current = null;
+        delete event.currentTarget.dataset.resizing;
+      }}
+      onLostPointerCapture={event => { resize.current = null; delete event.currentTarget.dataset.resizing; }}
+      onPointerCancel={event => { resize.current = null; delete event.currentTarget.dataset.resizing; }}
+      onDoubleClick={() => setSavedWidth(defaultSidebarWidth)}
+      onKeyDown={event => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        setSavedWidth(event.key === 'Home' ? minimumSidebarWidth : event.key === 'End' ? maximumWidth : clampWidth(width + (event.key === 'ArrowLeft' ? -16 : 16)));
+      }} />}
   </aside>;
 }

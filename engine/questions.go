@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
 	"slices"
 	"strings"
@@ -25,18 +26,20 @@ type QuestionItem struct {
 }
 
 type QuestionRequest struct {
-	ID        string         `json:"id"`
-	Harness   string         `json:"harness"`
-	Items     []QuestionItem `json:"items"`
-	CreatedAt string         `json:"createdAt"`
-	Resolving bool           `json:"resolving,omitempty"`
-	SourceID  string         `json:"-"`
+	Elicitation *MCPElicitation `json:"elicitation,omitempty"`
+	ID          string          `json:"id"`
+	Harness     string          `json:"harness"`
+	Items       []QuestionItem  `json:"items"`
+	CreatedAt   string          `json:"createdAt"`
+	Resolving   bool            `json:"resolving,omitempty"`
+	SourceID    string          `json:"-"`
 }
 
 type pendingQuestion struct {
-	request QuestionRequest
-	reply   func([][]string, bool) error
-	busy    bool
+	elicitReply func(*mcp.ElicitResult) error
+	request     QuestionRequest
+	reply       func([][]string, bool) error
+	busy        bool
 }
 
 func (p *adapter) requestQuestion(req QuestionRequest, reply func([][]string, bool) error) error {
@@ -154,6 +157,10 @@ func (a *app) replyConversationQuestion(id, questionID string, answers [][]strin
 		return controlError(409, "This question is no longer waiting for an answer.")
 	}
 	pending := t.questions[questionID]
+	if pending.request.Elicitation != nil {
+		a.mu.Unlock()
+		return controlError(400, "MCP elicitation requires an explicit human form response.")
+	}
 	if pending.busy {
 		a.mu.Unlock()
 		return controlError(409, "This answer is already being sent.")

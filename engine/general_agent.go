@@ -41,7 +41,20 @@ func conversationGuidance(s *Session) (string, error) {
 	if s.Role == sessionRoleGeneralAgent {
 		return loadInternalPrompt("general-agent.md")
 	}
-	return sessionCollaborationPrompt()
+	guidance, err := sessionCollaborationPrompt()
+	if err != nil {
+		return "", err
+	}
+	if s.Role == "" && s.ParentID == "" && s.GraphRunID == "" {
+		if s.TopicID == "" {
+			guidance += "\n\nThis conversation has no topic yet. As soon as you understand its objective, call session_topic_set with a short descriptive name during this normal turn, including clarification turns. Do so before spawning sessions. Do not start an extra classification turn. This is initial metadata only, not additional authorization."
+		} else {
+			guidance += "\n\nThis conversation already has a persistent topic (ID: " + s.TopicID + "). Keep its association. Only the user can rename or recolor it through UI; repeated session_topic_set calls return the current topic unchanged."
+		}
+	} else if s.Role == sessionRoleSideAgent {
+		guidance += "\n\nThis side chat uses its main conversation's topic. You cannot assign or change it. Spawn inherits the main topic and requires it to be assigned first."
+	}
+	return guidance, nil
 }
 
 func (a *app) generalConversation(w http.ResponseWriter, r *http.Request) {

@@ -40,10 +40,7 @@ func sessionLabels(d *diskState, s *Session, title, folder *string) (string, str
 		}
 	}
 	if folder != nil {
-		group, ok = workspace(d.project(s.ProjectID), *folder)
-		if !ok {
-			return "", "", controlError(400, "Workspace must be Ungrouped or an active project folder.")
-		}
+		return "", "", controlError(400, "Topic membership cannot be changed.")
 	}
 	return name, group, nil
 }
@@ -77,8 +74,8 @@ func sessionArchiveLabels(d *diskState, s *Session, archived *bool, folder *stri
 	if s == nil || s.Role != "" || s.ParentID != "" || s.GraphRunID != "" {
 		return controlError(400, "Only normal top-level sessions can be archived or restored.")
 	}
-	if !*archived && folder == nil && folderArchived(d.project(s.ProjectID), s.Workspace) {
-		return controlError(409, "Choose an active folder or Ungrouped to restore a conversation in an archived folder.")
+	if !*archived && d.topicArchived(s) {
+		return controlError(409, "Restore the archived topic first; session membership is preserved.")
 	}
 	return nil
 }

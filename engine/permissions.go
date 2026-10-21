@@ -74,6 +74,17 @@ func (p *adapter) requestPermission(req Permission, scope map[string]any, reply 
 		req.Decisions = slices.DeleteFunc(slices.Clone(req.Decisions), func(choice string) bool { return choice == "session" || choice == "always" })
 	}
 	facts := permissionFactsFor(req, p.harness, p.cwd)
+	if facts.operation == "read" && p.capabilities != nil {
+		path, ok := permissionPath(p.cwd, str(object(req.Details["input"]), "path"))
+		if ok {
+			for _, skill := range p.capabilities.Skills {
+				if root, valid := permissionPath("", p.app.skillSnapshotPath(skill)); valid && permissionWithin(root, path) {
+					facts.decision = "allow"
+					break
+				}
+			}
+		}
+	}
 	req.Dangerous = facts.dangerous
 	ruleKey, ruleKind, ruleHarness := key, req.Kind, p.harness
 	if facts.key != "" && key != "" {
