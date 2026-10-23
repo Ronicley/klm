@@ -15,35 +15,38 @@ const (
 )
 
 type SessionSummary struct {
-	Queue                []QueuedMessage         `json:"queue"`
-	Role                 string                  `json:"role,omitempty"`
-	GraphRunID           string                  `json:"graphRunId,omitempty"`
-	GraphNodeID          string                  `json:"graphNodeId,omitempty"`
-	ExecutionCWD         string                  `json:"executionCwd,omitempty"`
-	SelectedGraphID      string                  `json:"selectedGraphId,omitempty"`
-	SelectedAgentID      string                  `json:"selectedAgentId,omitempty"`
-	Graph                *ConversationGraphState `json:"graph,omitempty"`
-	ParentID             string                  `json:"parentId,omitempty"`
-	ID                   string                  `json:"id"`
-	ProjectID            string                  `json:"projectId"`
-	Title                string                  `json:"title"`
-	LatestReasoningTitle string                  `json:"latestReasoningTitle,omitempty"`
-	Workspace            string                  `json:"workspace"`
-	Harness              string                  `json:"harness"`
-	HarnessLocked        bool                    `json:"harnessLocked,omitempty"`
-	YOLO                 bool                    `json:"yolo,omitempty"`
-	Model                string                  `json:"model,omitempty"`
-	Effort               string                  `json:"effort,omitempty"`
-	ResolvedModel        string                  `json:"resolvedModel,omitempty"`
-	ResolvedEffort       string                  `json:"resolvedEffort,omitempty"`
-	Status               string                  `json:"status"`
-	Archived             bool                    `json:"archived,omitempty"`
-	RuntimeActive        bool                    `json:"runtimeActive,omitempty"`
-	Permissions          []Permission            `json:"permissions,omitempty"`
-	Questions            []QuestionRequest       `json:"questions,omitempty"`
-	Usage                *SessionUsage           `json:"usage,omitempty"`
-	CreatedAt            string                  `json:"createdAt"`
-	UpdatedAt            string                  `json:"updatedAt"`
+	Capabilities         ConversationCapabilities `json:"capabilities"`
+	Queue                []QueuedMessage          `json:"queue"`
+	Role                 string                   `json:"role,omitempty"`
+	GraphRunID           string                   `json:"graphRunId,omitempty"`
+	GraphNodeID          string                   `json:"graphNodeId,omitempty"`
+	ExecutionCWD         string                   `json:"executionCwd,omitempty"`
+	SelectedAgentID      string                   `json:"selectedAgentId,omitempty"`
+	SelectedGraphID      string                   `json:"selectedGraphId,omitempty"`
+	Graph                *ConversationGraphState  `json:"graph,omitempty"`
+	ParentID             string                   `json:"parentId,omitempty"`
+	ID                   string                   `json:"id"`
+	ProjectID            string                   `json:"projectId"`
+	Title                string                   `json:"title"`
+	LatestReasoningTitle string                   `json:"latestReasoningTitle,omitempty"`
+	Workspace            string                   `json:"workspace"`
+	TopicID              string                   `json:"topicId,omitempty"`
+	Harness              string                   `json:"harness"`
+	HarnessLocked        bool                     `json:"harnessLocked,omitempty"`
+	YOLO                 bool                     `json:"yolo,omitempty"`
+	Model                string                   `json:"model,omitempty"`
+	Effort               string                   `json:"effort,omitempty"`
+	ResolvedModel        string                   `json:"resolvedModel,omitempty"`
+	ResolvedEffort       string                   `json:"resolvedEffort,omitempty"`
+	Status               string                   `json:"status"`
+	Archived             bool                     `json:"archived,omitempty"`
+	RuntimeActive        bool                     `json:"runtimeActive,omitempty"`
+	Permissions          []Permission             `json:"permissions,omitempty"`
+	Questions            []QuestionRequest        `json:"questions,omitempty"`
+	Usage                *SessionUsage            `json:"usage,omitempty"`
+	CreatedAt            string                   `json:"createdAt"`
+	UpdatedAt            string                   `json:"updatedAt"`
+	LastMessageAt        string                   `json:"lastMessageAt,omitempty"`
 }
 
 type EventPage struct {
@@ -88,13 +91,30 @@ type sessionJournal struct {
 
 func sessionSummary(view *Session) SessionSummary {
 	return SessionSummary{
-		Queue: view.Queue,
-		Role:  view.Role, GraphRunID: view.GraphRunID, GraphNodeID: view.GraphNodeID, ExecutionCWD: view.ExecutionCWD,
+		TopicID:      view.TopicID,
+		Capabilities: view.Capabilities,
+		Queue:        view.Queue,
+		Role:         view.Role, GraphRunID: view.GraphRunID, GraphNodeID: view.GraphNodeID, ExecutionCWD: view.ExecutionCWD,
 		SelectedGraphID: view.SelectedGraphID, SelectedAgentID: view.selectedAgentID(), Graph: view.Graph, ParentID: view.ParentID, ID: view.ID, ProjectID: view.ProjectID,
 		Title: view.Title, Workspace: view.Workspace, Harness: view.Harness, HarnessLocked: view.HarnessLocked, YOLO: view.YOLO, Model: view.Model, Effort: view.Effort,
 		ResolvedModel: view.ResolvedModel, ResolvedEffort: view.ResolvedEffort, Status: view.Status, Archived: view.Archived, RuntimeActive: view.RuntimeActive,
 		Permissions: view.Permissions, Questions: view.Questions, Usage: view.Usage, CreatedAt: view.CreatedAt, UpdatedAt: view.UpdatedAt,
+		LastMessageAt: lastSessionMessageAt(view.Events),
 	}
+}
+
+// Metadata edits, tools and consultation activity do not change message recency.
+func lastSessionMessageAt(events []Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		entry := events[i]
+		if entry.ConsultationID != "" || entry.CreatedAt == "" {
+			continue
+		}
+		if entry.Type == "user" || entry.Type == "assistant" && strings.TrimSpace(entry.Text) != "" {
+			return entry.CreatedAt
+		}
+	}
+	return ""
 }
 
 // Derive a short title only from reasoning the harness exposed in the supplied

@@ -4,6 +4,7 @@ import '../../design_system/icons.dart';
 import '../../design_system/theme.dart';
 import 'host_address.dart';
 import 'host_store.dart';
+import 'wifi_picker_page.dart';
 
 class HostFormPage extends StatefulWidget {
   const HostFormPage({
@@ -40,6 +41,8 @@ class _HostFormPageState extends State<HostFormPage> {
   final _form = GlobalKey<FormState>();
   final _name = TextEditingController();
   final _address = TextEditingController();
+  final _localAddress = TextEditingController();
+  List<String> _wifiSsids = [];
   String? _emoji;
   bool _saving = false;
   String? _error;
@@ -54,6 +57,8 @@ class _HostFormPageState extends State<HostFormPage> {
       _name.text = host.name;
       _address.text = host.url.toString();
       _emoji = host.emoji;
+      _localAddress.text = host.localUrl?.toString() ?? '';
+      _wifiSsids = [...host.wifiSsids];
     }
   }
 
@@ -68,6 +73,10 @@ class _HostFormPageState extends State<HostFormPage> {
         name: _name.text.trim(),
         url: parseHostAddress(_address.text),
         emoji: _emoji,
+        localUrl: _wifiSsids.isEmpty
+            ? null
+            : parseHostAddress(_localAddress.text),
+        wifiSsids: List.unmodifiable(_wifiSsids),
       );
       if (_editing) {
         await widget.store.updateAt(widget.hostIndex!, host);
@@ -89,7 +98,15 @@ class _HostFormPageState extends State<HostFormPage> {
   void dispose() {
     _name.dispose();
     _address.dispose();
+    _localAddress.dispose();
     super.dispose();
+  }
+
+  Future<void> _selectNetworks() async {
+    final selected = await Navigator.of(context).push<List<String>>(
+      MaterialPageRoute(builder: (_) => WifiPickerPage(selected: _wifiSsids)),
+    );
+    if (mounted && selected != null) setState(() => _wifiSsids = selected);
   }
 
   @override
@@ -142,6 +159,58 @@ class _HostFormPageState extends State<HostFormPage> {
                         }
                       },
                     ),
+                    const SizedBox(height: KlmSpace.xl),
+                    if (_wifiSsids.isEmpty)
+                      OutlinedButton.icon(
+                        onPressed: _saving ? null : _selectNetworks,
+                        icon: const KlmIcon(KlmSymbol.plus),
+                        label: const Text('Add local URL'),
+                      )
+                    else ...[
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Local connection',
+                              style: TextStyle(fontWeight: FontWeight.w500),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: _saving
+                                ? null
+                                : () => setState(() {
+                                    _wifiSsids = [];
+                                    _localAddress.clear();
+                                  }),
+                            child: const Text('Remove'),
+                          ),
+                        ],
+                      ),
+                      TextButton(
+                        onPressed: _saving ? null : _selectNetworks,
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(_wifiSsids.join(', ')),
+                        ),
+                      ),
+                      const SizedBox(height: KlmSpace.sm),
+                      KlmField(
+                        label: 'Local URL',
+                        hint: '192.168.1.10',
+                        controller: _localAddress,
+                        keyboardType: TextInputType.url,
+                        action: TextInputAction.done,
+                        enabled: !_saving,
+                        validator: (value) {
+                          try {
+                            parseHostAddress(value ?? '');
+                            return null;
+                          } on FormatException catch (error) {
+                            return error.message;
+                          }
+                        },
+                      ),
+                    ],
                     const SizedBox(height: KlmSpace.xl),
                     const Text(
                       'Icon',

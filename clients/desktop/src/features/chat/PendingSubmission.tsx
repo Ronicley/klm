@@ -15,7 +15,7 @@ export function readPendingSubmissions(): Record<string, LocalSubmission[]> {
       if (!Array.isArray(items)) continue;
       result[session] = items.filter((item): item is LocalSubmission => item && typeof item.id === 'string' &&
         typeof item.draft?.text === 'string' && Array.isArray(item.draft.mentions) && Array.isArray(item.sources) &&
-        (item.mode === 'queue' || item.mode === 'steer')).map(item => ({ ...item, draft: { ...item.draft, files: undefined }, status: item.status === 'failed' ? 'failed' : 'uncertain' }));
+        (item.mode === 'queue' || item.mode === 'steer' || item.mode === 'interrupt')).map(item => ({ ...item, draft: { ...item.draft, files: undefined }, status: item.status === 'failed' ? 'failed' : 'uncertain' }));
     }
     return result;
   } catch { return {}; }
@@ -30,7 +30,7 @@ export function savePendingSubmissions(items: Record<string, LocalSubmission[]>)
 
 export function PendingSubmission({ items, onRestore, onRetry }: { items: LocalSubmission[]; onRestore: (item: LocalSubmission) => void; onRetry: (item: LocalSubmission) => void }) {
   return <>{items.map(item => <div key={item.id} className="storage-error" role="status">
-    <span>{item.status === 'sending' ? (item.mode === 'steer' ? 'Sending now…' : 'Sending message…') : item.status === 'accepted' ? 'Message accepted.' : item.status === 'failed' ? 'Message rejected.' : 'Delivery unconfirmed.'} {item.draft.text.slice(0, 120)}</span>
+    <span>{item.status === 'sending' ? (item.mode === 'interrupt' ? 'Interrupting and sending…' : 'Sending message…') : item.status === 'accepted' ? 'Message accepted.' : item.status === 'failed' ? 'Message rejected.' : 'Delivery unconfirmed.'} {item.draft.text.slice(0, 120)}</span>
     <FileAttachments files={item.draft.files} />
     <FileAttachments files={item.draft.missingFiles} missing />
     {item.draft.images?.map(image => <FileAttachments key={image.id} files={image.uploaded ? legacyImageFiles([image.uploaded]) : [image]} missing={!image.uploaded} />)}

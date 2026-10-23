@@ -1,23 +1,27 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { ArrowLeftRight, ArrowUpRight, Bookmark, Check, ChevronDown, CircleCheck, CircleDot, CircleX, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, MessageSquare, Radio, Search, TriangleAlert } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { ArrowLeftRight, ArrowUp, ArrowUpRight, ChevronDown, MessageSquare, PanelLeft, PanelsTopLeft, Radio, Search, Settings2, RefreshCw } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { TabNav } from '../../design-system/TabNav';
+import { IS_MOBILE_HOST } from '../../platform';
 import type { Project, Session } from '../../engine';
-import paperBoatIcon from '../projects/paper-boat-rail.png';
-import { activityKinds, mockActivity, type ActivityCategory, type ActivityKind, type ActivityPost } from './mockActivity';
+import type { ActivityCategory } from './githubActivityApi';
+import { GithubActivityCard } from './GithubActivityCard';
+import { ActivityFeedSettings } from './ActivityFeedSettings';
+import { ActivityBoardEntry } from '../activity-board/ActivityBoardEntry';
+import { useGithubActivityFeed } from './useGithubActivityFeed';
+import { useActivityBookmarks } from './useActivityBookmarks';
+import { useFeedPullToRefresh } from './useFeedPullToRefresh';
+import { saveHappeningOrder, useHappeningOrder } from './happeningOrder';
+import { topicArchived } from '../workspace/topics';
 import './klm-agent.css';
 
 type FeedProject = Pick<Project, 'name' | 'icon'>;
 type FeedFilter = 'All' | ActivityCategory;
 type SessionActions = { overlaySessionId?: string; onOpenOverlay: (session: Session) => void; onOpenProject: (session: Session) => void };
-const filters: FeedFilter[] = ['All', 'PRs', 'Pipelines', 'Agents', 'Issues'];
+type ProjectRailControl = { projectRailOpen?: boolean; onToggleProjectRail?: () => void; onOpenBoard?: () => void };
+const filters: FeedFilter[] = ['All', 'PRs', 'Pipelines', 'Issues', 'Security', 'Repository', 'Other'];
 const defaultChatRatio = 100 / 3;
-const fallbackProjects: FeedProject[] = [{ name: 'KLM', icon: paperBoatIcon }, { name: 'Cubiq', icon: '' }, { name: 'Workspace', icon: '' }];
-const eventIcons = {
-  'pr-opened': GitPullRequest, 'pr-merged': GitMerge, 'issue-assigned': CircleDot,
-  'pipeline-succeeded': CircleCheck, 'pipeline-failed': CircleX, attention: TriangleAlert,
-  'pipeline-running': Radio, 'agent-pr': GitPullRequest, 'agent-review': MessageSquare, 'agent-push': GitCommitHorizontal,
-} satisfies Record<ActivityKind, typeof GitPullRequest>;
 
 function WorkspaceDivider({ label, swapLabel, controls, value, minimum, maximum, valueText, dragScale, step, onChange, onReset, onSwap, className = '' }: {
   label: string; swapLabel: string; controls: string; value: number; minimum: number; maximum: number; valueText: string;
@@ -55,36 +59,8 @@ function WorkspaceDivider({ label, swapLabel, controls, value, minimum, maximum,
 
 function ProjectAvatar({ project, small = false }: { project: FeedProject; small?: boolean }) {
   return <span className={`activity-avatar ${small ? 'activity-avatar--small' : ''}`} aria-hidden="true">
-    {project.icon ? <img src={project.icon} alt="" /> : <span>{project.name.slice(0, 2).toUpperCase()}</span>}
+    {project.icon ? <img src={project.icon} alt="" draggable={false} /> : <span>{project.name.slice(0, 2).toUpperCase()}</span>}
   </span>;
-}
-
-function ActivityCard({ post, project }: { post: ActivityPost; project: FeedProject }) {
-  const [saved, setSaved] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const kind = activityKinds[post.kind];
-  const EventIcon = eventIcons[post.kind];
-  return <article className="activity-post" aria-label={`${project.name}: ${kind.label}`}>
-    <div className={`activity-event activity-tone--${kind.tone}`}><EventIcon aria-hidden="true" /><span>{kind.label}</span></div>
-    <div className="activity-post-layout">
-      <ProjectAvatar project={project} />
-      <div className="activity-post-content">
-        <div className="activity-byline"><strong>{project.name}</strong><span className="activity-actor">{post.actor}</span><span aria-hidden="true">·</span><span className="activity-time">{post.time}</span></div>
-        <p className="activity-post-title">{post.title}</p>
-        <p className="activity-post-body">{post.body}</p>
-        <div className={`activity-reference activity-tone--${kind.tone}`}>
-          <div className="activity-reference-heading"><EventIcon aria-hidden="true" /><strong>{post.reference}</strong>{post.kind === 'pipeline-succeeded' && <span className="activity-reference-result"><Check aria-hidden="true" />Passed</span>}{post.kind === 'attention' && <span className="activity-reference-result">Input needed</span>}</div>
-          {post.branch && <span className="activity-branch"><GitBranch aria-hidden="true" />{post.branch}</span>}
-          {post.progress !== undefined && <div className="activity-progress-row"><progress value={post.progress} max={100} aria-label={`${post.title} progress`} /><span>{post.progress}%</span></div>}
-        </div>
-        <div className="activity-post-actions">
-          <Button variant="ghost" size="sm" aria-expanded={expanded} aria-controls={`activity-detail-${post.id}`} onClick={() => setExpanded(value => !value)}><MessageSquare />{expanded ? 'Hide details' : 'Details'}</Button>
-          <IconButton label={saved ? 'Remove bookmark' : 'Bookmark update'} aria-pressed={saved} className={saved ? 'is-saved' : ''} onClick={() => setSaved(value => !value)}><Bookmark fill={saved ? 'currentColor' : 'none'} /></IconButton>
-        </div>
-        {expanded && <p id={`activity-detail-${post.id}`} className="activity-detail">{post.detail}</p>}
-      </div>
-    </div>
-  </article>;
 }
 
 function happeningStatus(session: Session) {
@@ -95,46 +71,109 @@ function happeningStatus(session: Session) {
   return { state: session.runtimeActive ? 'active' : 'off', label: 'Idle', tone: 'muted' };
 }
 
-function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverlay, onOpenProject }: { projects: Project[]; sessions: Session[] } & SessionActions) {
+export function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverlay, onOpenProject, floating = false, rowTarget = floating ? 'main window' : 'overlay' }: { projects: Project[]; sessions: Session[]; floating?: boolean; rowTarget?: 'main window' | 'floating window' | 'overlay' } & SessionActions) {
   const [showAll, setShowAll] = useState(false);
   const list = useRef<HTMLDivElement>(null);
   const listId = useId();
+  const order = useHappeningOrder();
+  const orderIndex = new Map(order.map((id, index) => [id, index]));
+  const dragging = useRef('');
+  const suppressClick = useRef(false);
+  const [draggedId, setDraggedId] = useState('');
+  const [drop, setDrop] = useState<{ id: string; after: boolean } | null>(null);
   const projectsById = new Map(projects.map(project => [project.id, project]));
   const activeSessions = sessions.flatMap(session => {
     const project = projectsById.get(session.projectId);
-    if (!project || session.parentId || session.role || session.archived || project.archivedFolders.includes(session.workspace)) return [];
+    if (!project || session.parentId || session.role || session.archived || topicArchived(project, session)) return [];
     if (!session.runtimeActive && session.status !== 'running' && session.status !== 'error' && !session.permissions?.length && !session.questions?.length) return [];
     return [{ session, project }];
-  // New sessions arrive at the end of engine inventory. Keep them visible in the
-  // collapsed list without reordering cards on every streamed reasoning update.
-  }).sort((left, right) => Date.parse(right.session.createdAt) - Date.parse(left.session.createdAt));
-  return <aside className="activity-happening" aria-labelledby="happening-title">
-    <div className="activity-happening-heading"><h2 id="happening-title">Happening now</h2><Radio aria-hidden="true" /></div>
-    <div ref={list} id={listId} className="activity-happening-items">
-      {activeSessions.slice(0, showAll ? undefined : 3).map(({ session, project }) => {
+  // New arrivals precede the saved order, newest first. Streaming never reorders cards.
+  }).sort((left, right) => (orderIndex.get(left.session.id) ?? -1) - (orderIndex.get(right.session.id) ?? -1) || Date.parse(right.session.createdAt) - Date.parse(left.session.createdAt));
+  function moveSession(id: string, targetId: string, after: boolean) {
+    const ids = activeSessions.map(item => item.session.id);
+    if (id === targetId || !ids.includes(id) || !ids.includes(targetId)) return;
+    const next = ids.filter(item => item !== id);
+    next.splice(next.indexOf(targetId) + (after ? 1 : 0), 0, id);
+    // Retain inactive sessions so their manual ordering is not forgotten on each update.
+    saveHappeningOrder([...next, ...order.filter(item => !ids.includes(item))]);
+  }
+  function finishDrag() {
+    dragging.current = ''; setDraggedId(''); setDrop(null);
+  }
+  function dropAfter(element: HTMLElement, x: number, y: number) {
+    const bounds = element.getBoundingClientRect();
+    const horizontal = !!list.current && getComputedStyle(list.current).display === 'flex';
+    return horizontal ? x > bounds.left + bounds.width / 2 : y > bounds.top + bounds.height / 2;
+  }
+  return <aside className={`activity-happening${floating ? ' activity-happening--floating' : ''}`} aria-labelledby={`${listId}-title`}>
+    <div className="activity-happening-heading"><h2 id={`${listId}-title`}>Happening now</h2><Radio aria-hidden="true" /></div>
+    <div ref={list} id={listId} className="activity-happening-items" onDragLeave={event => {
+      if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDrop(null);
+    }}>
+      {activeSessions.slice(0, IS_MOBILE_HOST || floating || showAll ? undefined : 3).map(({ session, project }) => {
         const status = happeningStatus(session);
-        return <div className={`activity-happening-item${overlaySessionId === session.id ? ' is-selected' : ''}`} key={session.id}>
-          <button type="button" className="activity-happening-open" aria-label={`Open ${session.title} in overlay`} aria-pressed={overlaySessionId === session.id} onClick={() => onOpenOverlay(session)}>
+        return <div className={`activity-happening-item${overlaySessionId === session.id ? ' is-selected' : ''}${draggedId === session.id ? ' is-dragging' : ''}${drop?.id === session.id ? drop.after ? ' drop-after' : ' drop-before' : ''}`} key={session.id} draggable
+          onPointerDownCapture={() => { suppressClick.current = false; }}
+          onDragStart={event => {
+            if ((event.target as HTMLElement).closest('.activity-session-project')) { event.preventDefault(); return; }
+            dragging.current = session.id; suppressClick.current = true; setDraggedId(session.id);
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('application/x-klm-happening-session', session.id);
+            event.stopPropagation();
+          }}
+          onDragOver={event => {
+            if (!dragging.current) return;
+            event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move';
+            if (dragging.current === session.id) { setDrop(null); return; }
+            const after = dropAfter(event.currentTarget, event.clientX, event.clientY);
+            setDrop(current => current?.id === session.id && current.after === after ? current : { id: session.id, after });
+          }}
+          onDrop={event => {
+            if (!dragging.current) return;
+            event.preventDefault(); event.stopPropagation();
+            moveSession(dragging.current, session.id, dropAfter(event.currentTarget, event.clientX, event.clientY));
+            finishDrag();
+          }} onDragEnd={finishDrag}>
+          <button type="button" className="activity-happening-open" aria-label={`Open ${session.title} in ${rowTarget}`} aria-description="Drag to reorder, or use Alt + Arrow keys." aria-pressed={overlaySessionId === session.id}
+            onKeyDown={event => {
+              if (!event.altKey || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+              event.preventDefault();
+              const forward = event.key === 'ArrowDown' || event.key === 'ArrowRight';
+              const target = activeSessions[activeSessions.findIndex(item => item.session.id === session.id) + (forward ? 1 : -1)];
+              if (target) moveSession(session.id, target.session.id, forward);
+            }}
+            onClick={event => { if (!suppressClick.current || event.detail === 0) onOpenOverlay(session); }}>
             <span className={`activity-happening-category activity-tone--${status.tone}`}><span className={`session-runtime-led is-${status.state}`} role="img" aria-label={status.label} />Agent · {status.label}</span>
             <span className="activity-happening-project" title={project.name}><ProjectAvatar project={project} small /><strong>{session.title}</strong></span>
             {session.latestReasoningTitle && <span className="activity-happening-subtitle">{session.latestReasoningTitle}</span>}
           </button>
-          <IconButton className="activity-session-project" label={`Open ${session.title} in project`} onClick={() => onOpenProject(session)}><ArrowUpRight /></IconButton>
+          <IconButton className="activity-session-project" label={`Open ${session.title} in ${floating ? 'floating window' : 'project'}`} onClick={() => onOpenProject(session)}>{floating ? <PanelsTopLeft /> : <ArrowUpRight />}</IconButton>
         </div>;
       })}
       {!activeSessions.length && <p className="activity-happening-empty">No active sessions.</p>}
     </div>
-    {(showAll || activeSessions.length > 3) && <Button variant="ghost" className="activity-show-more" aria-expanded={showAll} aria-controls={listId} onClick={() => {
+    {!IS_MOBILE_HOST && !floating && (showAll || activeSessions.length > 3) && <Button variant="ghost" className="activity-show-more" aria-expanded={showAll} aria-controls={listId} onClick={() => {
       setShowAll(value => !value);
       list.current?.scrollTo({ top: 0, left: 0 });
     }}>{showAll ? 'Show less' : 'Show more'}<ChevronDown className={showAll ? 'is-expanded' : ''} /></Button>}
   </aside>;
 }
 
-function ActivityFeed({ projects, sessions, ...actions }: { projects: Project[]; sessions: Session[] } & SessionActions) {
+export function ActivityFeed({ projects, sessions, visible, standalone = false, actionsTarget, projectRailOpen = false, onToggleProjectRail, onOpenBoard, ...actions }: { projects: Project[]; sessions: Session[]; visible: boolean; standalone?: boolean; actionsTarget?: HTMLElement | null } & SessionActions & ProjectRailControl) {
   const [filter, setFilter] = useState<FeedFilter>('All');
   const [search, setSearch] = useState('');
   const grid = useRef<HTMLDivElement>(null);
+  const timeline = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const [settings, setSettings] = useState(false);
+  const feed = useGithubActivityFeed(filter, search, projects, visible, timeline);
+  const pull = useFeedPullToRefresh(scroller, IS_MOBILE_HOST && visible && !standalone && !!feed.catalog && !feed.setupError, feed.busy, feed.refresh);
+  const bookmarks = useActivityBookmarks(feed.asOf, feed.clock, feed.highWatermark);
+  const projectsById = new Map(projects.map(project => [project.id, project]));
+  const newPostProjects = [...new Set(feed.newPosts.map(post => post.projectId))].flatMap(id => {
+    const project = projectsById.get(id);
+    return project ? [project] : [];
+  });
   const discoveryId = useId();
   const [available, setAvailable] = useState(0);
   const [savedWidth, setSavedWidth] = useState(() => {
@@ -166,37 +205,54 @@ function ActivityFeed({ projects, sessions, ...actions }: { projects: Project[];
     try { localStorage.setItem('klm.agent.discovery-swapped.v1', String(swapped)); }
     catch { /* Swapping still works without browser storage. */ }
   }, [swapped]);
-  const feedProjects = projects.length ? projects : fallbackProjects;
-  const query = search.trim().toLowerCase();
-  const posts = mockActivity.filter(post => (filter === 'All' || activityKinds[post.kind].categories.includes(filter)) &&
-    (!query || [post.title, post.body, post.actor, post.reference, post.branch, activityKinds[post.kind].label, feedProjects[post.project % feedProjects.length].name].join(' ').toLowerCase().includes(query)));
-
-  return <section className="activity-feed" aria-label="Project activity">
-    <header className="activity-feed-heading"><div><h2>Activity</h2><span>Across your projects</span></div><span className="activity-project-count">{feedProjects.length} {feedProjects.length === 1 ? 'project' : 'projects'}</span></header>
-    <div className="activity-feed-scroll">
+  const settingsButton = <IconButton label="Feed settings" disabled={!feed.catalog} onClick={() => setSettings(true)}><Settings2 /></IconButton>;
+  const searchInput = <><Search aria-hidden="true" /><input aria-label="Search activity" type="search" maxLength={200} placeholder="Search activity" value={search} onChange={event => setSearch(event.target.value)} /></>;
+  const searchControl = IS_MOBILE_HOST ? <div className="activity-search">{onToggleProjectRail && <IconButton label={projectRailOpen ? 'Hide projects' : 'Show projects'} aria-expanded={projectRailOpen} onClick={onToggleProjectRail}><PanelLeft /></IconButton>}{searchInput}{settingsButton}</div> : <label className="activity-search">{searchInput}</label>;
+  const feedActions = <><IconButton label="Refresh activity" disabled={feed.busy || !feed.catalog} onClick={feed.refresh}><RefreshCw /></IconButton>{settingsButton}</>;
+  return <section className={`activity-feed${standalone ? ' activity-feed--standalone' : ''}`} aria-label="Project activity">
+    {standalone ? actionsTarget && createPortal(feedActions, actionsTarget) : !IS_MOBILE_HOST && <header className="activity-feed-heading"><div><h2>Activity</h2><span>Across your projects</span></div><div className="activity-feed-tools"><span className="activity-project-count">{projects.length} {projects.length === 1 ? 'project' : 'projects'}</span>{feedActions}</div></header>}
+    {standalone && searchControl}
+    {settings && feed.catalog && <ActivityFeedSettings items={feed.catalog.items} overrides={feed.overrides} error={feed.preferenceError} onChange={feed.savePreferences} onClose={() => setSettings(false)} />}
+    {IS_MOBILE_HOST && !standalone && <div className="mobile-feed-refresh" data-pulling={pull.distance > 0 || undefined} data-refreshing={pull.refreshing || undefined} style={{ height: pull.refreshing ? 44 : pull.distance }} role="status" aria-live="polite" aria-hidden={!pull.refreshing && pull.distance === 0}>
+      <div><RefreshCw aria-hidden="true" style={pull.refreshing ? undefined : { transform: `rotate(${pull.distance * 3}deg)` }} /><span>{pull.refreshing ? 'Refreshing…' : pull.ready ? 'Release to refresh' : 'Pull to refresh'}</span></div>
+    </div>}
+    <div className="activity-feed-scroll" ref={scroller}>
       <div ref={grid} className={`activity-feed-grid${swapped ? ' is-swapped' : ''}`} style={{ '--activity-sidebar-width': `${width}px` } as CSSProperties}>
-        <div className="activity-timeline">
+        <div className="activity-timeline" ref={timeline} tabIndex={-1}>
           <nav className="activity-filters" aria-label="Filter activity">{filters.map(value => <button type="button" key={value} aria-current={filter === value ? 'page' : undefined} className={filter === value ? 'is-active' : ''} onClick={() => setFilter(value)}>{value}</button>)}</nav>
+          <div className="activity-new-posts">
+            {newPostProjects.length > 0 && <Button variant="primary" className="activity-new-posts-button" aria-label={`Show ${feed.newPosts.length} new ${feed.newPosts.length === 1 ? 'post' : 'posts'}`} title={`New posts from ${newPostProjects.map(project => project.name).join(', ')}`} onClick={feed.showNewPosts}>
+              <ArrowUp aria-hidden="true" />
+              <span className="activity-new-posts-projects">{newPostProjects.slice(0, 3).map(project => <ProjectAvatar key={project.id} project={project} small />)}</span>
+              {newPostProjects.length > 3 && <span aria-hidden="true">+{newPostProjects.length - 3}</span>}
+            </Button>}
+          </div>
           <div className="activity-posts" aria-label={`${filter} updates`}>
-            {posts.map(post => <ActivityCard key={post.id} post={post} project={feedProjects[post.project % feedProjects.length]} />)}
-            {!posts.length && <div className="activity-empty"><Search aria-hidden="true" /><h3>No matching updates</h3><Button variant="ghost" onClick={() => { setSearch(''); setFilter('All'); }}>Clear filters</Button></div>}
-            {posts.length > 0 && <p className="activity-end">You’re all caught up</p>}
+            {(feed.error || feed.setupError) && <div className="activity-feedback" role="alert">{feed.error || feed.setupError}<Button size="sm" variant="ghost" disabled={feed.busy} onClick={feed.retry}>Retry</Button></div>}
+            {feed.preferenceError && !settings && <p className="activity-feedback" role="alert">{feed.preferenceError}</p>}
+            {feed.notice && <p className="activity-feedback" role="status">{feed.notice}</p>}
+            {feed.items.map(post => <GithubActivityCard key={post.id} post={post} query={feed.query} project={projectsById.get(post.projectId)} now={feed.clock} onUnavailable={feed.unavailable} saved={bookmarks.saved(post)} onBookmark={() => bookmarks.toggle(post)} />)}
+            {!feed.loaded && !feed.error && !feed.setupError && <p className="activity-end" role="status">Loading activity…</p>}
+            {feed.loaded && !feed.items.length && <div className="activity-empty"><Search aria-hidden="true" /><h3>{search || filter !== 'All' ? 'No matching updates' : 'No updates yet'}</h3>{(search || filter !== 'All') && <Button variant="ghost" onClick={() => { setSearch(''); setFilter('All'); }}>Clear filters</Button>}</div>}
+            {feed.hasMore && <div className="activity-end"><Button variant="ghost" disabled={feed.busy} onClick={feed.loadMore}>{feed.busy ? 'Loading…' : 'Load more'}</Button></div>}
+            {feed.loaded && !feed.hasMore && feed.items.length > 0 && <p className="activity-end">No more updates</p>}
           </div>
         </div>
-        <WorkspaceDivider className="activity-divider" label="Resize timeline and Happening now" swapLabel="Swap timeline and Happening now" controls={discoveryId}
+        {!standalone && <><WorkspaceDivider className="activity-divider" label="Resize timeline and Happening now" swapLabel="Swap timeline and Happening now" controls={discoveryId}
           value={width} minimum={200} maximum={maximum} valueText={`${Math.round(width)}px sidebar`} dragScale={available > 660 ? (swapped ? 1 : -1) : 0} step={24}
           onChange={setSavedWidth} onReset={() => setSavedWidth(230)} onSwap={() => setSwapped(value => !value)} />
         <div id={discoveryId} className="activity-discovery">
-          <label className="activity-search"><Search aria-hidden="true" /><input aria-label="Search activity" type="search" placeholder="Search activity" value={search} onChange={event => setSearch(event.target.value)} /></label>
+          {searchControl}
           <HappeningNow projects={projects} sessions={sessions} {...actions} />
-        </div>
+          {onOpenBoard && <ActivityBoardEntry onOpen={onOpenBoard} />}
+        </div></>}
       </div>
     </div>
   </section>;
 }
 
-export function KlmAgentWorkspace({ enabled, projects, sessions, children, onCloseOverlay, ...actions }: { enabled: boolean; projects: Project[]; sessions: Session[]; children: ReactNode; onCloseOverlay: () => void } & SessionActions) {
-  const [mobilePane, setMobilePane] = useState<'chat' | 'activity'>('chat');
+export function KlmAgentWorkspace({ enabled, visible = true, projects, sessions, children, onCloseOverlay, onOpenFloatingChat, openingFloatingChat = false, projectRailOpen, onToggleProjectRail, ...actions }: { enabled: boolean; visible?: boolean; projects: Project[]; sessions: Session[]; children: ReactNode; onCloseOverlay: () => void; onOpenFloatingChat?: () => void; openingFloatingChat?: boolean } & SessionActions & ProjectRailControl) {
+  const [mobilePane, setMobilePane] = useState<'chat' | 'activity'>(() => IS_MOBILE_HOST ? 'activity' : 'chat');
   const columns = useRef<HTMLDivElement>(null);
   const chatId = useId();
   const [available, setAvailable] = useState(0);
@@ -234,13 +290,13 @@ export function KlmAgentWorkspace({ enabled, projects, sessions, children, onClo
   }, [swapped]);
   if (!enabled) return children;
   return <div className="klm-agent-workspace" data-mobile-pane={mobilePane}>
-    <div className="klm-agent-mobile-tabs"><TabNav value={mobilePane} onChange={setMobilePane} items={[{ value: 'chat', label: 'Chat' }, { value: 'activity', label: 'Activity' }]} /></div>
+    <div className="klm-agent-mobile-tabs"><TabNav value={mobilePane} onChange={setMobilePane} items={IS_MOBILE_HOST ? [{ value: 'activity', label: 'Feed' }, { value: 'chat', label: 'KLM Agent' }] : [{ value: 'chat', label: 'Chat' }, { value: 'activity', label: 'Activity' }]} /></div>
     <div ref={columns} className={`klm-agent-columns${swapped ? ' is-swapped' : ''}`} style={{ '--klm-left-width': `${swapped ? 100 - ratio : ratio}%` } as CSSProperties}>
-      <section id={chatId} className={`klm-agent-chat${actions.overlaySessionId ? ' has-session-overlay' : ''}`} aria-label="KLM Agent chat"><div className="klm-agent-chat-heading"><MessageSquare aria-hidden="true" /><h2>Chat</h2></div>{actions.overlaySessionId && <button type="button" className="klm-overlay-backdrop" aria-label="Dismiss session overlay" onClick={onCloseOverlay} />}{children}</section>
+      <section id={chatId} className={`klm-agent-chat${actions.overlaySessionId ? ' has-session-overlay' : ''}`} aria-label="KLM Agent chat"><div className="klm-agent-chat-heading"><MessageSquare aria-hidden="true" /><h2>Chat</h2>{onOpenFloatingChat && <IconButton className="klm-agent-open-floating" label="Open KLM Agent in floating window" disabled={openingFloatingChat} onClick={onOpenFloatingChat}><PanelsTopLeft /></IconButton>}</div>{actions.overlaySessionId && <button type="button" className="klm-overlay-backdrop" aria-label="Dismiss session overlay" onClick={onCloseOverlay} />}{children}</section>
       <WorkspaceDivider label="Resize chat and activity" swapLabel="Swap chat and activity" controls={chatId}
         value={ratio} minimum={minimum} maximum={maximum} valueText={`${Math.round(ratio)}% chat`} dragScale={available > 800 ? 100 / available * (swapped ? -1 : 1) : 0} step={2}
         onChange={setSavedRatio} onReset={() => setSavedRatio(defaultChatRatio)} onSwap={() => setSwapped(value => !value)} />
-      <ActivityFeed projects={projects} sessions={sessions} {...actions} onOpenOverlay={session => { setMobilePane('chat'); actions.onOpenOverlay(session); }} />
+      <ActivityFeed projects={projects} sessions={sessions} visible={visible && (available > 800 || mobilePane === 'activity')} projectRailOpen={projectRailOpen} onToggleProjectRail={onToggleProjectRail} {...actions} onOpenOverlay={session => { if (!IS_MOBILE_HOST) setMobilePane('chat'); actions.onOpenOverlay(session); }} />
     </div>
   </div>;
 }

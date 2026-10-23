@@ -71,6 +71,13 @@ func replayStreamJournal(dir string, state *diskState) error {
 	if err := replayJournalFile(streamJournalPath(dir), state); err != nil {
 		return err
 	}
+	initializeActivityBoardRecords(state)
+	if err := validateTopicRecords(state); err != nil {
+		return err
+	}
+	if err := validateActivityBoardRecords(state); err != nil {
+		return err
+	}
 	return validateWebhookRecords(state)
 }
 

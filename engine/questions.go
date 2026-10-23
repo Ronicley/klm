@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
 	"slices"
 	"strings"
@@ -15,28 +16,32 @@ type QuestionOption struct {
 }
 
 type QuestionItem struct {
-	ID       string           `json:"id"`
-	Header   string           `json:"header"`
-	Text     string           `json:"text"`
-	Options  []QuestionOption `json:"options"`
-	Multiple bool             `json:"multiple"`
-	Custom   bool             `json:"custom"`
-	Secret   bool             `json:"secret"`
+	Description string           `json:"description,omitempty"`
+	ID          string           `json:"id"`
+	Header      string           `json:"header"`
+	Text        string           `json:"text"`
+	Options     []QuestionOption `json:"options"`
+	Multiple    bool             `json:"multiple"`
+	Custom      bool             `json:"custom"`
+	Secret      bool             `json:"secret"`
 }
 
 type QuestionRequest struct {
-	ID        string         `json:"id"`
-	Harness   string         `json:"harness"`
-	Items     []QuestionItem `json:"items"`
-	CreatedAt string         `json:"createdAt"`
-	Resolving bool           `json:"resolving,omitempty"`
-	SourceID  string         `json:"-"`
+	Context     string          `json:"context,omitempty"`
+	Elicitation *MCPElicitation `json:"elicitation,omitempty"`
+	ID          string          `json:"id"`
+	Harness     string          `json:"harness"`
+	Items       []QuestionItem  `json:"items"`
+	CreatedAt   string          `json:"createdAt"`
+	Resolving   bool            `json:"resolving,omitempty"`
+	SourceID    string          `json:"-"`
 }
 
 type pendingQuestion struct {
-	request QuestionRequest
-	reply   func([][]string, bool) error
-	busy    bool
+	elicitReply func(*mcp.ElicitResult) error
+	request     QuestionRequest
+	reply       func([][]string, bool) error
+	busy        bool
 }
 
 func (p *adapter) requestQuestion(req QuestionRequest, reply func([][]string, bool) error) error {
@@ -46,7 +51,7 @@ func (p *adapter) requestQuestion(req QuestionRequest, reply func([][]string, bo
 	ids := map[string]bool{}
 	for i := range req.Items {
 		q := &req.Items[i]
-		if q.ID == "" || ids[q.ID] || strings.TrimSpace(q.Text) == "" || len(q.Text) > 16384 || len(q.Options) > 64 {
+		if q.ID == "" || ids[q.ID] || strings.TrimSpace(q.Text) == "" || len(q.Text) > 128<<10 || len(q.Description) > 128<<10 || !utf8.ValidString(q.Text) || !utf8.ValidString(q.Description) || len(q.Options) > 64 {
 			return errors.New("Harness question has invalid text, identifiers, or options.")
 		}
 		ids[q.ID] = true
@@ -76,6 +81,30 @@ func (p *adapter) requestQuestion(req QuestionRequest, reply func([][]string, bo
 		}
 	}
 	req.ID, req.Harness, req.CreatedAt = newID(), p.harness, now()
+	if p.graphNode() {
+		// Keep the node's visible explanation beside its projected question, before Choice exists.
+		s := a.state.session(p.id)
+		start := 0
+		for _, activation := range a.state.GraphActivations {
+			if activation.SessionID == p.id && graphActivationActive(activation.Status) {
+				start = activation.NativeEventStart
+			}
+		}
+		parts, size := []string{}, 0
+		for i := len(s.Events) - 1; i >= start && i >= 0; i-- {
+			e := s.Events[i]
+			if e.Type != "assistant" || strings.TrimSpace(e.Text) == "" {
+				continue
+			}
+			if size+len(e.Text) > 128<<10 {
+				break
+			}
+			parts = append(parts, e.Text)
+			size += len(e.Text) + 7
+		}
+		slices.Reverse(parts)
+		req.Context = strings.Join(parts, "\n\n---\n\n")
+	}
 	if err := a.commitLocked(func(d *diskState) {
 		s := d.session(p.id)
 		s.Questions = append(s.Questions, req)
@@ -154,6 +183,10 @@ func (a *app) replyConversationQuestion(id, questionID string, answers [][]strin
 		return controlError(409, "This question is no longer waiting for an answer.")
 	}
 	pending := t.questions[questionID]
+	if pending.request.Elicitation != nil {
+		a.mu.Unlock()
+		return controlError(400, "MCP elicitation requires an explicit human form response.")
+	}
 	if pending.busy {
 		a.mu.Unlock()
 		return controlError(409, "This answer is already being sent.")

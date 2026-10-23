@@ -16,8 +16,10 @@ import (
 )
 
 type turn struct {
-	reasoningStart       *int          // Event boundary for this turn; protected by app.mu.
-	steerWake            chan struct{} // protected by app.mu
+	reasoningStart       *int                // Event boundary for this turn; protected by app.mu.
+	steerWake            chan struct{}       // protected by app.mu
+	steeringBatches      map[string][]string // Native request -> durable input IDs; protected by app.mu.
+	restartMessageID     string              // Send now continuation after confirmed shutdown; protected by app.mu.
 	graphNotificationID  string
 	prompt               string // complete submission; graphConversationHooks prepends internal instructions
 	consultationID       string
@@ -33,6 +35,15 @@ type turn struct {
 }
 
 type app struct {
+	openCodeSettings   OpenCodeSettings // immutable active configuration; saved changes require restart
+	activityBoardBusy  map[string]bool  // One scan or move per connection; guarded by mu.
+	activityBoardSlots chan struct{}
+
+	libraryMu         sync.Mutex
+	oauthMu           sync.Mutex
+	credentialMu      sync.Mutex
+	oauthTransactions map[string]*mcpOAuthTransaction
+	githubActivity    githubActivityCache
 	webhookWake       chan struct{}
 	webhookIngress    chan struct{}
 	webhookDeliveries map[webhookDeliveryKey]string
@@ -104,6 +115,9 @@ func runEngine(dir string) error {
 	if err := recoverGraphCatalogChanges(dir, &state); err != nil {
 		return err
 	}
+	if err := recoverLibraryDeletions(dir, &state); err != nil {
+		return err
+	}
 	recoveryRevision := state.GraphRevision
 	interrupted := interruptGraphState(&state, "Graph run interrupted by engine restart; execution was not replayed.")
 	interruptedConsultations := map[string]string{}
@@ -172,9 +186,15 @@ func runEngine(dir string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	harnesses, binaries := discoverHarnesses()
-	a := &app{dir: dir, state: state, harnesses: harnesses, binaries: binaries,
+	configureOpenCodeHarness(state.OpenCode, harnesses, binaries)
+	a := &app{dir: dir, state: state, harnesses: harnesses, binaries: binaries, openCodeSettings: state.OpenCode.normalized(),
 		runs: map[string]*turn{}, runtimes: map[string]*sessionRuntime{}, graphRuns: map[string]*graphExecution{}, listeners: map[string]map[chan struct{}]bool{},
 		historyJournal: map[string]*sessionJournal{}, journalBase: state.GraphRevision, picker: make(chan struct{}, 1), ctx: ctx}
+	if a.state.TopicSchema == 0 {
+		if err := a.commitLocked(migrateTopics); err != nil {
+			return fmt.Errorf("cannot migrate topics: %w", err)
+		}
+	}
 	a.indexMessageIDsLocked()
 	a.webhookWake = make(chan struct{}, 1)
 	a.webhookIngress = make(chan struct{}, 2)
@@ -201,6 +221,9 @@ func runEngine(dir string) error {
 		return err
 	}
 	defer control.Close()
+	if err := a.startActivityBoard(); err != nil {
+		return err
+	}
 	a.wg.Add(1)
 	go func() { defer a.wg.Done(); a.webhookWorker() }()
 	a.wg.Add(1)

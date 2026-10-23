@@ -25,13 +25,15 @@ import (
 )
 
 type AgentDefinition struct {
-	Name           string `json:"name" toml:"name"`
-	Description    string `json:"description" toml:"description,omitempty"`
-	Enabled        bool   `json:"enabled" toml:"enabled"`
-	DefaultHarness string `json:"defaultHarness" toml:"default_harness"`
-	Model          string `json:"model" toml:"model"`
-	Effort         string `json:"effort,omitempty" toml:"effort,omitempty"`
-	Prompt         string `json:"prompt" toml:"prompt,multiline"`
+	Skills         []string       `json:"skills,omitempty" toml:"skills,omitempty"`
+	MCPConnections []MCPSelection `json:"mcpConnections,omitempty" toml:"mcp_connections,omitempty"`
+	Name           string         `json:"name" toml:"name"`
+	Description    string         `json:"description" toml:"description,omitempty"`
+	Enabled        bool           `json:"enabled" toml:"enabled"`
+	DefaultHarness string         `json:"defaultHarness" toml:"default_harness"`
+	Model          string         `json:"model" toml:"model"`
+	Effort         string         `json:"effort,omitempty" toml:"effort,omitempty"`
+	Prompt         string         `json:"prompt" toml:"prompt,multiline"`
 }
 type AgentRecord struct {
 	AgentDefinition
@@ -73,13 +75,14 @@ type ChoiceField struct {
 	Required bool   `json:"required" yaml:"required"`
 }
 type GraphChoice struct {
-	Name        string                 `json:"name" yaml:"name"`
-	Description string                 `json:"description,omitempty" yaml:"description,omitempty"`
-	Input       map[string]ChoiceField `json:"input" yaml:"input"`
-	Output      map[string]string      `json:"output" yaml:"output"`
-	To          string                 `json:"to,omitempty" yaml:"to,omitempty"`
-	Session     string                 `json:"session,omitempty" yaml:"session,omitempty"`
-	Terminal    bool                   `json:"terminal,omitempty" yaml:"terminal,omitempty"`
+	Name          string                 `json:"name" yaml:"name"`
+	Description   string                 `json:"description,omitempty" yaml:"description,omitempty"`
+	Input         map[string]ChoiceField `json:"input" yaml:"input"`
+	Output        map[string]string      `json:"output" yaml:"output"`
+	To            string                 `json:"to,omitempty" yaml:"to,omitempty"`
+	Session       string                 `json:"session,omitempty" yaml:"session,omitempty"`
+	MaxTraversals *GraphTraversalLimit   `json:"max_traversals,omitempty" yaml:"max_traversals,omitempty"`
+	Terminal      bool                   `json:"terminal,omitempty" yaml:"terminal,omitempty"`
 }
 type GraphDefinition struct {
 	Name        string                 `json:"name" yaml:"name"`
@@ -431,6 +434,13 @@ func catalogForMutation(p Project) (AuthoringCatalog, error) {
 	}
 	return c, err
 }
+func validateAgentDefinition(d AgentDefinition) error {
+	if _, ok := cleanLabel(d.Name, 80); !ok || !validAuthoringID(authoringSlug(d.Name)) || len(d.Description) > 960 || strings.TrimSpace(d.Prompt) == "" || len(d.Prompt) > 128<<10 {
+		return errors.New("Enter a valid name and prompt (at most 128 KiB).")
+	}
+	return nil
+}
+
 func (a *app) saveAgent(w http.ResponseWriter, r *http.Request) {
 	p, ok := a.authoringProject(w, r)
 	if !ok {
@@ -444,11 +454,21 @@ func (a *app) saveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := body.Agent
+	capabilities := CapabilitySelection{Skills: d.Skills, MCPConnections: d.MCPConnections}
+	if err := normalizeSelection(&capabilities); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	d.Skills, d.MCPConnections = capabilities.Skills, capabilities.MCPConnections
+	if !managedLibraryHarness(d.DefaultHarness) && !selectionEmpty(capabilities) {
+		fail(w, 400, "Managed library capabilities are not supported by this harness.")
+		return
+	}
 	d.Name = strings.TrimSpace(d.Name)
 	d.Description = strings.TrimSpace(d.Description)
 	id := authoringSlug(d.Name)
-	if _, ok := cleanLabel(d.Name, 80); !ok || !validAuthoringID(id) || len(d.Description) > 960 || strings.TrimSpace(d.Prompt) == "" || len(d.Prompt) > 128<<10 {
-		fail(w, 400, "Enter a valid name and prompt (at most 128 KiB).")
+	if err := validateAgentDefinition(d); err != nil {
+		fail(w, 400, err.Error())
 		return
 	}
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(55 * time.Second))
@@ -464,6 +484,13 @@ func (a *app) saveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oldID := r.PathValue("item")
+	a.mu.Lock()
+	recoveringLibrary := len(a.state.LibraryDeletions) > 0
+	a.mu.Unlock()
+	if recoveringLibrary {
+		fail(w, 409, "A library deletion needs recovery before editing agents.")
+		return
+	}
 	var old *AgentRecord
 	for i := range c.Agents {
 		if c.Agents[i].ID == oldID {
@@ -672,6 +699,9 @@ func validateGraph(g GraphDefinition, agents []AgentRecord) error {
 		if c.Terminal && (c.To != "" || c.Session != "") {
 			return errors.New("Terminal Choices cannot have a destination or session policy.")
 		}
+		if c.MaxTraversals != nil && (*c.MaxTraversals < 1 || *c.MaxTraversals > 2147483647 || c.Terminal || c.To == "") {
+			return errors.New("Choice max_traversals must be a positive integer up to 2147483647 on a non-terminal transition.")
+		}
 		if c.To != "" {
 			if _, ok := g.Nodes[c.To]; !ok {
 				return errors.New("Invalid Choice destination.")
@@ -772,28 +802,9 @@ func (a *app) saveGraph(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err.Error())
 		return
 	}
-	// Check override compatibility using the same real catalogs as agent registration.
-	for _, n := range body.Definition.Nodes {
-		if n.Overrides != nil {
-			for _, agent := range c.Agents {
-				if agent.ID == n.Agent {
-					h, m, e := agent.DefaultHarness, agent.Model, agent.Effort
-					if n.Overrides.Harness != "" {
-						h = n.Overrides.Harness
-					}
-					if n.Overrides.Model != "" {
-						m = n.Overrides.Model
-					}
-					if n.Overrides.Effort != nil {
-						e = *n.Overrides.Effort
-					}
-					if err = a.validateAgentModel(r, p, h, m, e); err != nil {
-						fail(w, 400, err.Error())
-						return
-					}
-				}
-			}
-		}
+	if err = a.validateGraphModels(r, p, body.Definition, c.Agents); err != nil {
+		fail(w, 400, err.Error())
+		return
 	}
 	old, readErr := readConfig(p, graphFile(oldID))
 	if body.Revision == "" {

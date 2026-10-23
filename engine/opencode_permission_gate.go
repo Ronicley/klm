@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -45,14 +46,44 @@ func (p *adapter) openCodePermissionGate(ctx context.Context, raw json.RawMessag
 		Cwd       string         `json:"cwd"`
 		Input     map[string]any `json:"input"`
 	}
-	if json.Unmarshal(raw, &call) != nil || call.SessionID == "" || call.CallID == "" || call.Tool == "" || call.Input == nil || !piSamePath(call.Cwd, p.cwd) {
+	if json.Unmarshal(raw, &call) != nil || call.SessionID == "" || call.CallID == "" || call.Tool == "" || call.Input == nil {
 		return false, errors.New("Invalid OpenCode tool preflight.")
+	}
+	if err := validateOpenCodeDirectory(call.Cwd, p.cwd); err != nil {
+		return false, fmt.Errorf("OpenCode tool preflight: %w", err)
+	}
+	// Directory ownership is an execution invariant, not a YOLO permission.
+	if call.Tool == "opencode_session_move" {
+		return false, errors.New("KLM-managed OpenCode sessions cannot be moved. Access worktrees with absolute paths and an explicit tool workdir when supported.")
 	}
 	if err := p.turn.ctx.Err(); err != nil {
 		return false, err
 	}
 	if p.graphSealed() {
 		return false, errors.New("Graph activation is sealed.")
+	}
+	if p.capabilities != nil && strings.HasPrefix(call.Tool, "klm_linked_") {
+		p.app.mu.Lock()
+		root := p.app.state.Native[p.id].ID
+		p.app.mu.Unlock()
+		if call.SessionID != root {
+			return false, errors.New("Conversation-role tools are not delegated to native subagents.")
+		}
+	}
+	if p.capabilities != nil && call.Tool == "skill" {
+		allowed := false
+		p.app.mu.Lock()
+		native := p.app.state.Native[p.id].ID
+		p.app.mu.Unlock()
+		for _, skill := range p.capabilities.Skills {
+			if skill.Name == str(call.Input, "name") && (!skill.Internal || call.SessionID == native) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false, errors.New("Skill is not selected for this conversation role.")
+		}
 	}
 	if p.internalOpenCodeTool(call.Tool) || slices.Contains([]string{"question", "form", "todowrite", "todoread"}, call.Tool) {
 		return true, nil

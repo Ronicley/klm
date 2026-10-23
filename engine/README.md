@@ -1,5 +1,69 @@
 # KLM Engine
 
+## Tasks
+
+The global board uses `/api/activity-board/*`, independent of webhook ingress and
+the GitHub activity feed. **Project settings → Tasks** (below Webhooks) connects one GitHub.com repository or one
+Azure DevOps Services organization/project/work-item type to an explicit local
+project, fixed to the project whose settings are open. This is also where connection
+editing, mappings and disconnect are managed. **Tasks** appears below New session
+only for projects with a configured provider; the shared Tasks page manages global
+phases through **Phases**. Use a scoped GitHub PAT with Issues read/write (including label access),
+or an Azure PAT with Work Items read/write and access to the selected project.
+For Azure project discovery, also enable **Project and Team (Read)**. In setup,
+enter the organization name and token, click **Load projects**, then select a
+project and work item type from searchable lists; selecting a type loads its
+native states. Project catalogs read every `$top`/`$skip` page before returning.
+Azure tasks are always restricted to `[System.AssignedTo] = @Me` in WIQL, using
+the authenticated PAT owner rather than an email/display-name comparison or the
+client identity. There is no configurable assignment option and no save is needed
+to activate this rule on existing connections. On startup the engine migrates
+legacy unfiltered snapshots to a withheld state and performs a full filtered scan.
+Replacing an Azure token also withholds the previous owner's snapshot until a
+successful refresh; failures never fall back to other users' tasks. The former
+`onlyAssignedToMe` input is ignored for old-client compatibility and cannot disable
+the restriction. No extra profile/code permissions are required, and assignees
+are never modified. Restart with the updated engine to apply the migration.
+The **Sprint** picker filters exact `System.IterationPath` values, retaining
+mandatory `AssignedTo = @Me`. Alongside paths from the confirmed task cache, it
+queries `/{project}/_apis/work/teamsettings/iterations?$timeframe=current` using
+Azure's **default team**, explicitly chosen by the user. Current sprints are marked
+**Current**, listed first and included even when they have no assigned tasks.
+One unambiguous current sprint is preselected when entering a project view; none
+or multiple current sprints uses **All sprints** with a status note. Failed current
+lookup does not silently select All: Retry and explicit manual selection remain
+available. A subsequent refresh preserves the user's selection.
+**All sprints** clears the filter; **No sprint** selects the project's root path.
+A specific sprint shows Azure tasks only. Current lookups deduplicate per external
+Azure project, run outside the global lock with a 90-second total deadline, and
+change no remote resources. Other empty iterations/non-default teams are not
+enumerated. Restart/Refresh loads missing iteration metadata in older caches;
+incomplete caches show a refresh notice but may still include a confirmed current
+sprint. No provider request is made per card.
+Enter tokens only in the client; they are write-only and protected at rest with
+Windows user-bound DPAPI. Existing public API networking/CORS is unchanged, so use
+a trusted local/network connection or appropriate HTTPS for credential setup.
+
+Providers own tasks. The engine stores global phases, complete ordered mappings,
+technical item snapshots and durable update receipts under `activityBoard*` fields.
+Refresh runs at startup, after connection saves and on explicit request. Move to
+revalidates provider state, preserves unrelated GitHub labels/open-closed, and uses
+revision-guarded Azure state patches. Uncertain writes are reconciled by reads,
+never replayed automatically. Existing webhooks are not board connections; hooks
+and automation are outside this delivery.
+Draft edits use their initial config revision; uncertain saves require explicit
+reload. Global phase mappings have a read-only discovery path for retained
+removed-project connections. Missing move receipts can be cancelled only before
+acceptance, with a durable ID reservation against delayed submissions; accepted
+work is not cancelled or replayed. Refresh coordinates in-transit requests and
+fresh reads even through Focus hide/restore. See `ACTIVITY_BOARD_REVIEW.md` for the
+two requested static review/correction rounds and remaining human validation.
+
+See [`ACTIVITY_BOARD_IMPLEMENTATION_PROGRESS.md`](../ACTIVITY_BOARD_IMPLEMENTATION_PROGRESS.md)
+for the actual JSON routes, setup/mapping rules, receipt retention, recovery limits,
+storage/downgrade notes and pending human validation. Go dev build and TypeScript
+typecheck are the compilation evidence; no real provider execution was validated.
+
 Small standalone Go HTTP engine for real projects, sessions, and delegated harness
 execution. Go 1.24.2, with `go-gitignore` for project path discovery. Includes a private linked-agent MCP
 bridge; no frontend or general-purpose engine MCP interface is bundled.
@@ -33,6 +97,124 @@ It never kills a process from a stored PID or exposes engine shutdown on HTTP.
   harnesses. See [Windows packaging](../distribution/windows/README.md).
 - The Tauri client has its own installer and lifecycle; the engine serves no UI.
 
+## OpenCode version selection
+
+Upstream features are integrated with both protocols retained. Managed Library
+execution is restricted to the upstream-compatible V1 `opencode-ai 1.18.35`
+profile. V2 keeps its existing catalog and native execution; a nonempty Library
+selection fails preparation explicitly, without clearing the selection or silently
+changing protocols. V1 uses native-boundary steering; V2 retains the fork's HTTP/SSE
+steering delivery. Native runtime behavior still requires manual validation.
+
+**Settings > OpenCode** saves an engine-wide protocol choice, **V1** or **V2**,
+and separate optional executable paths. Paths refer to the engine computer,
+including when configuring from a browser or mobile client. Existing installs
+default to V2; KLM does not install or download either version.
+
+Apply saved changes by restarting the engine (`klm stop`, then `klm start`;
+use the dev executable for a development instance). Running turns are not changed
+by Save. A normal engine shutdown still interrupts active work.
+
+Executable resolution uses the selected version's saved path first, then
+`KLM_OPENCODE_V1_BIN` / `KLM_OPENCODE_V2_BIN`, then the existing
+`KLM_OPENCODE_BIN`, then automatic discovery. Explicit paths must point to
+executables, not shell commands or Windows npm shims. V1 discovery prefers the
+`opencode-ai` Windows package; V2 retains the existing `@opencode/cli` discovery.
+Use explicit paths when both are installed. Startup/catalog checks reject a
+binary with the wrong major version without falling back.
+
+- `GET /api/opencode/settings` returns
+  `{settings:{version,v1Path,v2Path},activeVersion,restartRequired}`.
+- `PATCH /api/opencode/settings` accepts
+  `{version:"v1"|"v2",v1Path:string,v2Path:string}` and returns the same view.
+  Empty paths enable discovery; invalid versions/paths return 400.
+- Settings are persisted with `commitLocked`; application requires restart,
+  keeping in-flight turns, model caches and warm native servers consistent.
+- Native session metadata records `openCodeVersion`. Existing unmarked sessions
+  are interpreted as V2, matching the fork before this change. A version mismatch
+  fails with recovery instructions instead of changing IDs or discarding history.
+  Switch back to continue an existing conversation, or create a new conversation
+  for the other protocol. The singleton general agent must use its recorded version.
+- V1 and V2 use separate owned plugins and native transports. Both retain the
+  private loopback bridge, KLM tool preflight, graph admission and request ownership.
+
+Manual acceptance: configure each version with its real executable, restart, and
+in a new conversation load models, send text/attachments, answer a question and
+permission, steer a running turn, Stop, and resume. Validate a graph's Choice and
+pending requests too. Switch versions and confirm old conversations fail clearly
+without losing history; switching back must resume them. Also check saved settings
+after engine restart. No real-harness behavior is claimed verified by compilation.
+
+The upstream merge and its version-specific Library integration remain separate
+work; this change restores protocol selection in the current fork.
+
+## Graph plan reader and narration
+
+OpenCode approval questions retain both field title and description. Graph questions
+add a bounded `context` snapshot of visible assistant messages in the activation;
+the client exposes it through **Read node context** before a Choice is submitted.
+Question content itself offers **Open reader**. No plan-file discovery is implied.
+
+### Graph controls and node retries
+
+- `POST /api/sessions/{id}/graph/runs/{runId}/stop` durably marks user Stop,
+  cancels owned workers and prevents further dispatch. Settlement preserves files,
+  history and uncertain-effect diagnostics; the activity becomes `awaiting_user`.
+  Pause/Resume retain their existing graceful scheduling semantics.
+- `POST /api/sessions/{id}/graph/runs/{runId}/nodes/{nodeId}/retry` accepts
+  `{activationId, operationId}`. A stable operation ID deduplicates repeat requests.
+  Only the latest run of an open activity is eligible; prior work must settle and
+  no other graph may be active. The engine validates current workspace provenance.
+- Retry creates a new run with immutable source snapshot, recorded node input and
+  reused current files. Completed causal predecessors and independent results are
+  retained; descendants are invalidated and incomplete independent branches restart.
+  Join inputs remain correlated. Agents use new native sessions and receive bounded
+  previous-attempt evidence to reconcile completed effects before repeating writes.
+- `graph.run` remains active-only for existing consumers; `graph.lastRun` exposes
+  the latest terminal attempt of the selected graph. Node projections include the
+  activation identity and `retryReason`; activity can link to `previousAttempt`.
+  Retry never rolls back files or promises exactly-once external side effects.
+
+The workspace-owned `ciclo-desenvolvimento-pr` definition uses a JSON array encoded
+in the string field `repositories`, carrying per-repo paths, bases, worktrees,
+checks, review snapshots and publication results through the entire cycle. Backend
+and frontend share one approved plan and completion condition. Existing runs keep
+their captured definitions; the updated definition applies to new runs.
+
+### Chat links and editing
+
+Plain user-message HTTP(S)/www URLs are clickable alongside file mentions and use
+the same desktop URL opener as Markdown links. **Edit and continue** uses an inline
+multiline editor with Cancel/Save, Ctrl/Cmd+Enter and Escape, preserving drafts on
+failure. Saving retains the existing revert/queue semantics, with explicit copy
+about replacing later conversation and removing pending messages. The endpoint
+reprepares retained mentions, attachments and source context before durable changes;
+missing attachments or concurrent conversation changes fail without reverting history.
+
+In a graph node's activity panel, Input and Output string fields provide **Open
+reader**. The reader opens a snapshot of that field with Markdown/Plain text,
+text size and reading width controls. A plan must be present in the node payload;
+this does not discover plan files or infer plans from chat messages.
+
+**Read aloud** uses OpenAI `gpt-4o-mini-tts` and MP3 audio, with Marin as the default
+voice. The reader can save a separate OpenAI API key on the engine. Without a
+speech-specific key, the existing OpenAI transcription key is reused, even when
+OpenRouter is the active transcription provider. No key is returned to clients.
+`GET/PATCH /api/speech/settings` expose configured status/save a key;
+`POST /api/speech` accepts `{text, voice}` (at most 2,500 characters) and returns
+`audio/mpeg`. Supported voices: marin, cedar, coral, alloy, sage.
+
+Narration is explicit and sends the selected text to OpenAI; API usage is billed
+by OpenAI. Markdown is converted to spoken text, with fenced code blocks omitted.
+Long text is split into bounded parts and generated sequentially, without audio
+persistence or automatic background playback. Native audio controls provide
+pause/resume and seeking within the current part; the reader adds voice, speed
+and Stop. Closing the reader or changing voice cancels the current request and
+releases client audio. Already accepted provider requests may still incur cost.
+An autoplay restriction may require pressing Play on the audio control. Voice
+quality, real API access/billing, playback across clients and long-plan navigation
+require human validation; no runtime provider validation is claimed.
+
 ## HTTP Contract
 Development builds use `go build -tags dev -o klm-dev.exe .`, then
 `.\klm-dev.exe start` / `.\klm-dev.exe stop`. This selects API **17331**, Focus
@@ -62,15 +244,16 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | POST | `/api/projects` | `{name,folder,icon}` -> 201 Project |
 | PATCH | `/api/projects/{id}` | `{name?,icon?}` -> 200 Project |
 | DELETE | `/api/projects/{id}` | `{removed:true}`; hides the project, preserving its files and saved history; 409 while a session is running |
-| POST | `/api/projects/{id}/folders` | `{name}` -> 201 Project |
-| PATCH | `/api/projects/{id}/folders` | `{name,archived}` -> 200 Project |
+| PATCH | `/api/projects/{id}/topics/{topicId}` | `{name?,color?,archived?,position?:{beforeId:string}}` -> 200 canonical Project; empty beforeId places an active topic last |
+| POST | `/api/projects/{id}/topics` | `{name,color?}` -> 201 canonical Project; creates an empty topic first in the saved order, color defaults to neutral |
+| POST / PATCH | `/api/projects/{id}/folders` | 410; visual folders were replaced by persistent topics |
 | GET | `/api/projects/{id}/paths?q=...` | `{paths:[{path,kind:"file"\|"directory"}],partial:boolean}`; project-relative paths |
-| POST | `/api/sessions` | `{projectId,title,workspace,harness,model?}` -> 201 Session |
+| POST | `/api/sessions` | `{projectId,title,harness,model?,topicId?}` -> 201 SessionUpdate; omitted topicId starts unassigned, explicit topicId must be an active topic in that project; legacy workspace accepts only empty/Ungrouped |
 | POST | `/api/sessions/{id}/side` | `{harness?}` -> existing or newly created side Session; one per main, serialized atomically |
 | POST | `/api/general-session` | `{}` -> existing or newly created singleton general SessionUpdate; atomic and independent of user projects |
 | PATCH | `/api/sessions/{id}/harness` | `{harness}` -> side/general SessionUpdate; general harness permanently locks at first accepted message |
 | POST | `/api/sessions/{id}/consultations/{requestID}/cancel` | `{}` -> Session; cancels the correlated request/continuation |
-| PATCH | `/api/sessions/{id}` | `{title?,workspace?,archived?}` -> 200 SessionUpdate |
+| PATCH | `/api/sessions/{id}` | `{title?,archived?,topicId?}` -> 200 SessionUpdate; topicId moves an active normal main to an active topic in the same project, separately from archive/restore; legacy workspace/session-position changes rejected |
 | DELETE | `/api/sessions/{id}` | 200 `{deletedSessionIds:string[],cleanupError?:string}`; permanently deletes normal top-level session and owned content; 409 while chats/processes, graph startup, active/paused graphs or consultations are unfinished |
 | GET | `/api/sessions/{id}/models` | Harness model catalog; `?refresh=true` bypasses the two-minute cache |
 | PATCH | `/api/sessions/{id}/settings` | `{model:string,effort:string}` -> Session; empty strings select harness defaults |
@@ -97,7 +280,7 @@ cleanup is pending: retry DELETE or restart the engine. Tombstones retain identi
 and accepted-operation markers only, not deleted history/prompts. Native harness
 shared storage and external backups are not purged.
 
-Adding the same directory again restores a removed project's identity, folders,
+Adding the same directory again restores a removed project's identity, topics,
 and session history with the name and icon chosen in the add dialog.
 
 ### Uploaded chat files
@@ -141,7 +324,8 @@ Clicking a row opens
 read-only details with Copy URL, Last received, Verified/Not verified and confirmed
 removal. Edit switches to the form, including enabled state and credential changes;
 Cancel returns to read mode. New connections also open in read mode after creation.
-There is no webhook history/payload screen or feed/automation consumer yet.
+The KLM Agent Activity timeline projects released, retained GitHub deliveries.
+The connection editor has no raw-payload history screen or automation consumer.
 
 #### Manual GitHub setup
 
@@ -335,7 +519,102 @@ lose events to TTL, with no complete-history or expired-payload recovery guarant
 After an uncertain management mutation, Refresh before retrying; creation is not
 automatically retried after a transport failure.
 
-#### Effective limits and errors
+#### GitHub Activity projection
+
+The KLM Agent timeline reads releases directly, without a second event store,
+journal, ACK or durable consumer cursor. It never starts an agent or graph.
+
+| Method | Path | Contract |
+| --- | --- | --- |
+| GET | `/api/activity/github/catalog` | `{version:1,items:[{id,label,defaultEnabled,category}]}`; 56 initial options, all enabled |
+| GET | `/api/activity/github` | `limit=1..100` (default 50), `cursor`, `category`, `q` (max 200 chars), repeated `exclude` catalog IDs -> `{items,nextCursor?,hasMore,highWatermark,asOf}` |
+| GET | `/api/activity/github/{eventId}` | `{id,fields:[{label,value}],body?,entries?:[{text,url?}],truncated}`; 404 if unavailable |
+
+Categories are `PRs`, `Pipelines`, `Issues`, `Security`, `Repository`, `Other`;
+absent/`All` means all. Unknown categories/exclusions or invalid cursors return 400.
+Search is case-insensitive substring matching on displayed summary fields, not raw
+payload full-text. Filters apply **before** pagination. Unknown event types remain
+visible in Other, even if all known types are excluded. Ping is never feed activity.
+
+Items include project/connection/event identity, original eventType/action, catalogId
+when known, GitHub provider, category/tone/icon, actionLabel/summary/title/reference,
+optional branches/result/actor/repository and safe targetUrl/targetKind. Sequence,
+receipt/release times and optional expiry come from retained engine records. Sender
+does not imply agent authorship. The project owner/name comes from engine inventory.
+
+Order is **descending releaseSequence**. The opaque, strict, versioned base64url
+cursor binds the canonical filters, captured high watermark and exclusive lower
+sequence. All sequences are decimal strings, never JavaScript numbers. New releases
+appear on refresh; pagination stays under its original watermark. TTL/deletion may
+create gaps. Each query rechecks active projects, extant connections and unexpired
+releases; disabled connections retain history, removed projects hide it until restored.
+Concurrent deletion can finish an already captured read, as with existing webhook APIs.
+
+Parsing runs outside `app.mu`, using immutable payload references. A per-engine
+volatile cache holds compact normalized summaries only (10,000 entries/64 MiB limit),
+pruned against eligible records on reads; it never authorizes visibility or stores raw
+payloads. Project names are applied outside this cache. Summary text/URLs are bounded,
+and compact Details has a 64 KiB serialized ceiling with explicit truncation. Body
+text is literal, allowlisted by event family; secret-scanning secret values, deploy
+key material and hook configuration are excluded. URLs must be absolute HTTP(S)
+without userinfo/controls; missing resource links fall back to repository pages,
+otherwise references are nonclickable. No GitHub enrichment request is performed.
+
+The 56 preferences correspond to the supplied GitHub screenshot. There are **55
+confirmed canonical headers** plus stable catalog ID `push_ruleset_bypass`, matched
+for unknown headers through `exemption_request.request_type=push_ruleset_bypass`.
+This deliberately does not assert a canonical header that has not been verified.
+See `../GITHUB_ACTIVITY_FEED_IMPLEMENTATION_PLAN.md` for sources and availability.
+
+Feed settings uses localStorage
+`klm.agent.github-feed.preferences.v1:${encodeURIComponent(ENGINE_URL)}` with
+`{version:1,overrides:{catalogId:boolean}}`. This is display configuration per client
+origin/engine URL, independent of webhook subscriptions, retention and other readers.
+Explicit overrides survive future default changes. Storage failures are reported.
+Bookmarks remain in memory and never retain expired content.
+
+The visible client refreshes every 15 seconds and on focus/visibility return. It
+reloads all pages through the previous loaded lower boundary, then swaps atomically;
+it never appends an old cursor to a new top. Load more is serialized with refresh,
+query changes cancel stale requests, and errors preserve the last complete snapshot.
+Refresh preserves the visible reading anchor in desktop and compact scroll containers.
+New releases arriving below the top show a floating arrow/project-icon pill;
+clicking it returns to the top, and scrolling to the top manually also dismisses it.
+Project icons are deduplicated, with at most three displayed plus an overflow count.
+Initial loads, Load more and filter changes do not count as new arrivals; expired or
+removed events are excluded from the notice. Browser scroll anchoring is disabled
+in these containers so it does not compete with the explicit reading anchor.
+The client hides expired items using the engine clock offset and requests Details
+only when expanded. Internal agent posts/Needs attention remain future work.
+
+Standalone simulator: `node scripts/github-webhooks/simulate.mjs --list` and
+`--all --dry-run` from the repository root; see
+[`scripts/github-webhooks/README.md`](../scripts/github-webhooks/README.md).
+It signs exact bytes, supports external payloads, duplicate/invalid-signature modes,
+and has **124 partial synthetic scenarios covering all 56 catalog IDs**. Push ruleset
+bypass explicitly uses `klm_simulated_push_ruleset_bypass` until a real header is known.
+
+Implementation checks (2026-10-13): `go build -tags dev ./...`, `npx tsc -b`,
+simulator list/dry-run passed. A disposable overlay build on port 27331 (new data,
+two synthetic projects/connections) exercised all 124 scenarios, 202/200/401 behavior,
+ping exclusion, all catalog classifications, compact Details, PR/CI/comment semantics,
+descending pagination/watermark, category/search/exclusion, safe URL fallback,
+large JSON numbers, cross-connection delivery independence and restart retention
+of 128 visible occurrences. Targeted Playwright checks then covered 50/100/128-card
+pagination, provider/copy/Details/links, bookmarks across filters, all 56 settings,
+preference persistence after reload, search and empty states, and 1440/900/390px
+layouts. Adding 105 signed deliveries refreshed the mounted feed to 233 unique
+cards while preserving its reading anchor; deleting that disposable connection
+returned it to 128. A simulated refresh error kept the loaded cards and Retry
+recovered. PR readiness copy and synthetic closed-PR states were corrected and
+checked; the final Go overlay build and targeted browser assertions passed.
+Browser validation used a separate Playwright context, the existing Vite assets,
+and request redirection only inside that context to the disposable API. No real
+engine was restarted. Human UI acceptance, external GitHub delivery, elapsed TTL,
+and remaining lifecycle cases are still pending. No full suites or versioned
+integration tests were run.
+
+#### Ingress limits and errors
 
 | Resource | Limit / response |
 | --- | --- |
@@ -433,24 +712,25 @@ graph-execution tools. Normal main/side scope is not widened.
 
 | Tool | Scope and behavior |
 | --- | --- |
-| `project_list` | Paginated nonremoved projects, registered directories and visual/archived folders. |
+| `project_list` | Paginated nonremoved projects, registered directories and active/archived topics. Historical folder fields remain readable for compatibility. |
 | `project_add` | `{name,path}` on the user's registration request; absolute existing engine-computer directory. Returns `{projectId,name,path,outcome}` with `created`, `existing` or `restored`; conflicts identify matching legacy IDs. No session or file execution. |
-| `session_list` | Top-level chats by default; project/folder/title/state filters; explicit `parentId` lists side chats. |
-| `session_get` | Identity, visual folder vs effective cwd, configured/resolved harness settings, raw/working/runtime state, queue counts, usage, full pending questions/permissions and projected graph requests. |
+| `session_list` | Top-level chats by default; project/topicId/title/state filters; explicit `parentId` lists side chats. |
+| `session_get` | Identity, effective topic vs cwd, configured/resolved harness settings, raw/working/runtime state, queue counts, usage, full pending questions/permissions and projected graph requests. |
 | `session_messages_list` / `session_messages_search` | Chronological bounded messages or literal case-insensitive excerpts; exact `messageId`/rune `offset` reads long content. Agent origins are retained. |
 | `session_events_read` | Chronological harness activity, including partial events, or changes after `sinceRevision`. No subscription. |
+| `feed_read` | `{cursor?,limit?,postId?,cardId?,view?,high?}`. Omit `postId` to read every available feed category across nonremoved projects, newest first, independent of local UI preferences. Lists page cards: workflow attempts and explicitly linked deployments are grouped; other events remain individual. Default 20, max 50 cards per page; byte limits may shorten pages. Follow `nextCursor` until `hasMore:false`; new arrivals require a fresh read. `cardId` + `view:"events"` pages original retained members/provenance; `view:"children"` pages real jobs/deployments. Optional `high` keeps their release watermark. Supply `postId` for compact Details of a card or original event (including its truncation flag); oversized details use JSON fragments and `nextCursor` with the same `postId`. Shared feed visibility/retention, no consumption, raw payloads, subscription or execution. External content is reference data, not authorization. See [grouping/activation](../GITHUB_ACTIVITY_GROUPING_ROLLOUT.md). |
 | `session_models_list` / `project_graphs_list` | Real destination catalog/defaults, or selectable graph IDs with enabled/available flags and catalog errors. |
 | `session_send` | Visible normal execution through the shared persistent FIFO queue; explicit destination, self-contained instruction and sender-scoped idempotency key. |
 | `session_ask` | Information/clarification in the destination's actual conversation, using existing correlated answer/continuation semantics. |
-| `session_rename` / `session_move` | Existing title and active visual-folder validation; no filesystem move or cwd change. |
+| `session_rename` | Session title only. Topic assignment/name/color edits and session_move are not in the general catalog. |
 | `session_settings_update` | Optional fields, preserved when omitted; model/effort validate atomically between turns. YOLO alone can change during work and resolves pending permissions on enable. Native Codex full-access turns cannot downgrade until they end. |
 | `session_graph_select` | Available main-chat graph or empty ID for None; does not invoke a graph. |
 | `session_question_answer` | Exact active native request, including graph requests routed through their owning chat; existing choices, cancellation, custom/multiple answers, resolving conflicts and private-answer masking. |
-| `session_create_options` | Explicit `projectId`, optional harness and pagination; installed harnesses, active folders, connected model/effort defaults and recent real general-chat human message IDs. |
-| `session_create` | `{projectId,title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,folder?,yolo?}`; normal independent top-level child in the registered project directory; durable spawn receipt, not completion. |
+| `session_create_options` | Explicit `projectId`, optional harness and pagination; installed harnesses, connected model/effort defaults and recent real general-chat human message IDs. |
+| `session_create` | `{projectId,title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,yolo?}`; normal independent top-level child in the registered project directory, initially without a topic; durable spawn receipt, not completion. |
 | `session_stop` | Chat cancellation, owned native process termination and unsent-queue pause; waits up to 20 seconds, leaves independent `activeGraph` observable. |
 | `session_queue_remove` / `session_queue_send` | Exact `messageId`; existing removal or Send now, with effective item ID and bounded queue state. Sending conflicts. Uncertain Send now requires `retryUncertain:true` after an explicit user recovery decision and can duplicate delivery. |
-| `session_archive` / `session_restore` | Normal top-level metadata only; preserves runtime/requests. Restore accepts optional active `folder` or Ungrouped and requires it when the current folder is archived. |
+| `session_archive` / `session_restore` | Normal top-level metadata only; preserves runtime/requests and topic membership. Restore under an archived topic requires the user to restore that topic first in UI. |
 | `session_permission_reply` | `{sessionId,permissionId,decision,sourceUserEventId?}`; exact currently pending request through its owner, including projected graph requests; offered decision only, native rollback and related-request resolution. |
 
 All destinations resolve by stable ID in nonremoved projects. Archived sessions
@@ -495,7 +775,8 @@ The child starts with attributed agent input. Same-key identical retries survive
 queue consumption/restart; another project/settings on the key conflict. Catalog
 validation occurs outside the engine lock followed by destination/settings/turn
 revalidation before atomic child, queue payload and receipt acceptance. Rejected
-requests reserve nothing. Folder omission uses Ungrouped. Same-harness settings
+requests reserve nothing. New project sessions start without a topic and classify
+themselves during their first normal turn. Same-harness settings
 and current YOLO inherit under spawn rules; a changed harness uses its defaults.
 Explicit YOLO overrides apply before the first turn and only at the user's request.
 
@@ -547,7 +828,7 @@ Manual acceptance in a disposable environment (not performed during implementati
   the active ID, name and icon stay unchanged, with no duplicate.
 - Reject invalid names and relative, nonexistent or file paths without registration.
 - Restore a removed project and confirm the same ID, sessions/history and
-  active/archived visual folders.
+  active/archived topics.
 - Submit two simultaneous registrations for the same directory: one creation and
   one existing result, both with the same ID. Confirm cleaned paths and Windows case
   differences match; multiple legacy registrations conflict and report their IDs.
@@ -559,7 +840,7 @@ Manual acceptance in a disposable environment (not performed during implementati
 
 ### Session collaboration (private harness bridge)
 
-`session_spawn` accepts `{title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,workspace?,yolo?}`.
+`session_spawn` accepts `{title,prompt,operationId,sourceUserEventId,harness?,model?,effort?,yolo?}`.
 It creates one top-level session in the calling session's project, persists a
 pending first input and a receipt in the origin atomically, and schedules its
 normal turn independently. The source reference must be an existing human `user`
@@ -567,8 +848,12 @@ event in that conversation; the engine records traceability, while the editable
 prompt instructs the agent to create sessions only when explicitly requested.
 Repeated identical calls with the same operation ID return the original receipt;
 different arguments conflict. The receipt reports acceptance, not execution
-success. Default harness/model/effort and visual folder come from the caller;
-changing harness uses that harness's model defaults. Omitted `yolo` inherits the
+success. Default harness/model/effort come from the caller. The engine inherits
+the source main conversation's topic ID, including further descendants and spawn
+via side chat. If its topic is pending, creation returns `topic_pending` before
+creating a child; the main agent must assign it first. New visual grouping overrides
+are rejected; historical accepted requests still compare/replay unchanged.
+Changing harness uses that harness's model defaults. Omitted `yolo` inherits the
 sender's current mode at creation; `yolo:false` starts the requested non-YOLO child
 with permissions enabled. Override only at the user's request. The receipt records
 the resolved creation mode, which does not change on retry or later sender updates.
@@ -582,10 +867,10 @@ recoverable with the ordinary queue controls after interruption.
 
 `session_spawn_options` is available to normal main/side agents in their own
 project. It lists installed harnesses, paginated exact model IDs and efforts,
-active visual folders, required spawn fields and five bounded recent real user
+the effective topic, required spawn fields and five bounded recent real user
 message IDs. OpenCode requires full `provider/model` IDs such as
-`openai/gpt-6-luna`, not display labels or bare model names. `workspace` is a visual
-folder name, not a path; `sourceUserEventId` is a message ID in the sender, not its
+`openai/gpt-6-luna`, not display labels or bare model names. There is no grouping
+workspace option; `sourceUserEventId` is a message ID in the sender, not its
 session ID. The agent guidance directs recoverable validation errors back into
 corrected tool calls rather than ending the user's task.
 
@@ -620,7 +905,7 @@ downgrade to binaries rejecting new fields is not promised. Strict decoding and
 receipt/consultation identity/scope validation remain enabled.
 
 `session_discover` accepts `{query?,cursor?,limit?,includeArchived?}` and returns
-bounded same-project top-level identities (`id`, title, project, workspace,
+bounded same-project top-level identities (`id`, title, project, topic,
 harness and archived flag). `linked_read` and `linked_ask` accept an optional
 `sessionId` for an eligible top-level target; without it they retain their
 main/side target. Reading an archived session requires an explicit ID and is
@@ -648,6 +933,8 @@ type Project = {
   icon: string
   folders: string[]
   archivedFolders: string[]
+  topics: { id: string; name: string; color: 'neutral' | 'blue' | 'purple' | 'green' | 'amber' | 'rose'; createdAt: string; archived?: boolean }[]
+  topicOrder?: string[] // persisted manual order; new unpositioned topics appear first
 }
 
 type Session = {
@@ -657,6 +944,7 @@ type Session = {
   projectId: string
   title: string
   workspace: string
+  topicId?: string // authoritative membership; workspace is historical only
   harness: 'pi' | 'opencode' | 'codex'
   model?: string
   effort?: string
@@ -908,6 +1196,22 @@ policy are agent and Join; omission means new. Template output is validated, not
 executed here. Graph Save checks settings and references, but is not a declaration
 of runtime executability: unfinished/disconnected destinations can be saved.
 
+Non-terminal Choices with a destination may set `max_traversals` (integer from 1
+to 2147483647); omission is unlimited. The editor exposes **Transition limit** and
+preserves it through YAML/JSON, import/export and execution snapshots. The budget
+is per Choice ID per run, shared by all its source nodes. Each durable dispatched
+delivery consumes one traversal; reservation alone does not. Usage survives state
+reload and duplicate completion callbacks. Node retry retains the causal prefix's
+deliveries, without counting retained transitions twice; an explicit retry of an
+earlier node replays from that checkpoint, not from later discarded history.
+Agents receive `transitionLimits` with `limit`, `traversals` and `remaining`.
+Selecting an exhausted transition ends the run with the engine's `blocked` result
+instead of dispatching another node. The output retains the submitted mapped
+evidence, with engine-owned `status: transition_limit_reached` and `reason`; it is
+not success. Other Choices, including successful terminal outcomes, remain usable.
+For three corrective passes after an initial build, put `max_traversals: 3` only
+on the Review-to-Build Choice, not on the initial Plan-to-Build transition.
+
 ### Saving, reading and concurrent edits
 
 - Agents are `<slug>.toml`. Graph definitions are `<slug>.yaml`. Companion layout
@@ -1019,10 +1323,10 @@ session path live in a separate private section of `state.json`.
 
 Validation and semantics:
 
-- Project names and grouping folder names are trimmed, 1-60 Unicode characters,
-  with no control characters. Duplicate grouping names are rejected
-  case-insensitively; `Ungrouped` is reserved. These folders are labels, not
-  filesystem directories. `Project.folders` initially equals `[]`.
+- Project and topic names are trimmed, 1-60 Unicode characters, with no control
+  characters. Topics have stable project-scoped IDs; equal names never merge.
+  New projects start with no topics or default folders. Topic colors are predefined
+  keys, initially neutral; they are not free RGB values or filesystem directories.
 - Project `folder` must be an existing absolute directory, checked again before
   every execution. Processes always use that directory as their working directory.
 - `icon` may be empty. Otherwise it must be a `data:image/png;base64,` URL, at most
@@ -1031,11 +1335,50 @@ Validation and semantics:
   image allocation bombs.
 - Session titles are trimmed, 1-200 characters. Optional model IDs are trimmed,
   at most 200 characters, with no control characters or leading `-`.
-- `workspace` names an existing project grouping folder or `Ungrouped`. An empty
-  or omitted workspace becomes `Ungrouped`. Archived grouping folders cannot receive
-  new or moved sessions. It never changes the process cwd.
-- Archiving a grouping folder hides the folder and its sessions without mutating each
-  session. Session and folder archives are reversible and preserve all stored history.
+- A new independent session has no `topicId` by default. The UI's Add topic action
+  (left of Search sessions) can first create a persistent empty topic with name/color.
+  Only an expanded active topic without active sessions shows the in-topic New session
+  action; search filtering alone does not make it empty. This action uses the normal
+  create-session API with an explicit same-project active `topicId`, atomically
+  assigning the new session before any turn. Creating a topic starts no session or
+  agent turn. These UI actions add no private agent creation/assignment capability.
+  The private main-only
+  `session_topic_set({name})` tool assigns it once during a normal active turn;
+  later calls return the canonical current topic without changing its name/color.
+  Side chats resolve their main's topic; general/graph/subagent roles cannot assign.
+  Topic edits use the public UI API under the existing personal-use network contract,
+  not a new authentication claim or an agent rename tool.
+- Archiving a topic hides its active group without mutating session membership.
+  Archived history remains readable; new messages, sends, consultations and queued
+  execution require effective restoration. Archive is metadata, not Stop. Restore
+  the topic before restoring an individually archived member; never move it implicitly.
+- `topicSchema:1` records a durable migration after both journal segments replay.
+  Each legacy folder gets a distinct project topic, retaining archive state; empty
+  labels/Ungrouped remain no topic. Historical folder fields and spawn requests are
+  retained for compatibility. Generic transaction cloning/patches carry topics and
+  topicId through rollback, replay, checkpoint and HTTP/SSE summaries. Graph
+  execution workspaces/directories are unrelated and unchanged.
+- The shared sidebar orders members newest-created first, with ID ties. Topics
+  initially use newest-created persisted members (including archived ones), with
+  topic-ID ties. Dragging topic headers saves `Project.topicOrder`; positioned
+  topics stay in that order and new unpositioned topics precede it. Reorder validates
+  active same-project source/target under the state lock and commits through the
+  normal journal/checkpoint path. Archived positions survive restore and removed
+  project re-registration.
+- Dragging a normal active session to another active same-project topic updates
+  only its `topicId` and metadata timestamp. History, runtime, Library/settings,
+  existing spawn receipts and already-created descendants are preserved. Side chats
+  resolve their main's new association. Future spawn uses the current main topic;
+  a move during outside-lock model validation returns `topic_changed` before new
+  acceptance, while identical accepted operations retain their receipt. Empty IDs,
+  archived source/target, foreign topics and non-main roles are rejected. No agent
+  reassignment or reorder tool is exposed.
+- Collapse uses local engine/project/topic-ID keys, search includes topic names,
+  and the chat tag opens name/color editing for the group. Menus offer Move up/down
+  and Move to topic as alternatives to dragging. Ungrouped stays last and is not a
+  move destination. No manual folder creation or within-topic session reordering
+  controls are included. See
+  `../TOPICS_IMPLEMENTATION_PROGRESS.md` for checks and human acceptance steps.
 - Only completed assistant events, including legacy events without a status, accept
   the durable `favorite` flag. Running, failed, and cancelled output does not.
 - New sessions are idle with `events: []`. The harness must be discoverable when
@@ -1056,6 +1399,190 @@ Validation and semantics:
   current snapshot immediately, plus 15-second comment heartbeats. Slow clients
   may skip intermediate snapshots, but the latest snapshot includes every stored
   event. Reconnect simply receives the latest state; no Last-Event-ID is needed.
+
+## Skills and MCP Library
+
+The shared client exposes **Settings → Library**. Install complete user-requested
+skills through KLM Agent's existing tools and its internal manager skill, then
+select them per conversation or agent. Installation does not activate a skill.
+
+- User root: the engine OS user's `~/.klm/skills`, shared by dev/release. For disposable
+  probes use an **absolute** `KLM_USER_SKILLS_DIR`. Do not use real library data for tests.
+- Internal root: `KLM_SKILLS_DIR` (authoritative), installed sibling `skills/`, then
+  the development `engine/skills`. Only `skill-library-manager` is explicitly
+  distributed to `general_agent`. An invalid override fails instead of falling back.
+- The general agent receives the captured manager SKILL.md and installation-format
+  content, plus the absolute user-library path, through its normal turn context on
+  Pi/OpenCode/Codex. This is independent of external selection compatibility; it
+  neither imports native skill directories nor adds installation tools. Pi also
+  exposes the same captured package through its explicit native skill path. Edits
+  update the next complete turn and participate in retained-runtime identity.
+  Installation guidance is limited to 64 KiB; invalid/missing internal files stop
+  preparation rather than silently falling back to `.agents/skills`.
+- Bundled internal files are editable and shipped recursively with the engine.
+  Upgrades can replace bundled edits; use an external override for durable edits.
+  Uninstall never removes the user library or an override outside the installation.
+- Skill packages: one lowercase slug directory, UTF-8 SKILL.md, matching `name`,
+  nonempty description up to 1024 bytes, at most 512 files / 16 MiB / 16 levels.
+  Links/junctions, path collisions and nonregular files are rejected. All file bytes
+  contribute to the revision. Captures use a bounded repeated read and atomic
+  publication below `<data-dir>/capabilities/skills/<revision>/<slug>`.
+- Captured copies are retained conservatively; there is no automatic snapshot
+  directory pruning in this delivery. Confirmed skill removals move the source to
+  `<library-parent>/skill-library-trash/<operation-id>` after reference validation.
+
+Validated startup/catalog profiles on Windows target **Pi 0.85.1**, **OpenCode
+1.18.35** and **Codex 0.153.4**. Other versions fail the managed preflight rather
+than assuming compatibility. This is protocol/fixture validation, not end-to-end
+model/human acceptance. Pi discovery retains its explicit selected snapshot paths.
+
+OpenCode projects native provider/model/default effort, instruction paths and
+ordinary native permissions into a private configuration root. Permission pattern
+order is preserved. Repository instructions and configured relative globs are resolved
+from the original execution directory/worktree; environment path substitutions
+are retained. File-substituted instruction paths fail explicitly. Native build/plan
+root agents retain their baseline policies, including question access and plan edit
+restrictions, plus authored rules and `OPENCODE_PERMISSION` overrides. Custom,
+hidden, disabled or subagent-only root agents fail preparation explicitly. Only
+captured skill paths and the owned policy plugin enter
+that profile; native project configs/plugins and home `.opencode` discovery cannot
+add capabilities. Real HOME, auth and native history data remain in place (the
+framework's discovery-home override affects discovery only). Native root/child
+skill rules and role-tool restrictions are checked through the actual server APIs,
+including YOLO. Well-known remote-config auth, active organization config and
+administrator-managed configuration are rejected; Node 22+ `node:sqlite` is needed
+for read-only organization metadata inspection when a native database exists.
+Custom native plugin/agent definitions are not imported. Built-in provider auth
+plugins remain available. Existing cached provider SDK behavior remains native.
+
+Codex uses its original home/auth/history and unchanged engine-selected sandbox /
+approval policy. Managed flags suppress automatic model-side host/bundled skill
+instructions, native skill search, plugins/apps/hooks and native delegation. The
+engine supplies selected snapshot metadata for lazy SKILL.md reads. The raw
+app-server `skills/list` endpoint still inventories disk skills and must not be
+mistaken for the active model catalog. The runtime reads native MCP definitions,
+projects valid disabled transport entries plus the owned gateways into thread
+start/resume configuration, and checks every registry page before a model turn.
+Native subagent tools are disabled in this Codex profile until capability-safe
+native inheritance is validated; engine sessions/graph nodes remain independent.
+
+OpenCode/Codex rebuild their managed process at complete engine-turn boundaries,
+resuming the same native ID and directory. Codex requests EOF and waits for native
+shutdown before retiring a successful turn, preserving transcript flush. Steering
+never refreshes the profile. No global settings or CODEX_HOME are rewritten and no
+additive path/CODEX_HOME-only isolation claim is made. Model catalog discovery uses
+the controlled OpenCode projection and the corresponding Codex discovery flags.
+
+There are two private gateway capabilities on the same authenticated loopback
+listener: `/mcp` (`klm_linked`) contains role tools; `/library` (`klm_library`) contains
+only selected external routes. Tokens and catalogs are different. Library tokens
+cannot call role tools, graph gates or control methods. External calls always pass
+normal engine policy and allowlist validation, including in YOLO. OpenCode native
+children cannot receive/dispatch root conversation-role tools or the internal skill.
+
+### MCP connections and OAuth
+
+Create/edit connections without starting them. **Test connection** is explicit and
+can execute a local server. Stdio uses an executable plus separate args, a fixed cwd
+or the actual execution cwd, and protected explicit environment entries. Shell shims
+are rejected; use an executable such as `node.exe` and an already installed entry
+point. No runtime/package is installed implicitly. A test of an execution-relative
+stdio connection requires temporarily configuring a fixed directory; actual graph
+activations always resolve their own directories/worktrees.
+
+Streamable HTTP uses JSON/SSE protocol sessions, not legacy HTTP+SSE. Credentials
+are secret environment/header/bearer values or OAuth credentials protected with
+Windows per-user DPAPI in private engine state. APIs return presence only. Editing
+uses omitted secrets = keep, `secrets` = replace the set, `removeSecrets` = remove.
+Config changes invalidate the catalog and apply at the next complete turn; retained
+active snapshots keep their configuration and protected credential references.
+
+For OAuth choose a registered client ID (and secret when required), or leave the ID
+empty for public dynamic registration. Configure a provider-accepted redirect URI:
+
+```text
+https://<reachable-engine-api>/api/library/mcp/oauth/callback
+```
+
+That URL reaches the **engine API**, not the frontend server or private gateway.
+Local engine-browser use may use loopback HTTP. A mobile/remote browser must not
+use its own localhost as the callback. HTTPS ingress/provider registration is an
+explicit user setup, not an engine-managed tunnel. Authorization opens only through
+a user action. The mobile web flow uses the same tab and an explicit return link
+to Library; providers that prohibit embedded WebViews need external-browser human
+validation. There is no device-flow or manually pasted authorization-code bypass.
+Callbacks are expiring, one-use, state/PKCE/issuer/resource-bound. Refresh is
+serialized and never initiates interactive authorization or retries a tool on 401.
+Disconnect invalidates stored local credentials, including references of captured
+configurations, without claiming upstream token revocation.
+
+The administrative API retains the existing personal-use network contract. Secret
+redaction is not network authentication. The harness gateway remains authenticated,
+origin-rejecting and loopback-only; upstream credentials never go to a harness.
+
+### Selection and API contract
+
+```toml
+skills = ["example-skill"]
+
+[[mcp_connections]]
+connection_id = "<stable-engine-connection-id>"
+tools = ["search", "read_document"]
+```
+
+These fields belong in `.klm/agents/*.toml`; credentials do not. An empty tools list
+permits resources only when supported by the selected connection. It is not `*`.
+New tools require explicit selection. Resource URIs stay opaque to their server.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/library` | Bounded skill/connection inventory and adapter status |
+| `POST /api/library/mcp` / `PATCH /api/library/mcp/{id}` | Save name/configuration and explicit secret mutation |
+| `POST /api/library/mcp/{id}/test` | Temporary connection, bounded paginated discovery and cleanup |
+| `POST /api/library/mcp/{id}/oauth` | Start human OAuth; optional same-origin web `returnUrl` |
+| `GET /api/library/mcp/oauth/callback` | Dedicated one-use OAuth callback |
+| `POST /api/library/mcp/{id}/disconnect` | Clear local credentials/pending authorization |
+| `GET /api/library/{skills|mcp}/{id}/deletion` | Item/reference revision and usage preview |
+| `DELETE /api/library/{skills|mcp}/{id}` | Confirm with `{revision}`; durable deletion outbox |
+| `POST /api/library/recover` | Retry a pending deletion without overwriting external conflicts |
+| `GET/PATCH /api/sessions/{id}/capabilities` | Desired/applied/preparing snapshot; PATCH `{revision,selection}` |
+| `POST /api/sessions/{id}/questions/{questionId}/elicitation` | Human `{action,content?}` response to the exact pending MCP question |
+
+Selections contain `{skills: string[], mcpConnections: [{connectionId,tools}]}`.
+Revision conflicts return 409 instead of overwriting another client. Main, general,
+side and Focus composers target their actual conversation. Steering retains the
+current full-turn snapshot. New side/spawned sessions copy only applied external
+selection (or saved selection before any application). Runs freeze local config,
+known catalogs and skill copies at actual start; later activations do not inject
+newly discovered tools. A server's remote behavior itself cannot be frozen.
+
+MCPs start with bounded initialization and a total startup deadline. Offline entries
+remain selected with model/user diagnostics. Invalid skills, corrupted snapshots
+and failed isolation are hard errors. Tool dispatch revalidates the execution and
+allowlist even in YOLO. Tool calls are not retried after uncertain delivery. The
+engine-owned stdio process group is independent of harness Stop containment and
+is not a filesystem/network sandbox. Graph finality waits for started gateway
+workers; closing a local client is not proof of remote cancellation.
+
+Current limits: 64 saved connections, 32 selected connections per execution, 512
+tools / 32 discovery pages / 2 MiB per catalog, 128 KiB per schema, 4 MiB transport
+lines, 1 MiB / 100 content blocks per delivered tool response, 256 KiB call args,
+five-minute calls/elicitation, and 16 pending OAuth transactions with ten-minute
+expiry. Resource blocks retain explicit JSON representation. Images support the
+Pi block representation for PNG/JPEG/GIF/WebP; audio/unknown blocks return explicit
+errors. End-to-end model multimodal delivery is not validated. Form elicitation
+supports flat primitive fields and string-enum arrays; unsupported forms/modes
+return errors. HTTPS-URL elicitation never opens navigation or accepts itself.
+Prompts, Sampling and resource subscriptions are not advertised.
+
+Deletion previews all known project agents (including archived/removed projects),
+session desired selections and preserved captured runs. An inaccessible project or
+external file conflict blocks completion. A durable outbox revalidates authoring
+revisions and rolls forward before serving after restart; it is not an atomic
+multi-file transaction. The Library recovery action retries an unresolved outbox.
+
+Compilation/probe evidence and the human acceptance route are in
+`../SKILLS_MCP_LIBRARY_IMPLEMENTATION_PROGRESS.md`.
 
 ## Harness Adapters
 
@@ -1368,15 +1895,14 @@ execution, a full suite, or an adversarial review.
 - Codex resumes threads with `excludeTurns: true` so the response omits the old
   timeline already stored by KLM. Native conversation history and model context
   remain intact; this does not compact the conversation or replay failed inputs.
-- Output is consumed concurrently from stdout and stderr. JSON lines are capped
-  at 4 MiB and total stdout at 32 MiB per turn. Pi RPC has a bounded image-echo
-  allowance (25 MiB base64 plus 2 MiB per record, 192 MiB raw stdout per turn),
-  with image bytes removed before delivery to engine events. OpenCode SSE uses the
-  same image-record wire allowance while retaining the 2 MiB non-image content
-  bound. History projection discards inline image URLs without retaining their bytes.
-  Hitting a limit cancels the turn
-  with an explicit error. Stderr is capped at 16 KiB and is never persisted,
-  exposed, or logged. Exit failures report a bounded generic diagnostic instead.
+- Output is consumed concurrently from stdout and stderr. Pi/Codex JSON lines
+  are capped at 4 MiB; an oversized line cancels the process with an explicit
+  error. Their RPC readers use a bounded 64-frame channel with backpressure,
+  without a cumulative stdout quota per turn or process. Long executions and
+  repeated tool snapshots therefore do not exhaust a lifetime byte budget.
+  OpenCode retains its separate SSE-frame and HTTP-response bounds. Stderr is
+  capped at 16 KiB and is never persisted, exposed, or logged. Exit failures
+  report a bounded diagnostic instead. These are transport bounds, not history quotas.
 - Session history is durable and unbounded across turns. Full checkpoint/recovery
   cost still grows with retained history, but is outside the live application mutex.
   There is no history retention/deletion API yet. Back up the data directory with
@@ -1563,6 +2089,21 @@ does not claim a new build, test or restart. The principal coordinates the reque
 restart after the build, then the user reloads the tab and retests. See
 `GRAPH_ENGINE_PROGRESS_EXTERNAL_MCP_DOCS.md` at the repository root.
 
+KLM-managed OpenCode sessions retain their assigned execution directory, including
+graph nodes and native children. The owned plugin removes `opencode_session_move`
+from its tool catalog; the engine also rejects it before normal permission handling,
+even in YOLO mode. Creating a worktree does not reassign the session: use absolute
+paths and an explicit tool `workdir` when supported, under normal permissions.
+Preflight errors are distinct from actual permission denials; directory mismatch
+diagnostics identify the expected and received paths. This prevents new moves but
+does not automatically repair previously moved native sessions or replay failed runs.
+
+OpenCode step failures remain visible without ending the KLM turn: the native
+harness owns retries and continuations, including WebSocket recovery. Execution
+terminal events decide the outcome; final reconciliation does not let earlier
+failed steps poison a later successful response. KLM does not replay prompts or
+tools, switch transport, or treat WebSocket close code 1000 as proof of success.
+
 Internal instructions live in `engine/prompts/` and are reread for every send.
 Development uses that source directory. Packaged engines can include a sibling
 `prompts/` directory or set `KLM_PROMPTS_DIR`. Missing/empty prompts fail explicitly.
@@ -1595,16 +2136,26 @@ deleted. No harness work is started by the cleanup.
 
 ## Queued messages and steering (issue #4)
 
-`POST /api/sessions/{id}/messages` accepts optional `mode: "queue" | "steer"`.
-The default is `queue`: idle conversations start immediately; active conversations
-retain messages FIFO until their current turn finishes successfully. `steer`
-requests native delivery during the active turn. If that turn finishes before
-submission, the input is used for a new turn in the same native session.
+`POST /api/sessions/{id}/messages` accepts optional
+`mode: "steer" | "interrupt" | "queue"`. The default and normal composer Enter
+are `steer`: deliver at the next native model boundary, not after all work ends.
+All pending steering inputs are claimed as one submission with separate timeline
+entries. Pi and OpenCode claim at their native boundary hooks. If the
+turn finishes before dispatch, pending steering takes priority over follow-ups
+and starts together in the same native conversation. Explicit `queue` mode and
+agent-authored `session_send` keep end-of-task FIFO semantics.
+
+`interrupt` is the composer's **Send now**: durably accept the selected input,
+cancel the active chat and its owned process container, then start only that input
+after confirmed shutdown. Other pending items are paused/unconfirmed. Explicit
+Stop cancels a pending replacement; restart never automatically replays it.
+Already completed effects are not undone. Independent graphs are not stopped.
 
 Session summaries and SSE include `queue`, with item ID, text, mode, status, and
 recoverable error. `POST /api/sessions/{id}/queue/{messageID}/send` sends a pending
-item now; `DELETE /api/sessions/{id}/queue/{messageID}` removes an unsent item.
-Already-dispatching items cannot be removed. Queue actions retain the normal
+item with the same interrupt-and-replace semantics; `DELETE
+/api/sessions/{id}/queue/{messageID}` removes an unsent item. Dispatching,
+native-pending, and interrupting items cannot be removed. Queue actions retain the normal
 chat-session restrictions; graph-node and observed subagent sessions are excluded.
 
 Queue entries and prepared attachment payloads are saved before acknowledgement,
@@ -1613,17 +2164,27 @@ HTTP/SSE projections. Selected passages and mention metadata enter user history
 when the message is dispatched/accepted. Queue delivery retains the existing
 one-turn reservation and uses the native session, model settings and grant flow.
 
-Pi uses RPC `steer`; Codex uses `turn/steer` with `expectedTurnId`; OpenCode posts
-`prompt_async` and waits for the matching persisted user-message notification.
-Neither an early OpenCode HTTP response nor a lost native acknowledgement proves
-acceptance. Failed/stopped turns pause unsent messages. Restart pauses the queue;
-inputs with uncertain delivery are not automatically replayed. Explicitly sending
-an uncertain item creates a fresh correlation ID; users should check the native
-conversation before retrying. Accepted steering belongs to the harness and cannot
-be removed using the KLM queue.
+Pi's owned extension pulls one combined input at `before_agent_start` / `turn_end`,
+without changing shared Pi settings. Payloads remain durable until the correlated
+native user/custom-message event; a runtime with unconfirmed steering is discarded.
+Codex uses `turn/steer` with `expectedTurnId` and `clientUserMessageId`; its 15-second
+ACK only marks input accepted. A matching native `userMessage.clientId` confirms
+incorporation. OpenCode's message-transform hook pulls the batch, persists it with
+`noReply`, appends the complete result to the current model snapshot, then confirms
+consumption over the private bridge. Header-only SSE events never erase payloads.
+OpenCode still owns loop completion; its parent-message bookkeeping can cause an
+additional model iteration after a boundary-injected prompt. Validate response
+ordering with the installed harness before relying on this behavior.
+Interrupted native-pending items become `uncertain`. Explicitly sending an
+uncertain or native-pending item creates a fresh correlation ID; retry can duplicate
+an input already consumed. No uncertain delivery is automatically replayed.
+Composer and queue-row Send now share browser submission invalidation across
+main, side and floating chats, including unsent HTTP tails.
 
-Manual validation: queue several messages during a tool call; check FIFO and
-remove one; send a queued item now and a new steering message; repeat in main and
-side chats for Pi, Codex and OpenCode. Check attachments, questions/permissions,
-Stop, end-of-turn races, reload, restart, and delivery errors. No live harness
-validation or full test suite was run for this implementation.
+Manual validation: during a long review tool, press Enter three times; verify all
+pending instructions reach the next model interaction. Click Send now and verify
+the current tool/subagents stop and the selected input starts after shutdown.
+Repeat in main/side/floating chats with all three harnesses. Check attachments,
+pending questions/permissions, explicit Stop during restart, end-of-turn races,
+reload, engine restart, and delivery errors. Live harness behavior still requires
+human validation; no full suite was run.

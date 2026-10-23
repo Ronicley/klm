@@ -47,6 +47,19 @@ export function ThemePicker() {
   }
 
   useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => {
+    // The project rail and minimized Focus bar share the document's theme.
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => {
+      const nextMode: Mode = root.dataset.theme === 'dark' ? 'dark' : 'light';
+      const nextPreferences = readPreferences();
+      nextPreferences[nextMode] = themes[nextMode].find(theme => theme.id === root.dataset.themeVariant)?.id ?? nextPreferences[nextMode];
+      setMode(nextMode);
+      setPreferences(current => current.light === nextPreferences.light && current.dark === nextPreferences.dark ? current : nextPreferences);
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ['data-theme', 'data-theme-variant'] });
+    return () => observer.disconnect();
+  }, []);
   useLayoutEffect(() => {
     const root = document.documentElement;
     root.dataset.theme = mode;

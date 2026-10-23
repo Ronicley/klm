@@ -104,6 +104,9 @@ func (p *adapter) runPi(b binary, cwd string, payload submission) (err error) {
 		proc, reused = p.runtime.getInteractive("pi", p.model, p.effort, toolKey)
 	}
 	if !reused {
+		if err := validatePiLibraryBinary(b); err != nil {
+			return err
+		}
 		// The extension directory must live as long as a retained Pi process.
 		extensionDir, makeErr := os.MkdirTemp(dataDir, ".pi-permissions-")
 		if makeErr != nil {
@@ -111,13 +114,24 @@ func (p *adapter) runPi(b binary, cwd string, payload submission) (err error) {
 		}
 		cleanup := func() { _ = os.RemoveAll(extensionDir) }
 		extensionPath := filepath.Join(extensionDir, "pi-permissions.ts")
-		bridgeConfig, _ := json.Marshal(map[string]any{"url": p.bridge.url, "token": p.bridge.token, "graphNode": p.graphNode(), "tools": p.bridgeTools(), "toolTimeoutMs": linkedToolClientTimeout.Milliseconds()})
-		extension := strings.Replace(string(piPermissionsExtension), "/*KLM_LINKED_CONFIG*/{}", string(bridgeConfig), 1)
+		bridgeConfig, _ := json.Marshal(map[string]any{"url": p.bridge.url, "token": p.bridge.token, "libraryUrl": p.bridge.libraryURL, "libraryToken": p.bridge.libraryToken, "graphNode": p.graphNode(), "tools": p.bridgeTools(), "toolTimeoutMs": linkedToolClientTimeout.Milliseconds()})
+		configPath := filepath.Join(extensionDir, "catalog.json")
+		if writeErr := os.WriteFile(configPath, bridgeConfig, 0600); writeErr != nil {
+			cleanup()
+			return errors.New("Cannot write the Pi capability catalog.")
+		}
+		encodedPath, _ := json.Marshal(configPath)
+		extension := strings.Replace(string(piPermissionsExtension), "/*KLM_LINKED_CONFIG*/{}", "JSON.parse(readFileSync("+string(encodedPath)+", 'utf8'))", 1)
 		if writeErr := os.WriteFile(extensionPath, []byte(extension), 0600); writeErr != nil {
 			cleanup()
 			return errors.New("Cannot write the Pi permission extension.")
 		}
-		args := []string{"--mode", "rpc", "--no-extensions", "--extension", extensionPath, "--session", native.Path}
+		args := []string{"--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--extension", extensionPath, "--session", native.Path}
+		if p.capabilities != nil {
+			for _, skill := range p.capabilities.Skills {
+				args = append(args, "--skill", p.app.skillSnapshotPath(skill))
+			}
+		}
 		if p.model != "" {
 			args = append(args, "--model", p.model)
 		}
@@ -160,6 +174,9 @@ func (p *adapter) runPi(b binary, cwd string, payload submission) (err error) {
 			if ctx.Err() != nil && !p.completed {
 				reusable = settlePiCancellation(proc)
 			}
+			// Never retain a native in-memory queue whose consumption is unknown.
+			// Otherwise a later ordinary prompt could silently replay paused input.
+			reusable = reusable && !p.hasUnconfirmedSteering()
 			if !reusable {
 				p.runtime.discardInteractive(proc)
 			}
@@ -182,6 +199,9 @@ func (p *adapter) runPi(b binary, cwd string, payload submission) (err error) {
 	if err := proc.Send(map[string]any{"id": "klm-state", "type": "get_state"}); err != nil {
 		return err
 	}
+	if err := proc.Send(map[string]any{"id": "klm-capabilities", "type": "get_commands"}); err != nil {
+		return err
+	}
 	statsSequence, latestStatsID := 0, ""
 	statsPrefix := "klm-stats-" + newID() + "-"
 	requestStats := func() error {
@@ -194,15 +214,13 @@ func (p *adapter) runPi(b binary, cwd string, payload submission) (err error) {
 	statsTimer.Stop()
 	defer statsTimer.Stop()
 	var statsDeadline <-chan time.Time
-	ready, stateReceived, prompted := reused, false, false
-	steering := p.steeringChannel()
-	steeringRequests := map[string]bool{}
+	ready, stateReceived, prompted, capabilitiesReceived := reused, false, false, false
 reading:
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !prompted && ready && stateReceived {
+		if !prompted && ready && stateReceived && capabilitiesReceived {
 			if err := p.bridge.waitReady(ctx); err != nil {
 				return err
 			}
@@ -211,6 +229,9 @@ reading:
 			case <-startup:
 				return errors.New("Pi permission bridge startup timed out.")
 			default:
+			}
+			if err := p.markCapabilitiesApplied(); err != nil {
+				return err
 			}
 			message, err := payload.piMessage("klm-prompt", "prompt")
 			if err != nil {
@@ -223,31 +244,11 @@ reading:
 			timer.Stop()
 			startup = nil
 		}
-		var inputReady <-chan struct{}
-		if prompted && !p.completed {
-			inputReady = steering
-		}
 		var raw map[string]any
 		var ok bool
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-inputReady:
-			q, payload, err := p.takeSteering()
-			if err != nil {
-				return err
-			}
-			if q != nil {
-				steeringRequests["klm-steer-"+q.ID] = true
-				message, err := payload.piMessage("klm-steer-"+q.ID, "steer")
-				if err != nil {
-					return err
-				}
-				if err := proc.Send(message); err != nil {
-					return err
-				}
-			}
-			continue
 		case <-statsDeadline:
 			return nil
 		case <-startup:
@@ -268,23 +269,6 @@ reading:
 		case "queue_update":
 			continue
 		case "response":
-			if id := str(raw, "id"); strings.HasPrefix(id, "klm-steer-") {
-				if !steeringRequests[id] {
-					continue
-				}
-				delete(steeringRequests, id)
-				failure := ""
-				if !truth(raw, "success") {
-					failure = humanError(raw["error"])
-					if failure == "" {
-						failure = "Pi did not accept this message. Send it again when ready."
-					}
-				}
-				if err := p.finishSteering(strings.TrimPrefix(id, "klm-steer-"), failure); err != nil {
-					return err
-				}
-				continue
-			}
 			if strings.HasPrefix(str(raw, "id"), "klm-stats-") {
 				if str(raw, "id") != latestStatsID {
 					continue
@@ -308,6 +292,37 @@ reading:
 				return errors.New("Pi RPC command failed.")
 			}
 			switch str(raw, "id") {
+			case "klm-capabilities":
+				if str(raw, "command") != "get_commands" || capabilitiesReceived {
+					return errors.New("Unexpected Pi capability inventory.")
+				}
+				commands, ok := object(raw["data"])["commands"].([]any)
+				if !ok {
+					return errors.New("Pi did not return its capability inventory.")
+				}
+				wanted := map[string]string{}
+				if p.capabilities != nil {
+					for _, skill := range p.capabilities.Skills {
+						wanted["skill:"+skill.Name] = filepath.Join(p.app.skillSnapshotPath(skill), "SKILL.md")
+					}
+				}
+				for _, value := range commands {
+					command := object(value)
+					info := object(command["sourceInfo"])
+					// Pi 0.85.1 always installs this built-in provider command; it
+					// adds no tools/skills. Do not mistake it for a user extension.
+					if str(command, "name") == "llama" && str(command, "source") == "extension" && str(info, "path") == "<inline:llama.cpp>" && str(info, "source") == "inline" {
+						continue
+					}
+					if str(command, "source") != "skill" || wanted[str(command, "name")] == "" || !piSamePath(str(info, "path"), wanted[str(command, "name")]) {
+						return errors.New("Pi loaded an unselected command or skill; refusing managed execution.")
+					}
+					delete(wanted, str(command, "name"))
+				}
+				if len(wanted) != 0 {
+					return errors.New("Pi failed to load every captured skill.")
+				}
+				capabilitiesReceived = true
 			case "klm-state":
 				data := object(raw["data"])
 				if stateReceived || str(raw, "command") != "get_state" || str(data, "sessionId") == "" ||
@@ -484,6 +499,12 @@ reading:
 			if !prompted {
 				continue
 			}
+			if message := object(raw["message"]); str(raw, "type") == "message_end" && (str(message, "role") == "user" || str(message, "customType") == "klm-steering") {
+				if err := p.finishPiSteering(contentText(message["content"])); err != nil {
+					return err
+				}
+				continue
+			}
 			if str(raw, "type") == "auto_compaction_start" {
 				if err := p.clearContextUsage(); err != nil {
 					return err
@@ -549,6 +570,25 @@ reading:
 		return errors.New("Pi exited before the permission bridge and session state were ready.")
 	}
 	return errors.New("Pi RPC stream ended before agent_settled.")
+}
+
+func validatePiLibraryBinary(b binary) error {
+	if runtime.GOOS != "windows" {
+		return errors.New("Managed Pi library execution has only been validated on Windows.")
+	}
+	// This is a compatibility gate for the installation actually probed, not a
+	// claim about future versions or graph-adapter capabilities.
+	if len(b.args) != 1 || filepath.Base(b.args[0]) != "cli.js" {
+		return errors.New("Managed Pi library execution requires a validated Pi installation (0.85.1 npm CLI).")
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(b.args[0])), "package.json"))
+	var metadata struct {
+		Version string `json:"version"`
+	}
+	if err != nil || json.Unmarshal(data, &metadata) != nil || metadata.Version != "0.85.1" {
+		return errors.New("Pi library exclusivity is validated for version 0.85.1 only; this installation is not supported by the managed adapter.")
+	}
+	return nil
 }
 
 func settlePiCancellation(proc *interactiveProcess) bool {

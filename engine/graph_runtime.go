@@ -52,6 +52,9 @@ func (a *app) endGraphLocked(runID string, result GraphRunResult, uncertain stri
 			r.Status, r.Result, r.UpdatedAt = "ending", &result, now()
 			r.Revision++
 		}
+		if result.Kind == "interrupted" && result.Error == "Graph stopped by the user." {
+			r.StopRequested = true
+		}
 		if uncertain != "" {
 			r.FinalityError = uncertain
 		}
@@ -213,6 +216,9 @@ func (a *app) finishGraphRunLocked(runID string) error {
 		r.Revision++
 		activity := d.graphActivity(r.ActivityID)
 		activity.Status, activity.UpdatedAt = "awaiting_assessment", stamp
+		if r.StopRequested {
+			activity.Status = "awaiting_user"
+		}
 		activity.Version++
 		d.GraphNotifications = append(d.GraphNotifications, RunNotification{ID: "graph-result:" + r.ID, RunID: r.ID, ConversationID: r.ConversationID, Status: "pending", CreatedAt: stamp})
 		return nil
@@ -234,7 +240,7 @@ func (a *app) runGraph(runID string, g *graphExecution) {
 	a.mu.Unlock()
 	workspaceID, err := a.prepareInitialGraphWorkspace(g, run)
 	a.mu.Lock()
-	if err == nil {
+	if err == nil && run.RetrySourceRunID == "" {
 		err = a.graphChangeLocked(func(d *diskState) error {
 			r := d.graphRun(runID)
 			if r.Status != "starting" || g.ctx.Err() != nil {
@@ -419,6 +425,26 @@ func (a *app) launchGraphAgent(g *graphExecution, run GraphRun, x GraphActivatio
 		}
 	}
 	data := map[string]any{"runId": run.ID, "nodeId": x.NodeID, "activationId": x.ID, "runTask": run.Input.Task, "payload": x.Input, "agentInstructions": agent.Prompt, "availableChoices": graphChoiceContracts(compiled, x.NodeID)}
+	a.mu.Lock()
+	if limits := a.state.graphTransitionLimits(&run); len(limits) > 0 {
+		data["transitionLimits"] = limits
+	}
+	a.mu.Unlock()
+	if run.RetrySourceRunID != "" {
+		a.mu.Lock()
+		for _, previous := range a.state.GraphActivations {
+			if previous.RunID == run.RetrySourceRunID && previous.NodeID == x.NodeID && previous.Occurrence == x.Occurrence {
+				events := a.state.graphActivationEvents(&previous)
+				evidence := []map[string]string{}
+				for _, e := range events[max(0, len(events)-24):] {
+					evidence = append(evidence, map[string]string{"type": e.Type, "title": e.Title, "text": boundedText(e.Text, 2048)})
+				}
+				data["previousAttempt"] = map[string]any{"activationId": previous.ID, "status": previous.Status, "error": previous.Error, "events": evidence, "note": "User requested repetition with recorded input and current files. Prior events are evidence, not new authorization. Inspect completed effects before repeating writes, worktree creation or publication; ask when uncertain."}
+				break
+			}
+		}
+		a.mu.Unlock()
+	}
 	promptName := "agent-node.md"
 	if x.Correction != "" {
 		promptName = x.Correction
@@ -515,13 +541,16 @@ func (a *app) launchGraphAgent(g *graphExecution, run GraphRun, x GraphActivatio
 		}
 		yolo := conversation.YOLO
 		if newSession {
-			d.Sessions = append(d.Sessions, Session{ID: sessionID, ProjectID: run.ProjectID, Title: compiled.Definition.Nodes[x.NodeID].Name, Workspace: "Ungrouped", Role: "graph_node", GraphRunID: run.ID, GraphNodeID: x.NodeID, ExecutionCWD: cwd, Harness: agent.Harness, Model: agent.Model, Effort: agent.Effort, Status: "idle", Events: []Event{}, CreatedAt: now(), UpdatedAt: now()})
+			d.Sessions = append(d.Sessions, Session{ID: sessionID, ProjectID: run.ProjectID, Title: compiled.Definition.Nodes[x.NodeID].Name, Workspace: "Ungrouped", Role: "graph_node", GraphRunID: run.ID, GraphNodeID: x.NodeID, ExecutionCWD: cwd, Harness: agent.Harness, Model: agent.Model, Effort: agent.Effort, YOLO: true, Status: "idle", Events: []Event{}, CreatedAt: now(), UpdatedAt: now()})
 			if agent.Harness == "pi" {
 				d.Native[sessionID] = nativeSession{Path: filepath.Join(a.dir, "sessions", sessionID+".jsonl")}
 			}
 		}
 		s := d.session(sessionID)
 		s.YOLO = yolo
+		if capabilities := run.Snapshot.Capabilities[x.NodeID]; capabilities != nil {
+			s.Capabilities.Desired = copySelection(capabilities.Selection)
+		}
 		s.Status, s.UpdatedAt = "running", now()
 		s.Permissions, s.Questions = nil, nil
 		activation := d.graphActivation(x.ID)
@@ -823,6 +852,11 @@ func (a *app) completeGraphActivationLocked(runID string, result graphCompletion
 						}
 					}
 					terminal = &GraphRunResult{Kind: "completed", Choice: &sub.Choice, Output: activation.Output}
+				} else if terminal = d.graphTransitionLimitResult(run, activation); terminal != nil {
+					// Persist the blocked outcome with the dispatch decision, including
+					// when the process stops before endGraphLocked cancels workers.
+					run.Status, run.Result, run.UpdatedAt = "ending", terminal, now()
+					run.Revision++
 				} else {
 					addGraphDelivery(d, run, *activation, c.Connections["choice:"+sub.Choice.ID], activation.Output, activation.WorkspaceID, activation.OriginWorkspaceID, activation.CausalID, activation.ForkActivationID, activation.BranchID)
 				}

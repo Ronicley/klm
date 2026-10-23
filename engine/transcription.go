@@ -333,7 +333,12 @@ func (a *app) transcribe(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err == nil && len(terms) > 0 {
-			err = writer.WriteField("prompt", "Terms and proper nouns that may appear: "+strings.Join(terms, ", ")+".")
+			var prompt string
+			prompt, err = loadInternalPrompt("transcription.md")
+			if err == nil {
+				prompt = strings.ReplaceAll(strings.TrimSpace(prompt), "{{terms}}", strings.Join(terms, ", "))
+				err = writer.WriteField("prompt", prompt)
+			}
 		}
 		if closeErr := writer.Close(); err == nil {
 			err = closeErr

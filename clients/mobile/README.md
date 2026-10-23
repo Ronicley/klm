@@ -64,24 +64,114 @@ legacy `data-klm-host-navigation` escape marker for already-installed mobile app
 the marker does not assign a home action. Only the footer button calls the bridge.
 Android's system back also allows leaving the route.
 
+Graph import/export uses a separate `KlmFiles` channel and `file_picker` native
+dialogs: JSON files can be selected, and JSON/SVG exports can be saved. Requests
+are accepted only while the selected host's exact origin is loaded; a navigation
+while a picker is open prevents delivering file contents to the next page. The
+channel accepts picker actions, not caller-supplied filesystem paths. This requires
+the corresponding graph-transfer frontend; `KlmMobile` still handles only `home`.
+
 Main-document loading failures/timeouts offer native Retry and a KLM home button.
 TLS certificate errors are not bypassed. Android permits cleartext HTTP for local
 hosts; iOS declares local-network access and an ATS exception for web content.
 Desktop/browser/mobile drafts and web storage are independent.
+
+## Local URL and Wi-Fi routing
+
+The existing Web client URL remains the public/default address. **Add local URL**
+opens a Wi-Fi picker; select one or more SSIDs, confirm, then enter the local URL.
+Editing preserves both addresses and selected networks; **Remove** removes only
+the optional local configuration. Existing saved entries continue to load without
+migration. Both addresses use the existing IP/domain/port normalization unchanged.
+
+Opening an entry reads the currently connected SSID without scanning or asking
+for new permissions. A matching saved SSID selects the local URL; all other or
+unknown networks use the public URL. Initial local main-frame network/HTTP/TLS
+failures and an 8-second initial timeout recreate the WebView with the public URL.
+The public attempt keeps the normal 25-second timeout. If it succeeds, a single
+**Connected using public URL** modal explains the fallback. If both fail, the
+existing recovery screen shows the failed public address and Retry. Later page
+navigation failures do not silently move an already-connected chat to another URL.
+Each attempt has an isolated controller and audio capability scoped to its selected
+origin; late callbacks from a discarded local attempt cannot complete the public one.
+
+Network discovery requests foreground location permission, required by Android to
+read SSIDs/scan Wi-Fi. Android also requires Wi-Fi and location services enabled;
+scan throttling uses the available cached results. iOS exposes only the connected
+network, not a nearby-network scan; the picker supports entering additional SSIDs
+by name. iOS requires precise location permission and the Access Wi-Fi Information
+entitlement in a compatible signing profile. The entitlement is included for all
+Runner configurations; build from the Flutter project directory so the permission
+plugin discovers its Info.plist. Denied/unavailable SSID access selects the public
+URL rather than guessing that a local network matches. Wi-Fi names are case-sensitive.
+
+Manual phone validation:
+
+1. Edit an existing entry, keep its public URL, add local access, select the current
+   Wi-Fi and another network if needed, then save a reachable local URL.
+2. Reopen it on that Wi-Fi and check that local assets/requests load; reopen off
+   the saved Wi-Fis and check the public URL is used.
+3. Keep the selected Wi-Fi but make the local frontend unreachable. Reopen and
+   confirm the public page loads and the fallback modal appears once, after success.
+4. Make both URLs unreachable and confirm recovery shows the public URL. Restore
+   access and Retry. Check native audio and Back to hosts on both successful routes.
+5. Restart the app, edit/remove local settings, and reopen a legacy URL-only entry.
+
+## Audio recording
+
+The main composer uses Flutter's native microphone recorder in this WebView,
+including when the saved frontend uses an HTTP LAN address. Android requests
+`RECORD_AUDIO` at runtime; iOS declares microphone usage. Updated Flutter and web
+clients are both required. Install the new APK as an update to keep saved hosts.
+
+Tap **Record audio**, allow microphone access, speak, then **Stop recording**.
+The AAC/M4A recording passes back to the frontend in bounded chunks and uses its
+existing engine transcription upload and global settings. The API key stays on
+the engine. The result appends to the current draft, preserving text and selected
+references, without sending. **Cancel audio** discards capture or cancels an
+in-flight transcription. Permission denial and interruptions show a recoverable
+error. Recordings are limited to ten minutes and the existing 25 MiB upload cap.
+
+`KlmAudio` is separate from the existing `KlmMobile` home channel. Only the exact
+saved frontend origin (scheme, host and port) receives a per-document capability
+inside a main-frame closure; untrusted frames and other origins cannot invoke the
+recorder. No native URL fetching, API keys or arbitrary file access is exposed.
+Navigation, leaving the host, backgrounding and disposal cancel native capture;
+temporary recordings are deleted on stop/cancel/error. Desktop and ordinary
+browsers keep their existing `getUserMedia` / `MediaRecorder` path.
+
+Manual acceptance on a phone:
+
+1. Install `build/app/outputs/flutter-apk/app-debug.apk` and open the dev host
+   `http://192.168.10.250:5173` (dev engine API: 17331).
+2. Configure transcription in the existing Settings if needed. Start with draft
+   text and a file/folder reference, record a short phrase, stop and confirm only
+   the transcript is appended. Nothing should send automatically.
+3. Try **Cancel audio** during capture and transcription; deny microphone access
+   and then allow it through system settings. Check the draft survives each case.
+4. Background the app or leave the chat while recording; confirm the microphone
+   indicator stops. Return and record again. Check **Back to sessions**, the
+   options sheet / YOLO state, empty-draft Send and **Back to hosts** still work.
+
+Implementation checks (2026-10-18): `npx tsc -b --pretty false`;
+`dart analyze lib/features/web/host_audio_bridge.dart lib/features/web/host_webview_page.dart`;
+`flutter build apk --debug --build-number=3 --verbose` succeeded. The APK is
+version 0.5.0, versionCode 3. Native microphone/transcription behavior still
+requires the phone acceptance steps above; iOS was not built on Windows.
 
 ## Design system
 
 `lib/design_system` recreates the needed web primitives and tokens:
 
 - Inter (bundled under `assets/fonts`, SIL OFL) and Lucide-outline SVG icons.
-- KLM ring mark and Harness badge, page header, 44px touch icon buttons.
+- Transparent KLM sphere and Harness badge, page header, 44px touch icon buttons.
 - Primary button, outlined input fields, neutral list cards and error treatment.
 - Matching light/dark colors, 4/8/12/16/24/32 spacing, 8/12px radii.
 
 Native appearance follows the device theme. Behavior stays in `features/hosts`
 and `features/web`; generic visual components contain no host/network operations.
-Launcher icons are generated from `assets/brand/icon.png` with
-`dart run flutter_launcher_icons`.
+Native screen logos use `assets/brand/logo.png` (transparent). Launcher icons are
+generated from `assets/brand/icon.png` (solid) with `dart run flutter_launcher_icons`.
 
 ## Verification — 2026-09-14
 

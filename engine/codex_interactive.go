@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -33,6 +34,24 @@ type codexSubagent struct {
 }
 
 func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error) {
+	started := time.Now()
+	phase := "process startup"
+	// Registered before cleanup so cancellation diagnostics also cover teardown.
+	defer func() {
+		if err == nil {
+			return
+		}
+		stage := map[string]string{
+			"klm-init": "initialization", "klm-thread": "thread start/resume",
+			"klm-mcp": "linked-agent tool discovery", "klm-turn": "turn submission",
+			"": "turn execution",
+		}[phase]
+		if stage == "" {
+			stage = phase
+		}
+		err = fmt.Errorf("Codex failed during %s (elapsed: %s; turn cancelled: %t): %w",
+			stage, time.Since(started).Round(time.Millisecond), p.turn.ctx.Err() != nil, err)
+	}()
 	p.app.mu.Lock()
 	native := p.app.state.Native[p.id]
 	sessionModel := p.model
@@ -40,11 +59,11 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 
 	process, reused := (*interactiveProcess)(nil), false
 	toolKey := p.runtimeToolKey()
-	if p.runtime != nil {
+	if p.runtime != nil && p.capabilities == nil {
 		process, reused = p.runtime.getInteractive("codex", "", "", toolKey)
 	}
 	if !reused {
-		process, err = startInteractive(p.turn, b, []string{
+		args := []string{
 			"-c", "features.default_mode_request_user_input=true",
 			"-c", "tools.experimental_request_user_input.enabled=true",
 			"-c", "mcp_servers.klm_linked.url=" + strconv.Quote(p.bridge.url),
@@ -52,8 +71,16 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			"-c", "mcp_servers.klm_linked.enabled=true",
 			"-c", "mcp_servers.klm_linked.startup_timeout_sec=15",
 			"-c", "mcp_servers.klm_linked.tool_timeout_sec=" + strconv.FormatInt(int64(linkedToolClientTimeout/time.Second), 10),
-			"app-server", "--listen", "stdio://",
-		}, cwd, p.runtime)
+		}
+		if p.capabilities != nil {
+			if err := validateCodexLibraryBinary(b); err != nil {
+				return err
+			}
+			args = append(args, codexLibraryFlags()...)
+			payload.Text = p.codexSelectedSkillContext() + "\n\n" + payload.Text
+		}
+		args = append(args, "app-server", "--listen", "stdio://")
+		process, err = startInteractive(p.turn, b, args, cwd, p.runtime)
 		if err != nil {
 			return err
 		}
@@ -67,7 +94,11 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 	p.processesDrained = false
 	cancelSettled := false
 	defer func() {
-		if p.runtime == nil {
+		if p.runtime != nil && p.capabilities != nil {
+			shutdownErr := p.runtime.shutdown()
+			p.processesDrained = shutdownErr == nil && !p.processDrainFailed
+			err = errors.Join(err, shutdownErr)
+		} else if p.runtime == nil {
 			_ = process.Close()
 			for frame := range process.Frames {
 				p.observeCodexMCP(str(frame, "method"), object(frame["params"]))
@@ -149,11 +180,12 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			return err
 		}
 	}
-	phase := "klm-init"
+	phase = "klm-init"
 	if reused {
 		phase = "klm-thread"
 	}
 	mcpBridgeFound := false
+	libraryBridgeFound := false
 	startup := time.NewTimer(30 * time.Second)
 	defer startup.Stop()
 	deadline := startup.C
@@ -163,12 +195,33 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 	choiceInterrupted := false
 	steering := p.steeringChannel()
 	steeringRequests := map[string]bool{}
+	steeringTimer := time.NewTimer(15 * time.Second)
+	steeringTimer.Stop()
+	defer steeringTimer.Stop()
+	var steeringDeadline <-chan time.Time
+	sendSteering := func() error {
+		q, payload, err := p.takeSteering()
+		if err != nil || q == nil {
+			return err
+		}
+		steeringRequests["klm-steer-"+q.ID] = true
+		if err := c.send(map[string]any{"id": "klm-steer-" + q.ID, "method": "turn/steer", "params": map[string]any{"threadId": c.threadID, "expectedTurnId": c.turnID, "clientUserMessageId": q.ID, "input": payload.codexInput()}}); err != nil {
+			return err
+		}
+		steeringTimer.Reset(15 * time.Second)
+		steeringDeadline = steeringTimer.C
+		return nil
+	}
 	approvalPolicy, sandbox, sandboxType := "on-request", "read-only", "readOnly"
+	var libraryConfig map[string]any
 	if p.captureNativeYOLO() {
 		approvalPolicy, sandbox, sandboxType = "never", "danger-full-access", "dangerFullAccess"
 	}
 	sendThread := func() error {
 		params := map[string]any{"cwd": cwd, "approvalPolicy": approvalPolicy, "approvalsReviewer": "user", "sandbox": sandbox}
+		if p.capabilities != nil {
+			params["config"] = libraryConfig
+		}
 		method := "thread/start"
 		if native.ID != "" {
 			method, params["threadId"] = "thread/resume", native.ID
@@ -187,11 +240,16 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 		}
 	}
 	for {
+		select {
+		case <-steeringDeadline:
+			return errors.New("Codex did not acknowledge the steering input before the delivery deadline.")
+		default:
+		}
 		if !choiceInterrupted && p.choiceToolSettled && !p.graphMCPPending() {
 			choiceStop = p.graphStop()
 		}
 		var inputReady <-chan struct{}
-		if phase == "" && c.turnID != "" && !p.completed {
+		if phase == "" && c.turnID != "" && !p.completed && len(steeringRequests) == 0 {
 			inputReady = steering
 		}
 		var frame map[string]any
@@ -201,15 +259,8 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 		if inputReady != nil {
 			select {
 			case <-inputReady:
-				q, payload, err := p.takeSteering()
-				if err != nil {
+				if err := sendSteering(); err != nil {
 					return err
-				}
-				if q != nil {
-					steeringRequests["klm-steer-"+q.ID] = true
-					if err := c.send(map[string]any{"id": "klm-steer-" + q.ID, "method": "turn/steer", "params": map[string]any{"threadId": c.threadID, "expectedTurnId": c.turnID, "input": payload.codexInput()}}); err != nil {
-						return err
-					}
 				}
 				continue
 			default:
@@ -228,17 +279,12 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			}
 			select {
 			case <-inputReady:
-				q, payload, err := p.takeSteering()
-				if err != nil {
+				if err := sendSteering(); err != nil {
 					return err
 				}
-				if q != nil {
-					steeringRequests["klm-steer-"+q.ID] = true
-					if err := c.send(map[string]any{"id": "klm-steer-" + q.ID, "method": "turn/steer", "params": map[string]any{"threadId": c.threadID, "expectedTurnId": c.turnID, "input": payload.codexInput()}}); err != nil {
-						return err
-					}
-				}
 				continue
+			case <-steeringDeadline:
+				return errors.New("Codex did not acknowledge the steering input before the delivery deadline.")
 			case <-choiceStop:
 				choiceStop = nil
 				if p.graphMCPPending() {
@@ -301,6 +347,8 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 				continue
 			}
 			delete(steeringRequests, id)
+			steeringTimer.Stop()
+			steeringDeadline = nil
 			failure := ""
 			if frame["error"] != nil {
 				failure = humanError(frame["error"])
@@ -310,7 +358,12 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			} else if str(object(frame["result"]), "turnId") != c.turnID {
 				return errors.New("Codex steering acknowledgement identified a different turn.")
 			}
-			if err := p.finishSteering(strings.TrimPrefix(id, "klm-steer-"), failure); err != nil {
+			queueID := strings.TrimPrefix(id, "klm-steer-")
+			if failure != "" {
+				if err := p.finishSteering(queueID, failure); err != nil {
+					return err
+				}
+			} else if err := p.acknowledgeSteering(queueID); err != nil {
 				return err
 			}
 			continue
@@ -332,6 +385,22 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 		switch phase {
 		case "klm-init":
 			if err := c.send(map[string]any{"method": "initialized"}); err != nil {
+				return err
+			}
+			if p.capabilities != nil {
+				phase = "klm-library-config"
+				if err := c.send(map[string]any{"id": phase, "method": "config/read", "params": map[string]any{"cwd": cwd, "includeLayers": false}}); err != nil {
+					return err
+				}
+				continue
+			}
+			phase = "klm-thread"
+			if err := sendThread(); err != nil {
+				return err
+			}
+		case "klm-library-config":
+			libraryConfig, err = p.codexLibraryConfig(object(result["config"]))
+			if err != nil {
 				return err
 			}
 			phase = "klm-thread"
@@ -375,23 +444,34 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			servers, _ := result["data"].([]any)
 			for _, value := range servers {
 				server := object(value)
-				if str(server, "name") != "klm_linked" {
+				if p.capabilities != nil {
+					if err := p.verifyCodexLibraryServer(server); err != nil {
+						return err
+					}
+				}
+				library := str(server, "name") == "klm_library"
+				if str(server, "name") != "klm_linked" && !library {
 					continue
 				}
 				tools := object(server["tools"])
-				found = true
-				for _, tool := range p.bridgeTools() {
+				serverFound := true
+				for _, tool := range p.scopedBridgeTools(library) {
 					exists := false
 					for key, value := range tools {
 						if key == str(tool, "name") || str(object(value), "name") == str(tool, "name") {
 							exists = true
 						}
 					}
-					found = found && exists
+					serverFound = serverFound && exists
+				}
+				if library {
+					libraryBridgeFound = libraryBridgeFound || serverFound
+				} else {
+					found = found || serverFound
 				}
 			}
 			mcpBridgeFound = mcpBridgeFound || found
-			if (p.graphNode() || !mcpBridgeFound) && str(result, "nextCursor") != "" {
+			if (p.graphNode() || p.capabilities != nil || !mcpBridgeFound) && str(result, "nextCursor") != "" {
 				if err := c.send(map[string]any{"id": phase, "method": "mcpServerStatus/list", "params": map[string]any{"threadId": c.threadID, "limit": 100, "cursor": result["nextCursor"]}}); err != nil {
 					return err
 				}
@@ -400,10 +480,16 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			if !mcpBridgeFound {
 				return errors.New("Codex did not expose the linked-agent tools.")
 			}
+			if p.capabilities != nil && !libraryBridgeFound {
+				return errors.New("Codex did not expose the selected Library gateway.")
+			}
 			if err := p.bridge.waitReady(p.turn.ctx); err != nil {
 				return err
 			}
 			p.markRuntimeInfrastructure()
+			if err := p.markCapabilitiesApplied(); err != nil {
+				return err
+			}
 			phase = "klm-turn"
 			turnParams := map[string]any{
 				"threadId": c.threadID, "input": payload.codexInput(),
@@ -440,6 +526,9 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 // This checks the actual stored tool-result pair before claiming continuability.
 func (p *adapter) finishCodexNative(process *interactiveProcess, b binary, cwd, threadID, turnID string) error {
 	if !p.graphNode() {
+		if p.capabilities != nil {
+			return finishCodexProcess(process, p.turn.ctx, nil)
+		}
 		return nil
 	}
 	if err := finishCodexProcess(process, p.turn.ctx, func(frame map[string]any) { p.observeCodexMCP(str(frame, "method"), object(frame["params"])) }); err != nil {
@@ -448,7 +537,11 @@ func (p *adapter) finishCodexNative(process *interactiveProcess, b binary, cwd, 
 	if !process.Drained() {
 		return errors.New("Codex owned processes did not drain after native shutdown.")
 	}
-	probe, err := startInteractive(p.turn, b, []string{"app-server", "--listen", "stdio://"}, cwd, nil)
+	probeArgs := []string{"app-server", "--listen", "stdio://"}
+	if p.capabilities != nil {
+		probeArgs = append(codexLibraryFlags(), probeArgs...)
+	}
+	probe, err := startInteractive(p.turn, b, probeArgs, cwd, nil)
 	if err != nil {
 		return err
 	}
@@ -690,6 +783,13 @@ func (c *codexInteractive) frame(frame map[string]any) error {
 			return errors.New("Codex returned an item without a valid identifier.")
 		}
 		c.items[id] = item
+		if str(item, "type") == "userMessage" {
+			if clientID := str(item, "clientId"); clientID != "" {
+				if err := c.p.finishSteering(clientID, ""); err != nil {
+					return err
+				}
+			}
+		}
 		if method == "item/completed" && str(item, "type") == "mcpToolCall" && str(item, "server") == "klm_linked" && str(item, "tool") == "graph_submit_choice" && item["error"] == nil && str(item, "status") != "failed" {
 			c.p.graphChoiceToolSettled(item["result"])
 		}
@@ -802,6 +902,14 @@ func putCodexItem(p *adapter, trackedParts map[string]map[string]bool, item map[
 		title, text = "File changes", codexJSON(item["changes"])
 	case "mcpToolCall":
 		kind, title = "mcp", str(item, "server")+" / "+str(item, "tool")
+		if str(item, "server") == "klm_library" {
+			if label, metadata, ok := p.libraryToolPresentation(str(item, "tool")); ok {
+				title = label
+				for key, value := range metadata {
+					item[key] = value
+				}
+			}
+		}
 		text = contentText(item["result"])
 		if text == "" && item["result"] != nil {
 			text = codexJSON(item["result"])

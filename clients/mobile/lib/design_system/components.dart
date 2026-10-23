@@ -7,23 +7,12 @@ class KlmMark extends StatelessWidget {
   final double size;
 
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) => Image.asset(
+    'assets/brand/logo.png',
     width: size,
     height: size,
-    padding: EdgeInsets.all(size * .13),
-    decoration: BoxDecoration(
-      shape: BoxShape.circle,
-      border: Border.all(
-        color: KlmColors.of(context).heading,
-        width: size * .17,
-      ),
-    ),
-    child: DecoratedBox(
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: KlmColors.of(context).heading,
-      ),
-    ),
+    fit: BoxFit.contain,
+    excludeFromSemantics: true,
   );
 }
 
@@ -37,12 +26,7 @@ class KlmBrand extends StatelessWidget {
     child: Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const Image(
-          image: AssetImage('assets/brand/icon.png'),
-          width: 28,
-          height: 28,
-          fit: BoxFit.contain,
-        ),
+        const KlmMark(size: 28),
         const SizedBox(width: 7),
         const Text(
           'KLM',

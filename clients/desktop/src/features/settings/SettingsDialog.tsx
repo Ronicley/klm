@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { KeyRound, MessageSquare, Mic, Plus, Trash2, X } from 'lucide-react';
+import { BookOpen, KeyRound, MessageSquare, Mic, Plus, Terminal, Trash2, X } from 'lucide-react';
+import { LibraryPanel } from '../library/LibraryPanel';
 import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
 import { Select } from '../../design-system/Select';
 import { ENGINE_URL, getTranscriptionSettings, updateTranscriptionSettings, type TranscriptionProvider, type TranscriptionSettings } from '../../engine';
 import { configureEngineURL, enableNotifications, IS_DESKTOP, IS_MOBILE_HOST, notificationPermission } from '../../platform';
 
-type SettingsSection = 'chat' | 'transcription';
+import { OpenCodeSettings } from './OpenCodeSettings';
 
+type SettingsSection = 'chat' | 'transcription' | 'opencode' | 'library';
 const emptyTranscription: TranscriptionSettings = {
 	provider: 'openai',
   apiKeyConfigured: false,
@@ -20,9 +22,9 @@ function failureMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Could not update transcription settings.';
 }
 
-export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => void; onDesignSystem: () => void }) {
+export function SettingsDialog({ onClose, onDesignSystem, onGeneralAgent }: { onClose: () => void; onDesignSystem: () => void; onGeneralAgent?: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [section, setSection] = useState<SettingsSection>('chat');
+  const [section, setSection] = useState<SettingsSection>(() => new URLSearchParams(window.location.search).get('klm-library') === '1' ? 'library' : 'chat');
   const [engineURL, setEngineURL] = useState(ENGINE_URL);
   const [engineError, setEngineError] = useState('');
   const [notifications, setNotifications] = useState(notificationPermission);
@@ -46,6 +48,8 @@ export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => voi
 
   useEffect(() => {
     if (dialog.current && !dialog.current.open) dialog.current.showModal();
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('klm-library')) { url.searchParams.delete('klm-library'); window.history.replaceState(null, '', url); }
     void loadSettings();
   }, []);
 
@@ -99,9 +103,11 @@ export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => voi
       <nav className="settings-sidebar" aria-label="Settings sections">
         <button type="button" className={section === 'chat' ? 'is-active' : ''} aria-current={section === 'chat' ? 'page' : undefined} onClick={() => setSection('chat')}><MessageSquare />Chat</button>
         <button type="button" className={section === 'transcription' ? 'is-active' : ''} aria-current={section === 'transcription' ? 'page' : undefined} onClick={() => setSection('transcription')}><Mic />Transcription</button>
+        <button type="button" className={section === 'opencode' ? 'is-active' : ''} aria-current={section === 'opencode' ? 'page' : undefined} onClick={() => setSection('opencode')}><Terminal />OpenCode</button>
+        <button type="button" className={section === 'library' ? 'is-active' : ''} aria-current={section === 'library' ? 'page' : undefined} onClick={() => setSection('library')}><BookOpen />Library</button>
       </nav>
       <div className="settings-panel">
-        {section === 'chat' ? <section aria-labelledby="chat-settings-title">
+        {section === 'library' ? <LibraryPanel onGeneralAgent={onGeneralAgent} /> : section === 'chat' ? <section aria-labelledby="chat-settings-title">
           <h3 id="chat-settings-title">Chat</h3>
           <form className="engine-settings-form settings-form" onSubmit={connectEngine}>
             <label htmlFor="engine-url">Engine URL</label>
@@ -118,7 +124,7 @@ export function SettingsDialog({ onClose, onDesignSystem }: { onClose: () => voi
             {notificationError && <p className="form-error" role="alert">{notificationError}</p>}
           </div>}
           <div className="settings-design-system"><span>Interface components and tokens</span><Button onClick={onDesignSystem}>Open design system</Button></div>
-        </section> : <section aria-labelledby="transcription-settings-title">
+        </section> : section === 'opencode' ? <OpenCodeSettings /> : <section aria-labelledby="transcription-settings-title">
           <div className="settings-panel-title"><div><h3 id="transcription-settings-title">Transcription</h3>{settings.apiKeyConfigured && !removeAPIKey && <span className="settings-configured"><KeyRound />API key configured</span>}</div>{loading && <span className="muted">Loading...</span>}</div>
           <form className="settings-form transcription-settings-form" onSubmit={saveTranscription}>
 			<div className="settings-field"><label htmlFor="transcription-provider">Provider</label><Select id="transcription-provider" label="Transcription provider" variant="field" value={settings.provider ?? 'openai'} disabled={loading || saving} onChange={event => {

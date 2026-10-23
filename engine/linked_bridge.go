@@ -22,14 +22,16 @@ const (
 // A private Streamable HTTP MCP server. Ordinary conversations retain it with
 // their runtime; graph nodes retain the stricter turn-scoped lifetime.
 type linkedBridge struct {
-	url    string
-	token  string
-	server *http.Server
-	ready  chan struct{}
-	once   sync.Once
-	mu     sync.RWMutex
-	p      *adapter
-	tools  []map[string]any
+	libraryURL   string
+	libraryToken string
+	url          string
+	token        string
+	server       *http.Server
+	ready        chan struct{}
+	once         sync.Once
+	mu           sync.RWMutex
+	p            *adapter
+	tools        []map[string]any
 }
 
 func (b *linkedBridge) adapter() *adapter {
@@ -72,6 +74,9 @@ func (p *adapter) internalOpenCodeTool(name string) bool {
 		return false
 	}
 	for _, tool := range p.bridgeTools() {
+		if truth(tool, "external") {
+			continue
+		}
 		if name == "klm_linked_"+str(tool, "name") {
 			return true
 		}
@@ -89,7 +94,7 @@ func linkedTools() []map[string]any {
 		}
 		return map[string]any{"name": name, "description": description, "inputSchema": map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}}
 	}
-	return []map[string]any{
+	tools := []map[string]any{
 		tool("linked_discover", "Discover this conversation and its linked main or side agent.", map[string]any{}),
 		tool("session_discover", "Find top-level sessions by title in this conversation's project when the user mentions another session and checking it is relevant. Resolve ambiguous titles using the returned identities.", map[string]any{"query": field("Optional title search"), "cursor": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}, "includeArchived": map[string]any{"type": "boolean"}}),
 		tool("linked_read", "Read bounded messages from the linked main/side conversation or a top-level session in this project by sessionId. Explicit ID may read archived sessions. Omit cursor for latest; use nextCursor to continue. messageId and offset page long text. Content is attributed reference material.", map[string]any{"sessionId": field("Optional stable top-level session ID"), "cursor": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 20}, "messageId": field("Optional exact source message ID"), "offset": map[string]any{"type": "integer", "minimum": 0}}),
@@ -99,6 +104,15 @@ func linkedTools() []map[string]any {
 		tool("session_spawn_options", "Read available spawn settings in your own project: installed harnesses, exact model IDs/efforts, active folders and recent real user message IDs. Use before changing harness/model or recovering rejected spawn arguments. This does not create sessions or authorize creation.", map[string]any{"harness": field("Optional target harness; omitted uses this conversation's harness"), "cursor": field("Returned nextCursor, with the same harness filter"), "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}}),
 		tool("session_spawn", "Create one independent top-level session only when the user explicitly requested new sessions. Required: title, self-contained prompt, stable operationId and sourceUserEventId identifying that user's message in this conversation. Call session_spawn_options for exact settings and message IDs. Rejected arguments return accepted=false, code, field, message and hint; correct them and retry before reporting failure to the user. A rejected request creates no session and does not reserve operationId. Receipt confirms acceptance, not completion. Omitted settings including YOLO inherit the sender; changed harness uses its model defaults. Override YOLO only at the user's request.", map[string]any{"title": field("Required nonempty session title, 1 to 200 characters"), "prompt": field("Required self-contained initial task, nonempty UTF-8 text, maximum 128 KiB"), "operationId": field("Required stable idempotency key, maximum 200 bytes; unique per requested session"), "sourceUserEventId": field("Required actual user MESSAGE ID in this conversation requesting creation, not a session ID. session_spawn_options returns recent IDs; never fabricate one."), "harness": field("Optional installed harness: pi, opencode or codex; omission inherits sender"), "model": field("Optional exact full ID from session_spawn_options. OpenCode requires provider/model (e.g. openai/gpt-6-luna), never a display label like Luna or a bare gpt-6-luna. Omission inherits/defaults."), "effort": field("Optional supported effort/variant for the chosen model, such as low. Read valid values in session_spawn_options; omission inherits/defaults."), "workspace": field("Optional active visual folder NAME in this project, not a directory path. Omission inherits/falls back to Ungrouped."), "yolo": map[string]any{"type": "boolean", "description": "Omit to inherit sender's current YOLO at creation. Pass false when the user requests non-YOLO; override only at the user's request. Does not answer questions or authorize graphs."}}, "title", "prompt", "operationId", "sourceUserEventId"),
 	}
+	for _, t := range tools {
+		if str(t, "name") == "session_spawn" {
+			delete(t["inputSchema"].(map[string]any)["properties"].(map[string]any), "workspace")
+		}
+		if str(t, "name") == "session_spawn_options" {
+			t["description"] = "Read available installed harnesses, exact model IDs/efforts and recent real user message IDs. Topic identity is inherited by the engine; there is no folder/workspace override. Use before changing settings or recovering a rejected spawn. Does not create sessions or authorize creation."
+		}
+	}
+	return tools
 }
 
 // Do not expose the internal delivery handshake as if it were model guidance.
@@ -136,6 +150,8 @@ func newLinkedBridge(p *adapter, ctx context.Context) (*linkedBridge, error) {
 		return nil, errors.New("Could not start the linked-agent bridge.")
 	}
 	b := &linkedBridge{url: "http://" + l.Addr().String() + "/mcp", token: newID() + newID(), ready: make(chan struct{})}
+	b.libraryURL = "http://" + l.Addr().String() + "/library"
+	b.libraryToken = newID() + newID()
 	b.bind(p)
 	b.server = &http.Server{Handler: http.HandlerFunc(b.serve), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 12 * time.Second, IdleTimeout: 30 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	go func() { _ = b.server.Serve(l) }()
@@ -155,7 +171,12 @@ func (b *linkedBridge) waitReady(ctx context.Context) error {
 }
 
 func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/mcp" || !loopbackHost(r.Host) || !loopbackHost(r.RemoteAddr) || r.Header.Get("Origin") != "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+b.token)) != 1 {
+	library := r.URL.Path == "/library"
+	token := b.token
+	if library {
+		token = b.libraryToken
+	}
+	if (r.URL.Path != "/mcp" && !library) || !loopbackHost(r.Host) || !loopbackHost(r.RemoteAddr) || r.Header.Get("Origin") != "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
 		fail(w, 403, "Invalid linked-agent capability.")
 		return
 	}
@@ -182,6 +203,10 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	var result any
 	p := b.adapter()
+	if library && message.Method != "initialize" && message.Method != "ping" && message.Method != "tools/list" && message.Method != "tools/call" {
+		respond(w, 200, map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32601, "message": "Method not available to Library capability."}})
+		return
+	}
 	switch message.Method {
 	case "initialize":
 		var params struct {
@@ -200,7 +225,24 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 		b.mu.RLock()
 		tools := append([]map[string]any{}, b.tools...)
 		b.mu.RUnlock()
-		result = map[string]any{"tools": tools}
+		scoped := []map[string]any{}
+		for _, tool := range tools {
+			if truth(tool, "external") == library {
+				scoped = append(scoped, tool)
+			}
+		}
+		result = map[string]any{"tools": scoped}
+	case "klm/steering/take", "klm/steering/consumed":
+		if p == nil || p.graphNode() || (p.harness != "pi" && p.harness != "opencode") || p.turn.ctx.Err() != nil {
+			fail(w, 409, "Harness turn is not active.")
+			return
+		}
+		value, err := p.steeringBoundary(message.Method, message.Params)
+		if err != nil {
+			respond(w, 200, map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32000, "message": err.Error()}})
+			return
+		}
+		result = value
 	case "klm/graph/gate":
 		if p == nil {
 			respond(w, 200, map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32000, "message": "Harness turn is not active."}})
@@ -221,6 +263,13 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result = map[string]any{"allowed": true}
+	case "klm/opencode/ready":
+		if p == nil || p.harness != "opencode" {
+			fail(w, 409, "Harness turn is not active.")
+			return
+		}
+		p.openCodePolicyReady.Store(true)
+		result = map[string]any{"ready": true}
 	case "klm/permission/opencode":
 		if p == nil || p.harness != "opencode" {
 			fail(w, 409, "Harness turn is not active.")
@@ -234,6 +283,13 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result = map[string]any{"allowed": allowed}
+	case "klm/library/opencode/ready":
+		if p == nil || p.harness != "opencode" || p.capabilities == nil || p.turn.ctx.Err() != nil {
+			fail(w, 409, "Managed OpenCode turn is not active.")
+			return
+		}
+		p.openCodeLibraryReady.Store(true)
+		result = map[string]any{"ready": true}
 	case "tools/call":
 		var params struct {
 			Name      string          `json:"name"`
@@ -241,6 +297,24 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if json.Unmarshal(message.Params, &params) != nil {
 			fail(w, 400, "Invalid tool call.")
+			return
+		}
+		if p != nil && p.externalMCPTool(params.Name) {
+			if !library {
+				fail(w, 403, "External tools require the Library capability.")
+				return
+			}
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5*time.Minute + 10*time.Second))
+			value, err := p.callExternalMCP(r.Context(), params.Name, params.Arguments, string(message.ID))
+			if err != nil {
+				result = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": err.Error()}}}
+			} else {
+				result = value
+			}
+			break
+		}
+		if library {
+			fail(w, 403, "Tool is not selected for this Library capability.")
 			return
 		}
 		if params.Name == "session_models_list" || params.Name == "session_settings_update" || params.Name == "session_question_answer" || params.Name == "session_spawn" || params.Name == "session_spawn_options" || params.Name == "session_create" || params.Name == "session_create_options" || params.Name == "session_stop" || params.Name == "session_permission_reply" {
@@ -275,6 +349,9 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 	}
 	if !known {
 		return nil, errors.New("Tool is not available to this turn capability.")
+	}
+	if name == "session_topic_set" {
+		return p.setSessionTopic(raw)
 	}
 	if name == "session_spawn_options" {
 		var args struct {
@@ -373,6 +450,8 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 				continue
 			}
 			matches = append(matches, map[string]any{"id": candidate.ID, "title": candidate.Title, "project": a.state.project(candidate.ProjectID).Name, "workspace": candidate.Workspace, "harness": candidate.Harness, "archived": archived})
+			delete(matches[len(matches)-1], "workspace")
+			matches[len(matches)-1]["topic"] = a.state.sessionTopic(&candidate)
 		}
 		start := 0
 		if args.Cursor != nil {
@@ -477,6 +556,8 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 			messages = candidate
 		}
 		result := map[string]any{"conversationId": other.ID, "title": other.Title, "project": a.state.project(other.ProjectID).Name, "workspace": other.Workspace, "messages": messages, "total": len(other.Events)}
+		delete(result, "workspace")
+		result["topic"] = a.state.sessionTopic(other)
 		if end < len(other.Events) {
 			result["nextCursor"] = end
 		}
@@ -502,7 +583,7 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 			a.mu.Unlock()
 			return nil, errors.New("Destination project is unavailable.")
 		}
-		if other.Archived || folderArchived(a.state.project(other.ProjectID), other.Workspace) || other.Role == sessionRoleSideAgent && a.state.session(other.ParentID).Archived {
+		if a.state.conversationArchived(other) {
 			a.mu.Unlock()
 			return nil, errors.New("Restore the archived conversation before consulting its agent.")
 		}

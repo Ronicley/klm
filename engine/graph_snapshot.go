@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -20,6 +21,8 @@ type GraphSourceSnapshot struct {
 }
 
 type GraphSnapshot struct {
+	LibraryRevision string                         `json:"libraryRevision,omitempty"`
+	Capabilities    map[string]*CapabilitySnapshot `json:"capabilities,omitempty"`
 	GraphID         string                         `json:"graphId"`
 	Revision        string                         `json:"revision"` // content hash of executable sources, not layout
 	CapturedAt      string                         `json:"capturedAt"`
@@ -39,7 +42,13 @@ func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID strin
 	}
 	a.authoringMu.Lock()
 	defer a.authoringMu.Unlock()
+	a.libraryMu.Lock()
+	defer a.libraryMu.Unlock()
 	a.mu.Lock()
+	if len(a.state.LibraryDeletions) > 0 {
+		a.mu.Unlock()
+		return snapshot, nil, errors.New("A library deletion needs recovery before starting another graph run.")
+	}
 	project := a.state.project(projectID)
 	if project == nil || project.Removed {
 		a.mu.Unlock()
@@ -100,6 +109,38 @@ func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID strin
 	}
 	validated := map[string]bool{}
 	compiled, err := compileGraph(g, snapshot.Agents, func(agent EffectiveGraphAgent) error {
+		for _, definition := range snapshot.Agents {
+			if definition.ID == agent.AgentID {
+				selection := CapabilitySelection{Skills: definition.Skills, MCPConnections: definition.MCPConnections}
+				if err := normalizeSelection(&selection); err != nil {
+					return err
+				}
+				if !managedLibraryHarness(agent.Harness) && !selectionEmpty(selection) {
+					return fmt.Errorf("Agent %s requires managed Library capabilities unavailable for its effective harness %s.", agent.AgentID, agent.Harness)
+				}
+			}
+		}
+		if agent.Harness == "pi" {
+			if b, installed := a.binaries["pi"]; installed {
+				if err := validatePiLibraryBinary(b); err != nil {
+					return err
+				}
+			}
+		}
+		if agent.Harness == "opencode" {
+			if b, installed := a.binaries[agent.Harness]; installed && b.openCodeV1 {
+				if err := validateOpenCodeLibraryBinary(b); err != nil {
+					return err
+				}
+			}
+		}
+		if agent.Harness == "codex" {
+			if b, installed := a.binaries[agent.Harness]; installed {
+				if err := validateCodexLibraryBinary(b); err != nil {
+					return err
+				}
+			}
+		}
 		key := agent.Harness + "\x00" + agent.Model + "\x00" + agent.Effort
 		if validated[key] {
 			return nil
@@ -139,6 +180,27 @@ func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID strin
 	}
 	snapshot.Graph = GraphRecord{ID: graphID, Revision: snapshot.Sources[graphFile(graphID)].Revision, Definition: compiled.Definition, Layout: layout}
 	snapshot.EffectiveAgents = compiled.Agents
+	snapshot.Capabilities = map[string]*CapabilitySnapshot{}
+	for nodeID, agent := range compiled.Agents {
+		for _, definition := range snapshot.Agents {
+			if definition.ID != agent.AgentID {
+				continue
+			}
+			captured, captureErr := a.captureCapabilities(ctx, CapabilitySelection{Skills: definition.Skills, MCPConnections: definition.MCPConnections}, agent.Harness)
+			if captureErr != nil {
+				return snapshot, nil, fmt.Errorf("Node %s: %w", nodeID, captureErr)
+			}
+			snapshot.Capabilities[nodeID] = captured
+		}
+	}
+	libraryData, _ := json.Marshal(snapshot.Capabilities)
+	snapshot.LibraryRevision = revision(libraryData)
+	for _, path := range sortedGraphKeys(snapshot.Sources) {
+		current, readErr := readConfig(p, path)
+		if readErr != nil || revision(current) != snapshot.Sources[path].Revision {
+			return snapshot, nil, fmt.Errorf("Configuration changed while capturing library capabilities (%s); retry with stable files.", path)
+		}
+	}
 	encoded, err := json.Marshal(snapshot.Sources)
 	if err != nil {
 		return snapshot, nil, err
@@ -160,7 +222,82 @@ func compileGraphSnapshot(snapshot GraphSnapshot) (*CompiledGraph, error) {
 	})
 }
 
+// The scheduler owns authoringMu and libraryMu through durable reservation.
+// Preparation may take time (e.g. workspace reuse checks); do not reserve a run
+// with a removed/replaced credential or a superseded skill/configuration capture.
+func (a *app) revalidateGraphCapabilities(snapshot GraphSnapshot) error {
+	a.mu.Lock()
+	if len(a.state.LibraryDeletions) > 0 {
+		a.mu.Unlock()
+		return errors.New("A library deletion needs recovery before reserving this run.")
+	}
+	for _, captured := range snapshot.Capabilities {
+		if captured != nil {
+			for _, c := range captured.Connections {
+				current, exists := a.state.MCPConnections[c.ID]
+				catalogRevision, knownRevision := "", ""
+				if current.Catalog != nil {
+					catalogRevision = current.Catalog.Revision
+				}
+				if c.Catalog != nil {
+					knownRevision = c.Catalog.Revision
+				}
+				if !exists || current.Revision != c.Revision || current.CredentialID != c.CredentialID || catalogRevision != knownRevision {
+					a.mu.Unlock()
+					return errors.New("MCP library configuration changed before execution could be reserved; retry with current definitions.")
+				}
+			}
+		}
+	}
+	a.mu.Unlock()
+	root := ""
+	for _, captured := range snapshot.Capabilities {
+		if captured != nil {
+			for _, skill := range captured.Skills {
+				if root == "" {
+					var err error
+					root, err = skillLibraryRoot()
+					if err != nil {
+						return err
+					}
+				}
+				if skill.Internal {
+					return errors.New("Graph snapshots cannot acquire general-agent internal skills.")
+				}
+				current, err := stableSkillPackage(root, skill.ID, false)
+				if err != nil || current.Entry.Revision != skill.Revision {
+					return errors.New("Skill content changed before execution could be reserved; retry with stable library files.")
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func validateGraphSnapshot(snapshot GraphSnapshot) error {
+	if snapshot.LibraryRevision != "" {
+		data, _ := json.Marshal(snapshot.Capabilities)
+		if revision(data) != snapshot.LibraryRevision {
+			return errors.New("Graph capability snapshot revision mismatch.")
+		}
+		for nodeID, captured := range snapshot.Capabilities {
+			agent, exists := snapshot.EffectiveAgents[nodeID]
+			if !exists {
+				return errors.New("Captured capabilities have no owning graph agent.")
+			}
+			if captured == nil {
+				continue
+			}
+			if !managedLibraryHarness(agent.Harness) || captured.Adapter != libraryAdapterID(agent.Harness) || captured.Version != 1 {
+				return errors.New("Invalid captured library adapter.")
+			}
+			clone := *captured
+			sealCapabilitySnapshot(&clone)
+			if clone.Revision != captured.Revision {
+				return errors.New("Corrupted captured capabilities.")
+			}
+		}
+	}
 	if !validAuthoringID(snapshot.GraphID) || snapshot.Graph.ID != snapshot.GraphID || snapshot.Revision == "" || len(snapshot.Sources) == 0 || !validGraphTime(snapshot.CapturedAt) {
 		return errors.New("Incomplete graph snapshot.")
 	}
@@ -195,7 +332,7 @@ func validateGraphSnapshot(snapshot GraphSnapshot) error {
 		}
 		seen[record.ID] = true
 		agent := AgentDefinition{Enabled: true}
-		if toml.Unmarshal([]byte(source.Text), &agent) != nil || agent != record.AgentDefinition {
+		if toml.Unmarshal([]byte(source.Text), &agent) != nil || !equalCapturedAgentDefinitions(agent, record.AgentDefinition) {
 			return errors.New("Captured agent differs from its source.")
 		}
 	}
@@ -212,6 +349,29 @@ func validateGraphSnapshot(snapshot GraphSnapshot) error {
 		}
 	}
 	return nil
+}
+
+// JSON omitempty collapses absent and explicitly empty TOML selections. Compare
+// those empty allowlists semantically, without changing raw source hashes or
+// relaxing any other agent field, connection identity, tool name or ordering.
+func equalCapturedAgentDefinitions(left, right AgentDefinition) bool {
+	canonical := func(agent AgentDefinition) AgentDefinition {
+		if len(agent.Skills) == 0 {
+			agent.Skills = nil
+		}
+		if len(agent.MCPConnections) == 0 {
+			agent.MCPConnections = nil
+		} else {
+			agent.MCPConnections = slices.Clone(agent.MCPConnections)
+			for i := range agent.MCPConnections {
+				if len(agent.MCPConnections[i].Tools) == 0 {
+					agent.MCPConnections[i].Tools = nil
+				}
+			}
+		}
+		return agent
+	}
+	return reflect.DeepEqual(canonical(left), canonical(right))
 }
 
 // An outbox coordinates the existing authoring journal with state.json selection

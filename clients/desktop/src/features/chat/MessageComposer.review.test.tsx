@@ -80,5 +80,5 @@ it('retains mentions across an intentional restore without duplicate send gestur
   fireEvent.click(screen.getByRole('button', { name: 'Restore with mention' }));
   fireEvent.click(send);
   expect(onSend).toHaveBeenCalledTimes(2);
-  expect(onSend).toHaveBeenLastCalledWith(original, 'queue');
+  expect(onSend).toHaveBeenLastCalledWith(original, 'steer');
 });

@@ -42,6 +42,24 @@ installer or stops the installed engine. Use a fresh output directory when
 collecting artifacts from repeated local builds with different versions.
 CI always builds in a fresh checkout.
 
+### VS Code tasks
+
+Open the repository root in VS Code and use **Terminal → Run Task**:
+
+- **Release: Windows installers (Engine + Desktop)** asks for a numeric version
+  and builds both installers plus `SHA256SUMS.txt` in `dist/release`.
+- **Release: Engine installer** asks for a version and writes
+  `dist/KLM-Engine-<version>-x64-setup.exe`. Requires NSIS, either installed
+  separately or downloaded by a previous desktop build.
+- **Release: Desktop installer (project version)** uses the version in
+  `clients/desktop/src-tauri/tauri.conf.json` and writes its installer under
+  `clients/desktop/src-tauri/target/release/bundle/nsis`.
+
+Install frontend dependencies with `npm ci` in `clients/desktop` before the
+first desktop build. Go, Node, Rust and Visual C++ build tools must be available
+to the VS Code terminal. Run release tasks one at a time because they share build
+outputs. These tasks only build local packages; they do not install or publish them.
+
 The workflow and its source prerequisites must be committed together: desktop
 Tauri sources/icons/Cargo.lock, frontend package lock, engine Windows CLI/runtime
 and prompts, and distribution scripts. Local untracked files are not available

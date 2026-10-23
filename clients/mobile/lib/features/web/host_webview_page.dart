@@ -1,11 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../../design_system/components.dart';
 import '../../design_system/icons.dart';
 import '../../design_system/theme.dart';
 import '../hosts/host_store.dart';
+import '../hosts/host_connection_route.dart';
+import '../hosts/wifi_networks.dart';
+import 'host_audio_bridge.dart';
 import 'host_navigation.dart';
+import 'graph_files.dart';
 
 class HostWebViewPage extends StatefulWidget {
   const HostWebViewPage({super.key, required this.host});
@@ -16,17 +21,122 @@ class HostWebViewPage extends StatefulWidget {
 }
 
 class _HostWebViewPageState extends State<HostWebViewPage> {
+  HostConnectionRoute? _route;
+  int _attempt = 0;
+  bool _fallbackNoticeShown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.host.localUrl == null) {
+      _route = HostConnectionRoute(widget.host, null);
+    } else {
+      _resolve();
+    }
+  }
+
+  Future<void> _resolve() async {
+    final ssid = await WifiNetworks().currentSsid();
+    if (mounted) {
+      setState(() => _route = HostConnectionRoute(widget.host, ssid));
+    }
+  }
+
+  bool _fallback(int attempt) {
+    if (!mounted || attempt != _attempt || !_route!.fallbackToPublic()) {
+      return false;
+    }
+    setState(() => _attempt++);
+    return true;
+  }
+
+  void _connected(int attempt) {
+    if (!mounted ||
+        attempt != _attempt ||
+        !_route!.didFallback ||
+        _fallbackNoticeShown) {
+      return;
+    }
+    _fallbackNoticeShown = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Connected using public URL'),
+          content: const Text(
+            'The local URL could not be reached on this Wi-Fi network. You are connected using the public URL.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final route = _route;
+    if (route == null) {
+      return Scaffold(
+        backgroundColor: KlmColors.of(context).surface,
+        appBar: AppBar(title: Text(widget.host.name)),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+    final attempt = _attempt;
+    return _HostWebViewAttempt(
+      key: ValueKey(attempt),
+      host: widget.host,
+      url: route.url,
+      timeout: Duration(seconds: route.usingLocal ? 8 : 25),
+      onInitialLoadFailed: () => _fallback(attempt),
+      onConnected: () => _connected(attempt),
+    );
+  }
+}
+
+class _HostWebViewAttempt extends StatefulWidget {
+  const _HostWebViewAttempt({
+    super.key,
+    required this.host,
+    required this.url,
+    required this.timeout,
+    required this.onInitialLoadFailed,
+    required this.onConnected,
+  });
+  final SavedHost host;
+  final Uri url;
+  final Duration timeout;
+  final bool Function() onInitialLoadFailed;
+  final VoidCallback onConnected;
+
+  @override
+  State<_HostWebViewAttempt> createState() => _HostWebViewAttemptState();
+}
+
+class _HostWebViewAttemptState extends State<_HostWebViewAttempt>
+    with WidgetsBindingObserver {
   late final WebViewController _controller;
+  late final HostAudioBridge _audio;
   Timer? _timeout;
   bool _loading = true;
   bool _leaving = false;
   String? _error;
   String _pageUrl = '';
-
+  bool _filePickerOpen = false;
+  int _navigation = 0;
+  bool _connected = false;
   @override
   void initState() {
     super.initState();
     _controller = WebViewController();
+    _audio = HostAudioBridge(_controller, widget.url.origin);
+    WidgetsBinding.instance.addObserver(this);
     _configure();
   }
 
@@ -34,12 +144,20 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
     try {
       await _controller.setJavaScriptMode(JavaScriptMode.unrestricted);
       await _controller.addJavaScriptChannel(
+        'KlmAudio',
+        onMessageReceived: _audio.receive,
+      );
+      await _controller.addJavaScriptChannel(
         'KlmMobile',
         onMessageReceived: (message) async {
           if (message.message != 'home') return;
           final current = Uri.tryParse(await _controller.currentUrl() ?? '');
           if (mounted && current != null && _belongsToHost(current)) _home();
         },
+      );
+      await _controller.addJavaScriptChannel(
+        'KlmFiles',
+        onMessageReceived: (message) => unawaited(_graphFile(message.message)),
       );
       await _controller.setNavigationDelegate(
         NavigationDelegate(
@@ -51,6 +169,8 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
           },
           onPageStarted: (url) {
             if (!mounted) return;
+            _navigation++;
+            _audio.invalidate();
             _pageUrl = url;
             setState(() {
               _loading = true;
@@ -64,13 +184,20 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
             try {
               if (uri != null && _belongsToHost(uri)) {
                 await _controller.runJavaScript(installHostNavigation);
+                if (uri.origin == widget.url.origin) await _audio.install();
               }
             } catch (_) {
               _fail('Could not connect web client navigation. Please retry.');
               return;
             }
             _timeout?.cancel();
-            if (mounted && _error == null) setState(() => _loading = false);
+            if (mounted && _error == null) {
+              setState(() => _loading = false);
+              if (!_connected) {
+                _connected = true;
+                widget.onConnected();
+              }
+            }
           },
           onWebResourceError: (error) {
             if (error.isForMainFrame == true) {
@@ -97,13 +224,60 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
   }
 
   bool _belongsToHost(Uri uri) =>
+      ['http', 'https'].contains(uri.scheme) && uri.host == widget.url.host;
+
+  bool _isFileHost(Uri? uri) =>
+      uri != null &&
       ['http', 'https'].contains(uri.scheme) &&
-      uri.host == widget.host.url.host;
+      uri.origin == widget.host.url.origin;
+
+  Future<void> _graphFile(String message) async {
+    if (message.length > 4 * 1024 * 1024) return;
+    final navigation = _navigation;
+    final current = Uri.tryParse(await _controller.currentUrl() ?? '');
+    if (!mounted || !_isFileHost(current)) {
+      return;
+    }
+    String? id;
+    Map<String, dynamic> result;
+    var ownsPicker = false;
+    try {
+      final request = jsonDecode(message) as Map<String, dynamic>;
+      id = request['id'] as String?;
+      if (id == null || id.length > 80) return;
+      if (_filePickerOpen) {
+        throw const FormatException('A file picker is already open.');
+      }
+      _filePickerOpen = true;
+      ownsPicker = true;
+      result = await graphFileRequest(request);
+    } catch (error) {
+      result = {
+        'error': error is FormatException
+            ? error.message
+            : 'Could not access graph file. Please retry.',
+      };
+    } finally {
+      if (ownsPicker) _filePickerOpen = false;
+    }
+    if (!mounted || id == null || navigation != _navigation) return;
+    final after = Uri.tryParse(await _controller.currentUrl() ?? '');
+    if (!mounted || !_isFileHost(after) || navigation != _navigation) {
+      return;
+    }
+    try {
+      await _controller.runJavaScript(
+        'window.dispatchEvent(new CustomEvent("klm-file-result", {detail: ${jsonEncode({'id': id, ...result})}}));',
+      );
+    } catch (_) {
+      /* The page may have closed while the native picker was open. */
+    }
+  }
 
   void _startTimeout() {
     _timeout?.cancel();
     _timeout = Timer(
-      const Duration(seconds: 25),
+      widget.timeout,
       () => _fail(
         'The web client took too long to respond. Check your connection and retry.',
       ),
@@ -111,20 +285,24 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
   }
 
   Future<void> _load() async {
+    _connected = false;
     setState(() {
       _loading = true;
       _error = null;
     });
     _startTimeout();
     try {
-      await _controller.loadRequest(widget.host.url);
+      await _controller.loadRequest(widget.url);
     } catch (_) {
       _fail('Could not open this web client. Please retry.');
     }
   }
 
   void _fail(String message) {
+    if (!mounted) return;
+    _audio.invalidate();
     _timeout?.cancel();
+    if (!_connected && widget.onInitialLoadFailed()) return;
     if (mounted) {
       setState(() {
         _error = message;
@@ -136,12 +314,25 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
   void _home() {
     if (_leaving || !mounted) return;
     _leaving = true;
+    _audio.invalidate();
     Navigator.of(context).pop();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Permission dialogs can make the app inactive; only cancel on background.
+    if (state == AppLifecycleState.resumed) _audio.setForeground(true);
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _audio.setForeground(false);
+    }
   }
 
   @override
   void dispose() {
     _timeout?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _audio.dispose();
     super.dispose();
   }
 
@@ -190,7 +381,7 @@ class _HostWebViewPageState extends State<HostWebViewPage> {
                       ],
                       const SizedBox(height: 16),
                       Text(
-                        widget.host.url.toString(),
+                        widget.url.toString(),
                         textAlign: TextAlign.center,
                         style: TextStyle(fontSize: 13, color: colors.muted),
                       ),

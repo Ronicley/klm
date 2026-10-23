@@ -175,6 +175,9 @@ func (p *adapter) bridgeTools() []map[string]any {
 	}
 	if !p.graphNode() && p.role != "graph_node" && p.role != sessionRoleSubagent && p.role != sessionRoleGeneralAgent {
 		tools = append(tools, linkedTools()...)
+		if p.role == "" {
+			tools = append(tools, sessionTopicTool())
+		}
 	}
 	if p.graph != nil {
 		tools = append(tools, p.graph.hooks.Tools...)
@@ -182,6 +185,19 @@ func (p *adapter) bridgeTools() []map[string]any {
 			// Unknown/mistyped Choice fields deliberately reach core validation.
 			tools = append(tools, map[string]any{"name": "graph_submit_choice", "description": "Submit the final Choice for this activation. The response reserves it; acceptance follows native settlement.",
 				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"choice": map[string]any{}, "payload": map[string]any{}}, "additionalProperties": true}})
+		}
+	}
+	if p.mcp != nil {
+		tools = append(tools, p.mcp.tools...)
+	}
+	return tools
+}
+
+func (p *adapter) scopedBridgeTools(library bool) []map[string]any {
+	tools := []map[string]any{}
+	for _, tool := range p.bridgeTools() {
+		if truth(tool, "external") == library {
+			tools = append(tools, tool)
 		}
 	}
 	return tools
@@ -340,7 +356,9 @@ func (p *adapter) setOpenCodeGraphTools(ids []string, servers map[string]any) {
 		p.graph.openCodeTools[id] = true
 	}
 	for _, tool := range p.bridgeTools() {
-		p.graph.openCodeTools["klm_linked_"+str(tool, "name")] = true
+		if !truth(tool, "external") {
+			p.graph.openCodeTools["klm_linked_"+str(tool, "name")] = true
+		}
 	}
 	// McpCatalog.toolName in 1.18.30 uses sanitized server + '_' + tool.
 	// This is classification of actually discovered servers, not an allowlist.

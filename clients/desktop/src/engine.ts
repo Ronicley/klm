@@ -1,9 +1,12 @@
 import type { AuthoringCatalog, GraphFile } from './features/graphs/files';
 import { resolveEngineURL } from './platform';
+import type { ConversationCapabilities } from './features/library/api';
 
 export const ENGINE_URL = resolveEngineURL();
 
 export type Project = {
+  topics?: Topic[];
+  topicOrder?: string[];
   id: string;
   name: string;
   folder: string;
@@ -11,6 +14,8 @@ export type Project = {
   folders: string[];
   archivedFolders: string[];
 };
+
+export type Topic = { id: string; name: string; color: 'neutral' | 'blue' | 'purple' | 'green' | 'amber' | 'rose'; createdAt: string; archived?: boolean };
 
 export type Harness = {
   id: 'pi' | 'opencode' | 'codex';
@@ -37,9 +42,9 @@ export type SessionUsage = {
   context: { tokens: number | null; window: number | null } | null;
 };
 
-export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer"; status: "queued" | "steering" | "sending" | "paused" | "uncertain"; error?: string; files?: ChatFile[]; images?: ChatImage[]; origin?: { sessionId: string; title: string; kind?: 'instruction' | 'question_answer' } };
-
+export type QueuedMessage = { id: string; text: string; mode: "queue" | "steer" | "interrupt"; status: "queued" | "steering" | "sending" | "accepted" | "interrupting" | "paused" | "uncertain"; error?: string; files?: ChatFile[]; images?: ChatImage[]; origin?: { sessionId: string; title: string; kind?: 'instruction' | 'question_answer' } };
 export type Session = {
+  capabilities?: ConversationCapabilities;
   queue?: QueuedMessage[] | null;
   role?: 'side_agent' | 'subagent' | 'graph_node' | 'general_agent';
   selectedGraphId?: string;
@@ -51,7 +56,9 @@ export type Session = {
   projectId: string;
   title: string;
   latestReasoningTitle?: string;
+  lastMessageAt?: string;
   workspace: string;
+  topicId?: string;
   harness: Harness['id'];
   harnessLocked?: boolean;
   model?: string;
@@ -91,21 +98,25 @@ export type ConversationGraphState = {
   selectedGraphId: string;
   revision: number;
   run: GraphRunProjection | null;
+  lastRun?: GraphRunProjection;
   requests: GraphRequestProjection[];
 };
 export type GraphRunProjection = {
   id: string; graphId: string; active: boolean;
-  status: 'starting' | 'running' | 'pausing' | 'paused' | 'ending'; revision: number;
+  status: 'starting' | 'running' | 'pausing' | 'paused' | 'ending' | 'completed' | 'blocked' | 'failed' | 'interrupted'; revision: number;
+  stopRequested?: boolean; error?: string;
+  nodes?: Record<string, GraphActivationSummary>;
   snapshot: GraphFile;
   activeNodeIds: string[]; completedNodeIds: string[];
   completedChoiceIds: string[]; collectingJoinIds: string[];
 };
-export type GraphActivationSummary = { id: string; occurrence: number; status: string };
+export type GraphActivationSummary = { id: string; occurrence: number; status: string; retryReason?: string };
 export type GraphNodeActivity = {
-  runActive: boolean;
+  previousAttempt?: { runId: string; activationId: string };
+  capabilities?: ConversationCapabilities['applied'];  runActive: boolean;
   activations: GraphActivationSummary[];
   activation: (GraphActivationSummary & {
-    input: Record<string, string>; events: EngineEvent[]; error?: string;
+    input: Record<string, string>; output?: Record<string, string>; events: EngineEvent[]; error?: string;
     createdAt: string; updatedAt: string;
     submission?: { choice: { origin: string; id: string }; payload: Record<string, string>; acceptedAt?: string };
   }) | null;
@@ -141,6 +152,7 @@ export type MessageSubmission = { text: string; mentions: FileMention[]; sources
 
 export type PermissionDecision = 'once' | 'session' | 'always' | 'reject' | 'deny_project' | 'allow_global' | 'deny_global';
 export type QuestionItem = {
+  description?: string;
   id: string;
   header: string;
   text: string;
@@ -150,6 +162,8 @@ export type QuestionItem = {
   secret: boolean;
 };
 export type QuestionRequest = {
+  context?: string;
+  elicitation?: { connectionId: string; connectionName: string; mode: 'form' | 'url'; message: string; url?: string; schema?: Record<string, unknown>; callId: string };
   id: string;
   harness: Harness['id'];
   items: QuestionItem[];
@@ -239,6 +253,11 @@ export async function pickDirectory(signal?: AbortSignal): Promise<string | null
   const result = await request<{ path: string | null }>('/api/dialogs/directory', 'POST', {}, 15000, signal);
   return result.path;
 }
+
+export type OpenCodeConfiguration = { version: 'v1' | 'v2'; v1Path: string; v2Path: string };
+export type OpenCodeSettingsState = { settings: OpenCodeConfiguration; activeVersion: 'v1' | 'v2'; restartRequired: boolean };
+export const getOpenCodeSettings = (signal?: AbortSignal) => request<OpenCodeSettingsState>('/api/opencode/settings', 'GET', undefined, 15000, signal);
+export const updateOpenCodeSettings = (settings: OpenCodeConfiguration) => request<OpenCodeSettingsState>('/api/opencode/settings', 'PATCH', settings);
 
 export const getTranscriptionSettings = (signal?: AbortSignal) => request<TranscriptionSettings>('/api/transcription/settings', 'GET', undefined, 15000, signal);
 export const updateTranscriptionSettings = (settings: TranscriptionSettingsUpdate) => request<TranscriptionSettings>('/api/transcription/settings', 'PATCH', settings);

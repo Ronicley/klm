@@ -8,7 +8,7 @@ import (
 
 func (a *app) controlGraphRun(w http.ResponseWriter, req *http.Request) {
 	control := req.PathValue("control")
-	if control != "pause" && control != "resume" {
+	if control != "pause" && control != "resume" && control != "stop" {
 		fail(w, 404, "Unknown graph control.")
 		return
 	}
@@ -18,6 +18,18 @@ func (a *app) controlGraphRun(w http.ResponseWriter, req *http.Request) {
 	r := a.state.graphRun(req.PathValue("runId"))
 	if s == nil || s.ParentID != "" || s.GraphRunID != "" || r == nil || r.ConversationID != s.ID {
 		fail(w, 404, "Run not found in this conversation.")
+		return
+	}
+	if control == "stop" {
+		if r.StopRequested || r.Status == "ending" || !graphRunActive(r.Status) {
+			respond(w, 200, a.state.graphProjection(s.ID))
+			return
+		}
+		if err := a.endGraphLocked(r.ID, GraphRunResult{Kind: "interrupted", Error: "Graph stopped by the user."}, ""); err != nil {
+			fail(w, 409, err.Error())
+			return
+		}
+		respond(w, 200, a.state.graphProjection(s.ID))
 		return
 	}
 	if (r.Status != "starting" && r.Status != "running") || a.graphRuns[r.ID] == nil || a.closing {
@@ -59,14 +71,16 @@ func (a *app) setGraphPausedLocked(runID string, pause bool) error {
 }
 
 type graphActivitySummary struct {
-	ID         string `json:"id"`
-	Occurrence uint64 `json:"occurrence"`
-	Status     string `json:"status"`
+	ID          string `json:"id"`
+	Occurrence  uint64 `json:"occurrence"`
+	Status      string `json:"status"`
+	RetryReason string `json:"retryReason,omitempty"`
 }
 
 type graphActivityDetail struct {
 	graphActivitySummary
 	Input      map[string]string      `json:"input"`
+	Output     map[string]string      `json:"output,omitempty"`
 	Submission *GraphChoiceSubmission `json:"submission,omitempty"`
 	Events     []Event                `json:"events"`
 	Error      string                 `json:"error,omitempty"`
@@ -86,7 +100,7 @@ func (a *app) getGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	nodeID := r.PathValue("nodeId")
 	node, ok := run.Snapshot.Graph.Definition.Nodes[nodeID]
-	if !ok || (node.Type != "agent" && node.Type != "join") {
+	if !ok || node.Type == "" {
 		a.mu.Unlock()
 		fail(w, 404, "Agent node not found in this run.")
 		return
@@ -99,7 +113,7 @@ func (a *app) getGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 		if x.RunID != run.ID || x.NodeID != nodeID {
 			continue
 		}
-		summaries = append(summaries, graphActivitySummary{x.ID, x.Occurrence, x.Status})
+		summaries = append(summaries, graphActivitySummary{ID: x.ID, Occurrence: x.Occurrence, Status: x.Status, RetryReason: a.state.graphRetryReason(run, x)})
 		if requested != "" {
 			if x.ID == requested {
 				selected = x
@@ -116,22 +130,46 @@ func (a *app) getGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	var detail *graphActivityDetail
 	if x := selected; x != nil {
-		events := append([]Event{}, x.Events...)
+		events := a.state.graphActivationEvents(x)
 		updatedAt := x.UpdatedAt
 		if native := a.state.session(x.SessionID); native != nil {
-			start := min(max(0, x.NativeEventStart), len(native.Events))
-			end := x.NativeEventEnd
 			if graphActivationActive(x.Status) {
-				end = len(native.Events)
 				updatedAt = native.UpdatedAt
 			}
-			end = min(max(start, end), len(native.Events))
-			events = append(events, native.Events[start:end]...)
 		}
 		sort.SliceStable(events, func(i, j int) bool { return events[i].CreatedAt < events[j].CreatedAt })
-		detail = &graphActivityDetail{graphActivitySummary: graphActivitySummary{x.ID, x.Occurrence, x.Status}, Input: x.Input, Submission: x.Submission, Events: events, Error: x.Error, CreatedAt: x.CreatedAt, UpdatedAt: updatedAt}
+		detail = &graphActivityDetail{graphActivitySummary: graphActivitySummary{ID: x.ID, Occurrence: x.Occurrence, Status: x.Status, RetryReason: a.state.graphRetryReason(run, x)}, Input: x.Input, Output: x.Output, Submission: x.Submission, Events: events, Error: x.Error, CreatedAt: x.CreatedAt, UpdatedAt: updatedAt}
 	}
-	response := map[string]any{"runActive": graphRunActive(run.Status), "activations": summaries, "activation": detail}
+	response := map[string]any{"runActive": graphRunActive(run.Status), "activations": summaries, "activation": detail, "capabilities": run.Snapshot.Capabilities[nodeID]}
+	if selected != nil && run.RetrySourceRunID != "" {
+		for _, previous := range a.state.GraphActivations {
+			if previous.RunID == run.RetrySourceRunID && previous.NodeID == selected.NodeID && previous.Occurrence == selected.Occurrence {
+				response["previousAttempt"] = map[string]string{"runId": previous.RunID, "activationId": previous.ID}
+				break
+			}
+		}
+	}
 	a.mu.Unlock()
 	respond(w, 200, response)
+}
+
+func (d *diskState) graphActivationEvents(x *GraphActivation) []Event {
+	for x.ReusedFromActivationID != "" {
+		source := d.graphActivation(x.ReusedFromActivationID)
+		if source == nil {
+			break
+		}
+		x = source
+	}
+	events := append([]Event{}, x.Events...)
+	if native := d.session(x.SessionID); native != nil {
+		start := min(max(0, x.NativeEventStart), len(native.Events))
+		end := x.NativeEventEnd
+		if graphActivationActive(x.Status) {
+			end = len(native.Events)
+		}
+		end = min(max(start, end), len(native.Events))
+		events = append(events, native.Events[start:end]...)
+	}
+	return events
 }

@@ -213,8 +213,11 @@ type catalogRPC struct {
 
 func newCatalogRPC(ctx context.Context, b binary, cwd string, pi bool) (*catalogRPC, error) {
 	args := []string{"app-server", "--listen", "stdio://"}
+	if !pi {
+		args = append(codexLibraryFlags(), args...)
+	}
 	if pi {
-		args = []string{"--mode", "rpc", "--no-extensions", "--no-session"}
+		args = []string{"--mode", "rpc", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"}
 	}
 	t := &turn{ctx: ctx}
 	process, err := startInteractive(t, b, args, cwd, nil)
@@ -431,11 +434,15 @@ func (b *limitedOutput) Write(p []byte) (int, error) {
 
 // Short-lived authenticated loopback server used only for catalog/config reads.
 func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, error) {
-	h := &openCodeHTTP{directory: cwd, password: newID()}
+	h := &openCodeHTTP{directory: cwd, password: newID(), v1: b.openCodeV1}
 	transport := &http.Transport{ResponseHeaderTimeout: 15 * time.Second}
 	defer transport.CloseIdleConnections()
 	h.client = &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("Redirect refused.") }}
-	cmd := exec.CommandContext(ctx, b.path, append(append([]string{}, b.args...), "serve", "--hostname", "127.0.0.1", "--port", "0")...)
+	args := append(append([]string{}, b.args...), "serve", "--hostname", "127.0.0.1", "--port", "0")
+	if h.v1 {
+		args = append(args, "--mdns=false")
+	}
+	cmd := exec.CommandContext(ctx, b.path, args...)
 	cmd.Dir = cwd
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
@@ -443,7 +450,7 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 			cmd.Env = append(cmd.Env, entry)
 		}
 	}
-	cmd.Env = append(cmd.Env, "OPENCODE_PASSWORD="+h.password)
+	cmd.Env = append(cmd.Env, openCodeServerEnv(h.v1, h.password)...)
 	configureProcess(cmd)
 	cmd.Cancel = func() error { return killTree(cmd.Process) }
 	cmd.WaitDelay = 3 * time.Second
@@ -461,7 +468,7 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 4096), openCodeFrameLimit)
 		for scanner.Scan() {
-			if value, ok := strings.CutPrefix(strings.TrimSpace(scanner.Text()), "server listening on "); ok {
+			if value, ok := strings.CutPrefix(strings.TrimSpace(scanner.Text()), openCodeServerPrefix(h.v1)); ok {
 				select {
 				case address <- value:
 				default:
@@ -483,6 +490,12 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 		return nil, errors.New("OpenCode catalog server exited.")
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+	if err := h.checkVersion(ctx); err != nil {
+		return nil, err
+	}
+	if h.v1 {
+		return h.v1Catalog(ctx)
 	}
 	return h.v2Catalog(ctx)
 }

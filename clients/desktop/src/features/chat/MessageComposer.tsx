@@ -1,16 +1,17 @@
-import { ArrowUp, FileText, Folder, ImagePlus, ListPlus, LoaderCircle, Mic, Paperclip, Square } from 'lucide-react';
+import { ArrowUp, FileText, Folder, ImagePlus, ListPlus, LoaderCircle, Mic, Paperclip, Square, X } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
 import { legacyImageFiles, request, transcribeAudio, type ChatImage, type FileMention, type ProjectPath } from '../../engine';
 import { mentionQuery } from './mentions';
 import { MentionEditor, type MentionEditorHandle } from './MentionEditor';
 import { FileAttachments, type FileInfo } from './FileAttachments';
-
-export type SendMode = 'queue' | 'steer';
+import { IS_MOBILE_HOST } from '../../platform';
+import { MobileAudioRecording } from './mobileAudio';
+export type SendMode = 'queue' | 'steer' | 'interrupt';
 
 export type ComposerDraft = { text: string; mentions: FileMention[]; files?: File[]; missingFiles?: FileInfo[]; images?: { id: string; name: string; size: number; uploaded?: ChatImage }[] };
 
-type AudioState = 'idle' | 'recording' | 'transcribing';
+type AudioState = 'idle' | 'starting' | 'recording' | 'transcribing';
 
 const recordingTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
 
@@ -52,6 +53,9 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
   const recorder = useRef<MediaRecorder | null>(null);
   const audioStream = useRef<MediaStream | null>(null);
   const transcriptionRequest = useRef<AbortController | null>(null);
+  const mobileAudioOperation = useRef<AbortController | null>(null);
+  const mobileRecording = useRef<MobileAudioRecording | null>(null);
+  const mobileAudioBusy = useRef(false);
   const mounted = useRef(true);
   const query = focused && !composing && projectId ? mentionQuery(text, caret, mentions) : null;
   const queryKey = query ? JSON.stringify([projectId, query.start, query.query]) : '';
@@ -79,6 +83,7 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
     return () => {
       mounted.current = false;
       transcriptionRequest.current?.abort();
+      mobileAudioOperation.current?.abort();
       const activeRecorder = recorder.current;
       if (activeRecorder) {
         activeRecorder.ondataavailable = null;
@@ -91,14 +96,21 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       audioStream.current = null;
     };
   }, []);
+  useEffect(() => {
+    if (!IS_MOBILE_HOST) return;
+    const onVisibility = () => {
+      if (document.hidden && mobileAudioOperation.current) cancelMobileRecording('Audio recording was cancelled when the app left the foreground.');
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
   function selectPath(path: ProjectPath) {
     if (!query) return;
     editor.current?.insertMention(path, query);
     setDismissed(queryKey);
   }
-  function send(mode: SendMode = 'queue') {
-    if (!canSend || disabled || submittedDraft.current === draft) return;
-    setError('');
+  function send(mode: SendMode = 'steer') {
+    if (!canSend || disabled || submittedDraft.current === draft) return;    setError('');
     try {
       // The parent synchronously owns the pending draft before starting HTTP.
       if (onSend(draft, mode) !== false) { submittedDraft.current = draft; onDraftChange({ text: '', mentions: [] }); }
@@ -126,8 +138,60 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
     onDraftChange({ ...draft, files: next, missingFiles: missingFiles.filter(missing => !selected.some(file => file.name === missing.name && file.size === missing.size)), images: legacyImages.filter(image => image.uploaded || !selected.some(file => file.name === image.name && file.size === image.size)) });
     setError('');
   }
+  function cancelMobileRecording(message = '') {
+    const operation = mobileAudioOperation.current;
+    mobileAudioOperation.current = null;
+    mobileRecording.current = null;
+    mobileAudioBusy.current = false;
+    operation?.abort();
+    if (mounted.current) {
+      setAudioState('idle');
+      setError(message);
+    }
+  }
+  async function toggleMobileRecording() {
+    if (!onTranscription || mobileAudioBusy.current) return;
+    const active = mobileRecording.current;
+    const operation = mobileAudioOperation.current ?? new AbortController();
+    mobileAudioOperation.current = operation;
+    mobileAudioBusy.current = true;
+    setError('');
+    if (active) {
+      setAudioState('transcribing');
+      try {
+        const { audio, filename } = await active.stop();
+        if (operation.signal.aborted) return;
+        const text = await transcribeAudio(audio, filename, operation.signal);
+        if (mounted.current && !operation.signal.aborted) onTranscription(text);
+      } catch (error) {
+        if (mounted.current && !operation.signal.aborted) setError(error instanceof Error ? error.message : 'Transcription failed. Retry.');
+      } finally {
+        if (mobileAudioOperation.current === operation) {
+          mobileAudioOperation.current = null;
+          mobileRecording.current = null;
+          mobileAudioBusy.current = false;
+          if (mounted.current) setAudioState('idle');
+        }
+      }
+      return;
+    }
+    setAudioState('starting');
+    try {
+      const recording = new MobileAudioRecording(operation.signal, message => {
+        if (mobileAudioOperation.current === operation) cancelMobileRecording(message);
+      });
+      mobileRecording.current = recording;
+      await recording.start();
+      if (mounted.current && !operation.signal.aborted) setAudioState('recording');
+    } catch (error) {
+      if (mobileAudioOperation.current === operation) cancelMobileRecording(error instanceof Error ? error.message : 'Could not start audio recording. Retry.');
+    } finally {
+      if (mobileAudioOperation.current === operation) mobileAudioBusy.current = false;
+    }
+  }
   async function toggleRecording() {
     if (!onTranscription || audioState === 'transcribing') return;
+    if (IS_MOBILE_HOST) { await toggleMobileRecording(); return; }
     if (audioState === 'recording') {
       setAudioState('transcribing');
       if (recorder.current?.state !== 'inactive') recorder.current?.stop();
@@ -192,6 +256,8 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       }
     }
   }
+  const sendButton = <IconButton label={running ? 'Send on next turn' : 'Send message'} variant="soft" type="submit" disabled={!canSend || disabled} className="send-button">{running ? <ListPlus /> : <ArrowUp />}</IconButton>;
+  const mobileSendVisible = canSend;
   return <form className="composer" aria-label="Message composer" onSubmit={event => { event.preventDefault(); send(); }}
     onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = disabled ? 'none' : 'copy'; } }}
     onDropCapture={event => {
@@ -237,7 +303,6 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       } else if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
     }} />
     {error && <p role="alert" className="form-error composer-error">{error}</p>}
-    <div className="composer-controls"><div className="composer-graph-control"><IconButton label="Attach files" disabled={disabled} onClick={() => fileInput.current?.click()}><Paperclip /></IconButton><IconButton label="Attach images" disabled={disabled} onClick={() => imageInput.current?.click()}><ImagePlus /></IconButton>{graphControl}</div>
-      <div className="composer-model-controls">{modelControl}{running && canSend && <Button size="sm" disabled={disabled} onClick={() => void send('steer')}>Send now</Button>}{running && onStop && <IconButton label="Stop response" variant="outline" onClick={onStop}><Square /></IconButton>}{onTranscription && <IconButton label={audioState === 'recording' ? 'Stop recording' : audioState === 'transcribing' ? 'Transcribing audio' : 'Record audio'} aria-pressed={audioState === 'recording'} variant={audioState === 'recording' ? 'danger-soft' : 'ghost'} disabled={(disabled && audioState === 'idle') || audioState === 'transcribing'} className={`audio-record-button ${audioState === 'recording' ? 'is-recording' : ''}`} onClick={() => void toggleRecording()}>{audioState === 'recording' ? <Square /> : audioState === 'transcribing' ? <LoaderCircle className="audio-spinner" /> : <Mic />}</IconButton>}<IconButton label={running ? 'Queue message' : 'Send message'} variant="soft" type="submit" disabled={!canSend || disabled} className="send-button">{running ? <ListPlus /> : <ArrowUp />}</IconButton></div></div>
+    <div className="composer-controls"><div className="composer-graph-control"><IconButton label="Attach files" disabled={disabled} onClick={() => fileInput.current?.click()}><Paperclip /></IconButton><IconButton label="Attach images" disabled={disabled} onClick={() => imageInput.current?.click()}><ImagePlus /></IconButton>{graphControl}</div><div className="composer-model-controls">{modelControl}{running && canSend && <Button size="sm" disabled={disabled} onClick={() => void send('interrupt')}>Send now</Button>}{running && onStop && <IconButton label="Stop response" variant="outline" onClick={onStop}><Square /></IconButton>}{onTranscription && <IconButton label={audioState === 'recording' ? 'Stop recording' : audioState === 'starting' ? 'Requesting microphone access' : audioState === 'transcribing' ? 'Transcribing audio' : 'Record audio'} aria-pressed={audioState === 'recording'} variant={audioState === 'recording' ? 'danger-soft' : 'ghost'} disabled={(disabled && audioState === 'idle') || audioState === 'starting' || audioState === 'transcribing'} className={`audio-record-button ${audioState === 'recording' ? 'is-recording' : ''}`} onClick={() => void toggleRecording()}>{audioState === 'recording' ? <Square /> : audioState !== 'idle' ? <LoaderCircle className="audio-spinner" /> : <Mic />}</IconButton>}{IS_MOBILE_HOST && audioState !== 'idle' && <IconButton label="Cancel audio" onClick={() => cancelMobileRecording()}><X /></IconButton>}{IS_MOBILE_HOST ? <span className={`mobile-send-slot ${mobileSendVisible ? 'is-visible' : ''}`} inert={!mobileSendVisible} aria-hidden={!mobileSendVisible}><span className="mobile-send-slide">{sendButton}</span></span> : sendButton}</div></div>
   </form>;
 }

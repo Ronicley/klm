@@ -17,6 +17,7 @@ type SessionSpawn struct {
 	Title             string    `json:"title"`
 	Prompt            string    `json:"prompt"`
 	Workspace         string    `json:"workspace"`
+	TopicID           string    `json:"topicId,omitempty"`
 	Harness           string    `json:"harness"`
 	Model             string    `json:"model"`
 	Effort            string    `json:"effort"`
@@ -104,7 +105,7 @@ func (d *diskState) conversationArchived(s *Session) bool {
 		return true
 	}
 	p := d.project(s.ProjectID)
-	return s.Archived || p != nil && folderArchived(p, s.Workspace) || s.Role == sessionRoleSideAgent && (d.session(s.ParentID) == nil || d.session(s.ParentID).Archived)
+	return s.Archived || d.topicArchived(s) || d.TopicSchema == 0 && p != nil && folderArchived(p, s.Workspace) || s.Role == sessionRoleSideAgent && (d.session(s.ParentID) == nil || d.session(s.ParentID).Archived)
 }
 
 func (a *app) existingSpawnLocked(from *Session, args spawnArgs) (*SessionSpawn, error) {
@@ -163,20 +164,19 @@ func (a *app) spawnSelectionLocked(from *Session, args spawnArgs) (Session, erro
 	if project == nil || project.Removed {
 		return Session{}, spawnProblem("project", "project_unavailable", "Project is unavailable.", "Create sessions only in this sender's available project.")
 	}
-	group := args.Workspace
-	if group == "" {
-		if from.Role == sessionRoleGeneralAgent {
-			group = "Ungrouped"
-		} else {
-			group = from.Workspace
+	if args.Workspace != "" {
+		return Session{}, spawnProblem("workspace", "topic_override", "Visual folder overrides are no longer supported.", "Omit workspace. The engine inherits the source topic; sessions created by the general agent start without a topic.")
+	}
+	group, topicID := "Ungrouped", ""
+	if from.Role != sessionRoleGeneralAgent {
+		if a.state.conversationArchived(from) {
+			return Session{}, spawnProblem("topic", "source_archived", "The source conversation or topic is archived.", "Restore it before creating sessions.")
 		}
-	}
-	group, ok = workspace(project, group)
-	if !ok && args.Workspace == "" {
-		group, ok = "Ungrouped", true
-	}
-	if !ok {
-		return Session{}, spawnProblem("workspace", "invalid_workspace", "Workspace must be Ungrouped or an active project folder.", "Omit workspace to inherit an active folder, use Ungrouped, or choose an active folder from session_spawn_options.")
+		topic := a.state.sessionTopic(from)
+		if topic == nil {
+			return Session{}, spawnProblem("topic", "topic_pending", "The main conversation has no topic yet.", "The main agent must call session_topic_set during its normal turn before spawning. A side agent must ask the main to assign its topic; side agents cannot assign it.")
+		}
+		topicID = topic.ID
 	}
 	harness := args.Harness
 	if harness == "" {
@@ -211,6 +211,7 @@ func (a *app) spawnSelectionLocked(from *Session, args spawnArgs) (Session, erro
 		}
 	}
 	selection := Session{ProjectID: projectID, Title: title, Workspace: group, Harness: harness, Model: model, Effort: effort, YOLO: from.YOLO}
+	selection.TopicID = topicID
 	if args.YOLO != nil {
 		selection.YOLO = *args.YOLO
 	}
@@ -219,6 +220,7 @@ func (a *app) spawnSelectionLocked(from *Session, args spawnArgs) (Session, erro
 
 func spawnReceiptResult(receipt SessionSpawn) map[string]any {
 	result := map[string]any{"sessionId": receipt.SessionID, "title": receipt.Title, "messageId": receipt.MessageID, "yolo": receipt.YOLO, "accepted": true}
+	result["topicId"] = receipt.TopicID
 	if receipt.Request.ProjectID != "" {
 		result["projectId"], result["folder"] = receipt.Request.ProjectID, receipt.Workspace
 		result["harness"], result["model"], result["effort"] = receipt.Harness, receipt.Model, receipt.Effort
@@ -227,6 +229,9 @@ func spawnReceiptResult(receipt SessionSpawn) map[string]any {
 }
 
 func (a *app) spawnSessionLocked(from *Session, args spawnArgs) (any, error) {
+	if len(a.state.LibraryDeletions) > 0 {
+		return nil, spawnProblem("library", "recovery_pending", "A library deletion needs recovery before inheriting capabilities.", "Finish Library recovery, then retry this creation request.")
+	}
 	if args.SourceUserEventID != "" {
 		if existing, err := a.existingSpawnLocked(from, args); err != nil {
 			return nil, err
@@ -240,6 +245,8 @@ func (a *app) spawnSessionLocked(from *Session, args spawnArgs) (any, error) {
 	}
 	s := newTopLevelSession(selection.ProjectID, selection.Title, selection.Workspace, selection.Harness, selection.Model, selection.Effort)
 	s.YOLO = selection.YOLO
+	s.TopicID = selection.TopicID
+	s.Capabilities = inheritedCapabilities(from)
 	request := args
 	if args.YOLO != nil {
 		selected := *args.YOLO
@@ -248,6 +255,7 @@ func (a *app) spawnSessionLocked(from *Session, args spawnArgs) (any, error) {
 	q := QueuedMessage{ID: newID(), Text: args.Prompt, Status: "queued", Mode: "queue", Origin: &SpawnOrigin{SessionID: from.ID, Title: from.Title, SourceUserEventID: args.SourceUserEventID}}
 	receipt := SessionSpawn{Request: request, From: from.ID, SessionID: s.ID, MessageID: q.ID, SourceUserEventID: args.SourceUserEventID, OperationID: args.OperationID,
 		Title: s.Title, Prompt: args.Prompt, Workspace: s.Workspace, Harness: s.Harness, Model: s.Model, Effort: s.Effort, YOLO: s.YOLO}
+	receipt.TopicID = s.TopicID
 	if err := a.commitLocked(func(d *diskState) {
 		a.appendTopLevelSession(d, s)
 		d.session(s.ID).Queue = []QueuedMessage{q}
@@ -259,7 +267,8 @@ func (a *app) spawnSessionLocked(from *Session, args spawnArgs) (any, error) {
 		origin := d.session(from.ID)
 		e := event("session_spawn", "")
 		e.Title = "Created " + s.Title
-		e.Data = map[string]any{"sessionId": s.ID, "title": s.Title, "messageId": q.ID, "yolo": s.YOLO}
+		e.Data = map[string]any{"sessionId": s.ID, "title": s.Title, "messageId": q.ID, "yolo": s.YOLO,
+			"harness": s.Harness, "model": s.Model, "effort": s.Effort}
 		origin.Events = append(origin.Events, e)
 		origin.UpdatedAt = now()
 	}); err != nil {

@@ -3,6 +3,11 @@ const permissionConfig = /*KLM_PERMISSION_CONFIG*/{};
 export default {
   id: "klm.policy",
   async setup(ctx) {
+    // KLM owns the execution directory and cannot follow native session moves.
+    await ctx.tool.transform((editor) => { editor.remove("opencode_session_move"); });
+    await ctx.session.hook("context", (event) => {
+      event.system.push({ type: "text", text: "KLM assigns this session's execution directory. Do not move or reassociate the native session. Access worktrees with absolute paths and an explicit tool workdir when supported, subject to normal permissions." });
+    });
     await ctx.tool.hook("execute.before", async (event) => {
       const response = await fetch(permissionConfig.url, {
         method: "POST",
@@ -14,7 +19,9 @@ export default {
       });
       if (!response.ok) throw new Error("KLM permission gate is unavailable.");
       const envelope = await response.json();
-      if (envelope.error || envelope.result?.allowed !== true) throw new Error("Permission denied by KLM.");
+      if (envelope.error) throw new Error(envelope.error.message || "KLM tool preflight failed.");
+      if (envelope.result?.allowed === false) throw new Error("Permission denied by KLM.");
+      if (envelope.result?.allowed !== true) throw new Error("Invalid KLM tool preflight response.");
     });
     if (permissionConfig.yolo) {
       await ctx.agent.transform((editor) => {
