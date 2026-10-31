@@ -332,6 +332,9 @@ func (a *app) scanAgentCatalogLocked(ctx context.Context, projectID string) (*ag
 	}
 	foundProject := projectID == ""
 	for _, p := range scan.projects {
+		if p.Removed {
+			continue
+		}
 		if _, journalErr := readConfig(p, authoringJournal); journalErr == nil {
 			scan.recoveryPending = true
 			scan.Complete, scan.referencesComplete = false, false
@@ -366,6 +369,18 @@ func (a *app) scanAgentCatalogLocked(ctx context.Context, projectID string) (*ag
 		scan.sources[record.ID] = record
 	}
 	for _, p := range scan.projects {
+		if p.Removed {
+			// Removed projects are dormant, including their authoring files. Keep
+			// known slug/identity reservations without requiring the old directory
+			// or treating its absence as deletion of those source lifetimes.
+			for key, prior := range scan.previous {
+				if prior.Source.ProjectID == p.ID && prior.State != "deleted" {
+					prior.State = "source_unavailable"
+					scan.sources[key] = prior
+				}
+			}
+			continue
+		}
 		seen := map[string]bool{}
 		err := agentDirectoryFiles(ctx, p, "agents", ".toml", func(id string, data []byte) error {
 			seen[agentFile(id)] = true
