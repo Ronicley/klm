@@ -1,0 +1,25 @@
+[Unit]
+Description=KLM engine (CLI-managed background worker)
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=klm
+Group=klm
+WorkingDirectory=/opt/klm/bin
+Environment=HOME=/var/lib/klm
+Environment=XDG_CONFIG_HOME=/var/lib/klm/.config
+Environment=KLM_API_BIND_HOST=127.0.0.1
+EnvironmentFile=/etc/klm/engine.env
+UMask=0077
+ExecStart=/opt/klm/bin/klm start
+ExecStop=/opt/klm/bin/klm stop
+TimeoutStartSec=150
+TimeoutStopSec=180
+KillMode=control-group
+Restart=no
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

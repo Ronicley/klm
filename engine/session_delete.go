@@ -99,6 +99,10 @@ func removeSessionRecords(d *diskState, root string, ids, runs map[string]bool) 
 }
 
 func (a *app) deleteSession(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.deleteSQLSession(w, r)
+		return
+	}
 	id := r.PathValue("id")
 	a.mu.Lock()
 	if record := a.state.DeletedSessions[id]; record.RootID != "" && record.RootID != id {
@@ -200,6 +204,9 @@ func (a *app) deleteSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) cleanupDeletedSessions(root string) error {
+	if a.store != nil {
+		return a.cleanupSQLDeletedSessions(root)
+	}
 	a.mu.Lock()
 	entries := map[string]deletedSession{}
 	for id, record := range a.state.DeletedSessions {

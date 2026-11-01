@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"os/exec"
 	"sync"
 	"time"
@@ -13,19 +15,20 @@ const sessionRuntimeIdleTimeout = 40 * time.Minute
 // sessionRuntime owns the process container shared by ordinary turns in one
 // conversation. Graph node processes intentionally never use this lifetime.
 type sessionRuntime struct {
-	app          *app
-	id           string
-	mu           sync.Mutex
-	group        *runtimeProcessGroup
-	bridge       *linkedBridge
-	interactive  *runtimeInteractive
-	openCode     *openCodeServer
-	openCodeKey  string
-	cancel       context.CancelFunc
-	closed       bool
-	turnActive   bool
-	shutdownDone chan struct{}
-	shutdownErr  error
+	app               *app
+	id                string
+	mu                sync.Mutex
+	group             *runtimeProcessGroup
+	bridge            *linkedBridge
+	interactive       *runtimeInteractive
+	openCode          *openCodeServer
+	openCodeKey       string
+	cancel            context.CancelFunc
+	closed            bool
+	turnActive        bool
+	refreshBeforeTurn bool // Retain idle resources, but never reuse their managed profile.
+	shutdownDone      chan struct{}
+	shutdownErr       error
 }
 
 type runtimeInteractive struct {
@@ -44,17 +47,24 @@ type runtimeShutdown struct {
 	openCode    *openCodeServer
 }
 
-func (a *app) beginSessionRuntime(id string) *sessionRuntime {
+func (a *app) beginSessionRuntime(id string) (*sessionRuntime, error) {
 	for {
 		a.mu.Lock()
 		r := a.runtimes[id]
 		if r == nil {
 			r = &sessionRuntime{app: a, id: id}
+			if a.runtimes == nil {
+				a.runtimes = map[string]*sessionRuntime{}
+			}
 			a.runtimes[id] = r
 		}
 		a.mu.Unlock()
-		if r.beginTurn() {
-			return r
+		ready, err := r.beginTurn()
+		if err != nil {
+			return nil, err
+		}
+		if ready {
+			return r, nil
 		}
 		a.mu.Lock()
 		if a.runtimes[id] == r {
@@ -64,25 +74,45 @@ func (a *app) beginSessionRuntime(id string) *sessionRuntime {
 	}
 }
 
-func (r *sessionRuntime) beginTurn() bool {
+func (r *sessionRuntime) beginTurn() (bool, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.closed {
-		return false
+		r.mu.Unlock()
+		return false, r.shutdown()
+	}
+	if r.group != nil {
+		// Capture carried workload before the new harness can be classified as
+		// infrastructure, even if the idle watcher has not run between turns.
+		if err := r.group.BeginTurn(); err != nil {
+			r.mu.Unlock()
+			return false, errors.Join(err, r.shutdown())
+		}
 	}
 	if r.cancel != nil {
 		r.cancel()
 		r.cancel = nil
 	}
 	r.turnActive = true
-	if r.group != nil {
-		r.group.BeginTurn()
+	if r.refreshBeforeTurn {
+		// Rotate only turn-scoped transports/profiles. The session Job also owns
+		// user workloads (browsers, servers, etc.) and must survive this boundary.
+		resources := runtimeShutdown{bridge: r.bridge, interactive: r.interactive, openCode: r.openCode}
+		retireErr := closeRuntimeResources(resources)
+		if retireErr != nil || resources.openCode != nil && resources.openCode.Alive() {
+			r.mu.Unlock()
+			return false, errors.Join(errors.New("Could not confirm retirement of the previous managed profile."), retireErr, r.shutdown())
+		}
+		r.bridge, r.interactive, r.openCode = nil, nil, nil
+		r.openCodeKey = ""
+		r.refreshBeforeTurn = false
 	}
-	return true
+	r.mu.Unlock()
+	return true, nil
 }
 
 func (r *sessionRuntime) prepare(cmd *exec.Cmd) (*ownedProcess, error) {
 	r.mu.Lock()
+	created := false
 	if r.closed {
 		r.mu.Unlock()
 		return nil, context.Canceled
@@ -93,16 +123,75 @@ func (r *sessionRuntime) prepare(cmd *exec.Cmd) (*ownedProcess, error) {
 			r.mu.Unlock()
 			return nil, err
 		}
+		if err := group.BeginTurn(); err != nil {
+			_ = group.Close()
+			r.mu.Unlock()
+			return nil, err
+		}
 		r.group = group
-		r.group.BeginTurn()
+		created = true
 	}
 	group := r.group
 	r.mu.Unlock()
+	if created {
+		watchRuntimeGroup(group, r.supervisionFailed)
+	}
 	owner, err := prepareSessionOwnedProcess(cmd, group)
 	if err == nil {
 		r.publish()
 	}
 	return owner, err
+}
+
+// Loss of an idle supervisor is an observable failure too, not an indefinitely
+// retained "idle" runtime. Active adapters record their own native/teardown error.
+func (r *sessionRuntime) supervisionFailed(cause error) {
+	shutdownErr := r.shutdown()
+	a := r.app
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.runs[r.id] != nil {
+		return
+	}
+	message := errors.Join(cause, shutdownErr).Error()
+	if a.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = a.writeSQLLocked(ctx, func(st *sqliteSessionTx) error {
+			s, err := st.sessionMeta(r.id)
+			if err != nil {
+				return err
+			}
+			s.Status, s.UpdatedAt = "error", now()
+			if _, err := st.appendEvent(r.id, event("error", message)); err != nil {
+				return err
+			}
+			return st.putSessionMeta(s)
+		})
+	} else if a.state.session(r.id) != nil {
+		_ = a.commitLocked(func(d *diskState) {
+			s := d.session(r.id)
+			s.Status, s.UpdatedAt = "error", now()
+			s.Events = append(s.Events, event("error", message))
+		})
+	}
+}
+
+func (r *sessionRuntime) checkHealth() error {
+	r.mu.Lock()
+	group, closed, done := r.group, r.closed, r.shutdownDone
+	r.mu.Unlock()
+	if group != nil {
+		return runtimeGroupHealth(group)
+	}
+	if closed && done != nil {
+		<-done
+		r.mu.Lock()
+		err := r.shutdownErr
+		r.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (r *sessionRuntime) markInfrastructure() {
@@ -166,13 +255,14 @@ func (r *sessionRuntime) getInteractive(harness, model, effort, tools string) (*
 	return nil, false
 }
 
-func (r *sessionRuntime) retainInteractive(process *interactiveProcess, harness, model, effort, tools string, cleanup func()) error {
+func (r *sessionRuntime) retainInteractive(process *interactiveProcess, harness, model, effort, tools string, perTurn bool, cleanup func()) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return context.Canceled
 	}
 	r.interactive = &runtimeInteractive{process: process, harness: harness, model: model, effort: effort, tools: tools, cleanup: cleanup}
+	r.refreshBeforeTurn = perTurn
 	return nil
 }
 
@@ -205,7 +295,7 @@ func (r *sessionRuntime) getOpenCode(key string) (*openCodeServer, bool) {
 	return nil, false
 }
 
-func (r *sessionRuntime) retainOpenCode(server *openCodeServer, key string) error {
+func (r *sessionRuntime) retainOpenCode(server *openCodeServer, key string, perTurn bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -213,6 +303,7 @@ func (r *sessionRuntime) retainOpenCode(server *openCodeServer, key string) erro
 	}
 	r.openCode = server
 	r.openCodeKey = key
+	r.refreshBeforeTurn = perTurn
 	return nil
 }
 
@@ -226,7 +317,7 @@ func (r *sessionRuntime) discardOpenCode(server *openCodeServer) {
 	server.Close()
 }
 
-func closeRuntimeInteractive(current *runtimeInteractive) {
+func closeRuntimeInteractive(current *runtimeInteractive) error {
 	_ = current.process.EndInput()
 	timer := time.NewTimer(2 * time.Second)
 	defer timer.Stop()
@@ -244,9 +335,13 @@ draining:
 		}
 	}
 	_ = current.process.Close()
+	// Deliberate native termination can have a nonzero exit status. Ownership
+	// confirmation is separate and must not be discarded with that exit metadata.
+	ownedErr := current.process.owner.Close()
 	if current.cleanup != nil {
 		current.cleanup()
 	}
+	return ownedErr
 }
 
 func (r *sessionRuntime) finishTurn() {
@@ -364,10 +459,11 @@ func closeRuntimeResources(resources runtimeShutdown) error {
 		err = resources.group.Close()
 	}
 	if resources.interactive != nil {
-		closeRuntimeInteractive(resources.interactive)
+		err = errors.Join(err, closeRuntimeInteractive(resources.interactive))
 	}
 	if resources.openCode != nil {
 		resources.openCode.Close()
+		err = errors.Join(err, resources.openCode.owner.Close())
 	}
 	if resources.bridge != nil {
 		resources.bridge.close()
@@ -403,6 +499,27 @@ func (r *sessionRuntime) publish() {
 }
 
 func (a *app) notifySessionLocked(id string) {
+	if a.store != nil {
+		active := a.runtimes[id] != nil && a.runtimes[id].active()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = a.persistSQLLocked(ctx, func(st *sqliteSessionTx) error {
+			var before bool
+			err := st.tx.QueryRowContext(ctx, `SELECT active FROM runtime_activity WHERE session_id=?`, id).Scan(&before)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if before == active {
+				return nil
+			}
+			if _, err := st.tx.ExecContext(ctx, `INSERT INTO runtime_activity(session_id,active) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET active=excluded.active`, id, active); err != nil {
+				return err
+			}
+			st.changes.Sessions[id] = nil
+			return nil
+		})
+		return
+	}
 	for ch := range a.listeners[id] {
 		select {
 		case ch <- struct{}{}:
@@ -420,6 +537,7 @@ func (a *app) notifySessionLocked(id string) {
 
 func (a *app) sessionViewLocked(id string) *Session {
 	view := a.state.sessionView(id)
+	view = a.state.automationSessionView(view)
 	if view != nil {
 		view.RuntimeActive = a.runtimes[id] != nil && a.runtimes[id].active()
 		if view.Role == sessionRoleSideAgent {
@@ -450,6 +568,10 @@ func (p *adapter) markRuntimeInfrastructure() {
 }
 
 func (p *adapter) runtimeToolKey() string {
-	encoded, _ := json.Marshal(map[string]any{"tools": p.bridgeTools(), "yolo": p.yolo, "capabilities": p.capabilities, "internalSkills": p.internalSkills})
+	delegationTurn := ""
+	if p.delegation != nil {
+		delegationTurn = p.delegation.parentTurnID
+	}
+	encoded, _ := json.Marshal(map[string]any{"delegationTurn": delegationTurn, "automationRunId": p.automationRunID, "tools": p.bridgeTools(), "yolo": p.yolo, "capabilities": p.capabilities, "internalSkills": p.internalSkills})
 	return string(encoded)
 }

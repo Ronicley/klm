@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -134,6 +135,16 @@ func (a *app) readMCPCredential(id string) (mcpCredential, error) {
 	}
 	a.mu.Lock()
 	blob, exists := a.state.MCPCredentials[id]
+	if a.store != nil {
+		err := a.store.readSnapshot(context.Background(), func(tx *sql.Tx) error {
+			return decodeSQLiteRecord(context.Background(), tx, "mcp_credentials", id, 16<<20, &blob)
+		})
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			a.mu.Unlock()
+			return result, err
+		}
+		exists = err == nil
+	}
 	a.mu.Unlock()
 	if !exists {
 		return result, errors.New("MCP credentials were disconnected or removed; authenticate again.")
@@ -206,10 +217,14 @@ func (a *app) saveMCPConnection(w http.ResponseWriter, r *http.Request) {
 	a.libraryMu.Lock()
 	defer a.libraryMu.Unlock()
 	a.mu.Lock()
-	old, exists := a.state.MCPConnections[r.PathValue("connectionID")]
+	old, exists, readErr := a.mcpConnectionLocked(r.Context(), r.PathValue("connectionID"))
 	connectionCount := len(a.state.MCPConnections)
 	recovering := len(a.state.LibraryDeletions) > 0
 	a.mu.Unlock()
+	if readErr != nil {
+		sqlHTTPError(w, readErr)
+		return
+	}
 	if recovering {
 		fail(w, 409, "A library deletion needs recovery before editing connections.")
 		return
@@ -242,19 +257,23 @@ func (a *app) saveMCPConnection(w http.ResponseWriter, r *http.Request) {
 	c.Revision = newID()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	err = a.commitLocked(func(d *diskState) {
-		if d.MCPConnections == nil {
-			d.MCPConnections = map[string]MCPConnection{}
-		}
-		if d.MCPCredentials == nil {
-			d.MCPCredentials = map[string][]byte{}
-		}
-		d.MCPConnections[c.ID] = c
-		if blob != nil {
-			d.MCPCredentials[c.CredentialID] = blob
-		}
-		pruneMCPCredentials(d)
-	})
+	if a.store != nil {
+		err = a.sqlSaveMCPConnectionLocked(r.Context(), c, old, exists, blob)
+	} else {
+		err = a.commitLocked(func(d *diskState) {
+			if d.MCPConnections == nil {
+				d.MCPConnections = map[string]MCPConnection{}
+			}
+			if d.MCPCredentials == nil {
+				d.MCPCredentials = map[string][]byte{}
+			}
+			d.MCPConnections[c.ID] = c
+			if blob != nil {
+				d.MCPCredentials[c.CredentialID] = blob
+			}
+			pruneMCPCredentials(d)
+		})
+	}
 	if err != nil {
 		fail(w, 503, err.Error())
 		return
@@ -265,8 +284,12 @@ func (a *app) saveMCPConnection(w http.ResponseWriter, r *http.Request) {
 func (a *app) testMCPConnection(w http.ResponseWriter, r *http.Request) {
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(30 * time.Second))
 	a.mu.Lock()
-	c, exists := a.state.MCPConnections[r.PathValue("connectionID")]
+	c, exists, readErr := a.mcpConnectionLocked(r.Context(), r.PathValue("connectionID"))
 	a.mu.Unlock()
+	if readErr != nil {
+		sqlHTTPError(w, readErr)
+		return
+	}
 	if !exists {
 		fail(w, 404, "Connection not found.")
 		return
@@ -295,6 +318,29 @@ func (a *app) testMCPConnection(w http.ResponseWriter, r *http.Request) {
 	defer a.libraryMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.store != nil {
+		err := a.writeSQLLocked(r.Context(), func(st *sqliteSessionTx) error {
+			var current MCPConnection
+			if err := decodeSQLiteRecord(st.ctx, st.tx, "mcp_connections", c.ID, 8<<20, &current); err != nil {
+				return err
+			}
+			if current.Revision != c.Revision {
+				return controlError(409, "Connection changed during the test. Reload.")
+			}
+			current.LastTestAt, current.LastTestError = now(), message
+			if catalog != nil {
+				current.Catalog = catalog
+			}
+			c = current
+			return st.putRoot("mcp_connections", c.ID, c)
+		})
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		respond(w, 200, publicMCPConnection(c))
+		return
+	}
 	if current, ok := a.state.MCPConnections[c.ID]; !ok || current.Revision != c.Revision {
 		fail(w, 409, "Connection changed during the test. Reload.")
 		return

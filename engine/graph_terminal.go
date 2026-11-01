@@ -129,10 +129,20 @@ func (a *app) executeGraphTerminal(g *graphExecution, run GraphRun, x GraphActiv
 		return completion
 	}
 	a.mu.Lock()
-	workspace := a.state.graphWorkspace(x.WorkspaceID)
 	cwd := ""
-	if workspace != nil {
+	if a.store != nil {
+		workspace, readErr := a.readSQLGraphWorkspace(g.ctx, x.WorkspaceID)
+		if readErr != nil {
+			a.mu.Unlock()
+			completion.err = readErr
+			return completion
+		}
 		cwd = workspace.Directory
+	} else {
+		workspace := a.state.graphWorkspace(x.WorkspaceID)
+		if workspace != nil {
+			cwd = workspace.Directory
+		}
 	}
 	a.mu.Unlock()
 	if cwd == "" {

@@ -40,14 +40,17 @@ type Event struct {
 }
 
 type Session struct {
+	SelectedAgent        *AgentRecord             `json:"selectedAgent,omitempty"`
+	AgentSelectionLocked bool                     `json:"agentSelectionLocked,omitempty"`
+	AgentBinding         *SessionAgentBinding     `json:"agentBinding,omitempty"`
+	AgentConfig          *AgentConfigSummary      `json:"agentConfig,omitempty"`
+	Automation           *AutomationSession       `json:"automation,omitempty"`
 	Capabilities         ConversationCapabilities `json:"capabilities"`
 	Queue                []QueuedMessage          `json:"queue"`
 	Role                 string                   `json:"role,omitempty"`
 	GraphRunID           string                   `json:"graphRunId,omitempty"`
 	GraphNodeID          string                   `json:"graphNodeId,omitempty"`
 	ExecutionCWD         string                   `json:"executionCwd,omitempty"`
-	SelectedAgent        *AgentRecord             `json:"selectedAgent,omitempty"`
-	AgentSelectionLocked bool                     `json:"agentSelectionLocked,omitempty"`
 	SelectedGraphID      string                   `json:"selectedGraphId,omitempty"`
 	Graph                *ConversationGraphState  `json:"graph,omitempty"` // HTTP/SSE view only
 	ParentID             string                   `json:"parentId,omitempty"`
@@ -76,9 +79,10 @@ type Session struct {
 }
 
 type nativeSession struct {
-	OpenCodeVersion string `json:"openCodeVersion,omitempty"`
-	ID              string `json:"id,omitempty"`
-	Path            string `json:"path,omitempty"`
+	OpenCodeVersion string                   `json:"openCodeVersion,omitempty"`
+	ID              string                   `json:"id,omitempty"`
+	Path            string                   `json:"path,omitempty"`
+	Delegation      *DelegationCodexManifest `json:"delegation,omitempty"`
 }
 
 const defaultTranscriptionModel = "gpt-4o-mini-transcribe"
@@ -104,12 +108,24 @@ type TranscriptionProviderSettings struct {
 }
 
 type diskState struct {
-	OpenCode          OpenCodeSettings          `json:"openCode,omitempty"`
-	DeletedSessions   map[string]deletedSession `json:"deletedSessions,omitempty"`
-	DeletedOperations map[string]bool           `json:"deletedOperations,omitempty"`
-	Images            map[string]storedImage    `json:"images,omitempty"`
-	tx                *stateTransaction
-	TopicSchema       int `json:"topicSchema,omitempty"`
+	OpenCode              OpenCodeSettings                 `json:"openCode,omitempty"`
+	DeletedSessions       map[string]deletedSession        `json:"deletedSessions,omitempty"`
+	DeletedOperations     map[string]bool                  `json:"deletedOperations,omitempty"`
+	Images                map[string]storedImage           `json:"images,omitempty"`
+	DelegationBatches     []DelegationBatchRecord          `json:"delegationBatches,omitempty"`
+	DelegationInvocations []DelegationInvocationRecord     `json:"delegationInvocations,omitempty"`
+	DelegationChildren    map[string]DelegationChildRecord `json:"delegationChildren,omitempty"`
+	GlobalAgents          map[string]GlobalAgentRecord     `json:"globalAgents,omitempty"`
+	AgentSources          map[string]AgentSourceRecord     `json:"agentSources,omitempty"`
+	AgentCatalogChanges   []AgentCatalogChange             `json:"agentCatalogChanges,omitempty"`
+	EngineSettings        EngineSettings                   `json:"engineSettings"`
+	Automations           []Automation                     `json:"automations,omitempty"`
+	AutomationTriggers    []AutomationTrigger              `json:"automationTriggers,omitempty"`
+	AutomationRuns        []AutomationRun                  `json:"automationRuns,omitempty"`
+	AutomationRecoveries  []AutomationRecovery             `json:"automationRecoveries,omitempty"`
+	Analytics             *AnalyticsState                  `json:"analytics,omitempty"`
+	tx                    *stateTransaction
+	TopicSchema           int `json:"topicSchema,omitempty"`
 
 	ActivityBoardConfig      activityBoardConfig                `json:"activityBoardConfig,omitempty"`
 	ActivityBoardConnections map[string]activityBoardConnection `json:"activityBoardConnections,omitempty"`
@@ -271,17 +287,7 @@ func loadState(dir string) (diskState, error) {
 			if generalCount > 1 || s.ProjectID != "" || s.ParentID != "" || s.GraphRunID != "" || s.Archived || !filepath.IsAbs(s.ExecutionCWD) {
 				return d, errors.New("invalid general conversation in state.json")
 			}
-			// Conservatively retain the lock for any accepted input, including an
-			// input removed from the queue before execution or failed native turns.
-			if len(s.Events) > 0 || len(s.Queue) > 0 {
-				s.HarnessLocked = true
-			}
-			for key := range d.AcceptedMessages {
-				if strings.HasPrefix(key, s.ID+"/") {
-					s.HarnessLocked = true
-					break
-				}
-			}
+			d.normalizeGeneralHarnessLock(s)
 		}
 		if s.ID == "" || ids[s.ID] || !engineOwned && d.project(s.ProjectID) == nil || s.Events == nil ||
 			(s.Status != "idle" && s.Status != "running" && s.Status != "error") {
@@ -298,7 +304,10 @@ func loadState(dir string) (diskState, error) {
 				s.Role = sessionRoleSideAgent
 			}
 			parent := d.session(s.ParentID)
-			if parent == nil || parent.ParentID != "" || parent.GraphRunID != "" || s.GraphRunID != "" || parent.ProjectID != s.ProjectID || (s.Role != sessionRoleSideAgent && s.Role != sessionRoleSubagent) {
+			// Native workers may belong to a side conversation, but never to
+			// another worker or to an arbitrary deeper conversation hierarchy.
+			sideWorker := parent != nil && s.Role == sessionRoleSubagent && parent.Role == sessionRoleSideAgent && d.session(parent.ParentID) != nil && d.session(parent.ParentID).ParentID == ""
+			if parent == nil || parent.ParentID != "" && !sideWorker || parent.GraphRunID != "" || s.GraphRunID != "" || parent.ProjectID != s.ProjectID || (s.Role != sessionRoleSideAgent && s.Role != sessionRoleSubagent) {
 				return d, errors.New("invalid linked conversation in state.json")
 			}
 			if s.Role == sessionRoleSideAgent {
@@ -332,6 +341,9 @@ func loadState(dir string) (diskState, error) {
 	if err := validateSessionSpawns(&d); err != nil {
 		return d, err
 	}
+	if err := validateAutomationRecords(&d); err != nil {
+		return d, err
+	}
 	if err := validateWebhookRecords(&d); err != nil {
 		return d, err
 	}
@@ -354,6 +366,9 @@ func loadState(dir string) (diskState, error) {
 }
 
 func saveState(dir string, d *diskState) error {
+	if err := validateAutomationRecords(d); err != nil {
+		return err
+	}
 	if err := validateTopicRecords(d); err != nil {
 		return err
 	}
@@ -399,12 +414,18 @@ func saveState(dir string, d *diskState) error {
 
 // Caller holds app.mu. Every writer uses the same ordered durable transaction gate.
 func (a *app) commitLocked(change func(*diskState)) error {
+	if a.store != nil {
+		return a.failStorageLocked(errors.New("legacy persistence attempted while SQLite is authoritative"))
+	}
 	return a.commitTransactionLocked(func(d *diskState) error { change(d); return nil })
 }
 
 func (a *app) failStorageLocked(err error) error {
 	log.Printf("state persistence failed: %v", err)
 	a.storageErr = errors.New("state persistence failed; engine is read-only until restarted")
+	if a.harnessInstallCancel != nil {
+		a.harnessInstallCancel()
+	}
 	for _, r := range a.runs {
 		r.cancel()
 	}

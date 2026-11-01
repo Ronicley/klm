@@ -15,7 +15,7 @@ func TestCodexLibraryProbe(t *testing.T) {
 	if os.Getenv("KLM_RUN_LIBRARY_NATIVE_PROBES") != "1" {
 		t.Skip("set KLM_RUN_LIBRARY_NATIVE_PROBES=1 for disposable native probes")
 	}
-	_, binaries := discoverHarnesses()
+	_, binaries := discoverHarnesses(OpenCodeSettings{})
 	b, ok := binaries["codex"]
 	if !ok {
 		t.Skip("Codex not installed")

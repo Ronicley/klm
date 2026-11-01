@@ -1,15 +1,23 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { BookOpen, KeyRound, MessageSquare, Mic, Plus, Terminal, Trash2, X } from 'lucide-react';
+import { Bot, BookOpen, Info, KeyRound, MessageSquare, Mic, Plus, Server, Terminal, Trash2, X } from 'lucide-react';
+import { AgentsPage } from '../agents/AgentsPage';
 import { LibraryPanel } from '../library/LibraryPanel';
+import { AboutSettings } from './AboutSettings';
+import { ConnectedDevices } from './ConnectedDevices';
+import { EngineAccessSettings } from './EngineAccessSettings';
+import { HarnessSettings } from './HarnessSettings';
+import { EngineTimeSettings } from '../automations/EngineTimeSettings';
 import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
 import { Select } from '../../design-system/Select';
+import { OpenCodeSettings } from './OpenCodeSettings';
 import { ENGINE_URL, getTranscriptionSettings, updateTranscriptionSettings, type TranscriptionProvider, type TranscriptionSettings } from '../../engine';
 import { configureEngineURL, enableNotifications, IS_DESKTOP, IS_MOBILE_HOST, notificationPermission } from '../../platform';
+import { flushDrafts, forgetDrafts, hasEngineDraft, useEngineDraft } from '../drafts/draftStore';
+import { beginLocalActivity } from '../engines/localActivities';
+import { useEngines } from '../engines/EngineProvider';
 
-import { OpenCodeSettings } from './OpenCodeSettings';
-
-type SettingsSection = 'chat' | 'transcription' | 'opencode' | 'library';
+type SettingsSection = 'chat' | 'transcription' | 'opencode' | 'library' | 'agents' | 'devices' | 'about' | 'engine' | 'harnesses';
 const emptyTranscription: TranscriptionSettings = {
 	provider: 'openai',
   apiKeyConfigured: false,
@@ -23,25 +31,32 @@ function failureMessage(error: unknown) {
 }
 
 export function SettingsDialog({ onClose, onDesignSystem, onGeneralAgent }: { onClose: () => void; onDesignSystem: () => void; onGeneralAgent?: () => void }) {
+  const engines = useEngines();
   const dialog = useRef<HTMLDialogElement>(null);
-  const [section, setSection] = useState<SettingsSection>(() => new URLSearchParams(window.location.search).get('klm-library') === '1' ? 'library' : 'chat');
-  const [engineURL, setEngineURL] = useState(ENGINE_URL);
+  const [section, setSection] = useEngineDraft<SettingsSection>('ui.settingsSection', () => new URLSearchParams(window.location.search).get('klm-library') === '1' ? 'library' : 'chat');
+  const [engineURL, setEngineURL] = useEngineDraft('form.settings.engineURL', ENGINE_URL);
   const [engineError, setEngineError] = useState('');
   const [notifications, setNotifications] = useState(notificationPermission);
   const [notificationError, setNotificationError] = useState('');
   const [enablingNotifications, setEnablingNotifications] = useState(false);
-  const [settings, setSettings] = useState(emptyTranscription);
-  const [apiKey, setAPIKey] = useState('');
-  const [removeAPIKey, setRemoveAPIKey] = useState(false);
+  const [settings, setSettings, clearSettings] = useEngineDraft('form.transcription.settings', emptyTranscription);
+  const [base, setBase] = useEngineDraft<TranscriptionSettings | undefined>('form.transcription.base', undefined);
+  const [apiKey, setAPIKey, clearAPIKey] = useEngineDraft('form.transcription.apiKey', '');
+  const [removeAPIKey, setRemoveAPIKey, clearRemove] = useEngineDraft('form.transcription.removeKey', false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [settingsError, setSettingsError] = useState('');
   const [saved, setSaved] = useState(false);
 
-  async function loadSettings() {
+  async function loadSettings(discard = false) {
+    if (discard && IS_DESKTOP) { forgetDrafts('form.transcription'); clearAPIKey(''); clearRemove(false); }
     setLoading(true);
     setSettingsError('');
-    try { setSettings(await getTranscriptionSettings()); }
+    try {
+      const next = await getTranscriptionSettings();
+      if (!hasEngineDraft('form.transcription.base')) setBase(next);
+      if (!hasEngineDraft('form.transcription.settings')) setSettings(next);
+    }
     catch (error) { setSettingsError(failureMessage(error)); }
     finally { setLoading(false); }
   }
@@ -53,9 +68,10 @@ export function SettingsDialog({ onClose, onDesignSystem, onGeneralAgent }: { on
     void loadSettings();
   }, []);
 
-  function connectEngine(event: FormEvent<HTMLFormElement>) {
+  async function connectEngine(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
+      await flushDrafts();
       configureEngineURL(engineURL);
       window.location.reload();
     } catch (error) {
@@ -74,10 +90,13 @@ export function SettingsDialog({ onClose, onDesignSystem, onGeneralAgent }: { on
   async function saveTranscription(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (saving || loading) return;
+    const finished = beginLocalActivity('Saving transcription settings');
     setSaving(true);
     setSettingsError('');
     setSaved(false);
     try {
+      await flushDrafts();
+      if (hasEngineDraft('form.transcription.base') && base && JSON.stringify(await getTranscriptionSettings()) !== JSON.stringify(base)) throw new Error('Transcription settings changed. Reload the saved settings before saving this draft.');
       const next = await updateTranscriptionSettings({
 		provider: settings.provider ?? 'openai',
 		credentialsProvider: settings.provider ?? 'openai',
@@ -86,14 +105,15 @@ export function SettingsDialog({ onClose, onDesignSystem, onGeneralAgent }: { on
         language: settings.language,
         vocabulary: settings.vocabulary,
       });
-      setSettings(next);
-      setAPIKey('');
-      setRemoveAPIKey(false);
+      setBase(next); setSettings(next); clearSettings(next);
+      setAPIKey(''); clearAPIKey('');
+      setRemoveAPIKey(false); clearRemove(false);
       setSaved(true);
     } catch (error) {
       setSettingsError(failureMessage(error));
     } finally {
       setSaving(false);
+      finished();
     }
   }
 
@@ -102,19 +122,26 @@ export function SettingsDialog({ onClose, onDesignSystem, onGeneralAgent }: { on
     <div className="app-settings-layout">
       <nav className="settings-sidebar" aria-label="Settings sections">
         <button type="button" className={section === 'chat' ? 'is-active' : ''} aria-current={section === 'chat' ? 'page' : undefined} onClick={() => setSection('chat')}><MessageSquare />Chat</button>
+        <button type="button" className={section === 'engine' ? 'is-active' : ''} aria-current={section === 'engine' ? 'page' : undefined} onClick={() => setSection('engine')}><Server />Engine</button>
+        <button type="button" className={section === 'harnesses' ? 'is-active' : ''} aria-current={section === 'harnesses' ? 'page' : undefined} onClick={() => setSection('harnesses')}><Terminal />Harnesses</button>
         <button type="button" className={section === 'transcription' ? 'is-active' : ''} aria-current={section === 'transcription' ? 'page' : undefined} onClick={() => setSection('transcription')}><Mic />Transcription</button>
         <button type="button" className={section === 'opencode' ? 'is-active' : ''} aria-current={section === 'opencode' ? 'page' : undefined} onClick={() => setSection('opencode')}><Terminal />OpenCode</button>
         <button type="button" className={section === 'library' ? 'is-active' : ''} aria-current={section === 'library' ? 'page' : undefined} onClick={() => setSection('library')}><BookOpen />Library</button>
+        <button type="button" className={section === 'agents' ? 'is-active' : ''} aria-current={section === 'agents' ? 'page' : undefined} onClick={() => setSection('agents')}><Bot />Agents</button>
+        <button type="button" className={section === 'about' ? 'is-active' : ''} aria-current={section === 'about' ? 'page' : undefined} onClick={() => setSection('about')}><Info />About</button>
+        <button type="button" className={section === 'devices' ? 'is-active' : ''} aria-current={section === 'devices' ? 'page' : undefined} onClick={() => setSection('devices')}><KeyRound />Connected devices</button>
       </nav>
       <div className="settings-panel">
-        {section === 'library' ? <LibraryPanel onGeneralAgent={onGeneralAgent} /> : section === 'chat' ? <section aria-labelledby="chat-settings-title">
+        {section === 'agents' ? <AgentsPage /> : section === 'engine' ? <EngineAccessSettings /> : section === 'harnesses' ? <HarnessSettings /> : section === 'devices' ? <ConnectedDevices /> : section === 'about' ? <AboutSettings /> : section === 'library' ? <LibraryPanel onGeneralAgent={onGeneralAgent} /> : section === 'chat' ? <section aria-labelledby="chat-settings-title">
           <h3 id="chat-settings-title">Chat</h3>
-          <form className="engine-settings-form settings-form" onSubmit={connectEngine}>
+          {IS_DESKTOP ? <div className="engine-settings-form settings-form"><p>{engines?.active?.name ?? 'No engine selected'}</p><Button onClick={() => { onClose(); engines?.manage(); }}>Manage engine connections</Button></div> : <form className="engine-settings-form settings-form" onSubmit={connectEngine}>
             <label htmlFor="engine-url">Engine URL</label>
             <Input id="engine-url" type="text" inputMode="url" required autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="http://localhost:7331" value={engineURL} aria-invalid={!!engineError} aria-describedby={engineError ? 'engine-url-error' : undefined} onChange={event => { setEngineURL(event.target.value); setEngineError(''); }} />
             {engineError && <p id="engine-url-error" className="form-error" role="alert">{engineError}</p>}
             <div className="dialog-actions"><Button variant="primary" type="submit">Connect</Button></div>
-          </form>
+          </form>}
+          <div className="settings-design-system"><span>Interface components and tokens</span><Button onClick={onDesignSystem}>Open design system</Button></div>
+          <EngineTimeSettings />
           {!IS_DESKTOP && !IS_MOBILE_HOST && <div className="settings-form">
             <h4>Notifications</h4>
             {notifications === 'default' && <Button disabled={enablingNotifications} onClick={() => void activateNotifications()}>{enablingNotifications ? 'Enabling...' : 'Enable notifications'}</Button>}
@@ -123,7 +150,6 @@ export function SettingsDialog({ onClose, onDesignSystem, onGeneralAgent }: { on
             {notifications === 'unsupported' && <p>Notifications unavailable. Open this client over HTTPS or localhost.</p>}
             {notificationError && <p className="form-error" role="alert">{notificationError}</p>}
           </div>}
-          <div className="settings-design-system"><span>Interface components and tokens</span><Button onClick={onDesignSystem}>Open design system</Button></div>
         </section> : section === 'opencode' ? <OpenCodeSettings /> : <section aria-labelledby="transcription-settings-title">
           <div className="settings-panel-title"><div><h3 id="transcription-settings-title">Transcription</h3>{settings.apiKeyConfigured && !removeAPIKey && <span className="settings-configured"><KeyRound />API key configured</span>}</div>{loading && <span className="muted">Loading...</span>}</div>
           <form className="settings-form transcription-settings-form" onSubmit={saveTranscription}>
@@ -145,7 +171,7 @@ export function SettingsDialog({ onClose, onDesignSystem, onGeneralAgent }: { on
               <Input aria-label={`Vocabulary note ${index + 1}`} maxLength={500} placeholder="Note" value={entry.note} disabled={loading || saving} onChange={event => { const note = event.target.value; setSettings(current => ({ ...current, vocabulary: current.vocabulary.map((item, itemIndex) => itemIndex === index ? { ...item, note } : item) })); setSaved(false); }} />
               <IconButton label={`Remove vocabulary term ${index + 1}`} disabled={loading || saving} onClick={() => { setSettings(current => ({ ...current, vocabulary: current.vocabulary.filter((_, itemIndex) => itemIndex !== index) })); setSaved(false); }}><Trash2 /></IconButton>
             </div>)}</div>
-            {settingsError && <p className="form-error" role="alert">{settingsError} {loading ? null : <Button size="sm" onClick={() => void loadSettings()}>Reload</Button>}</p>}
+            {settingsError && <p className="form-error" role="alert">{settingsError} {loading ? null : <Button size="sm" onClick={() => void loadSettings(true)}>{IS_DESKTOP ? 'Discard and reload' : 'Reload'}</Button>}</p>}
             {saved && <p className="settings-saved" role="status">Saved</p>}
             <div className="dialog-actions"><Button variant="primary" type="submit" disabled={loading || saving || !settings.model.trim()}>{saving ? 'Saving...' : 'Save transcription'}</Button></div>
           </form>

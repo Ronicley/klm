@@ -1,12 +1,14 @@
 import { ArrowUp, FileText, Folder, ImagePlus, ListPlus, LoaderCircle, Mic, Paperclip, Square, X } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
-import { legacyImageFiles, request, transcribeAudio, type ChatImage, type FileMention, type ProjectPath } from '../../engine';
+import { legacyImageFiles, request, transcribeAudio, type ChatImage, type FileMention, type ProjectPath, type DelegationActions } from '../../engine';
 import { mentionQuery } from './mentions';
 import { MentionEditor, type MentionEditorHandle } from './MentionEditor';
 import { FileAttachments, type FileInfo } from './FileAttachments';
 import { IS_MOBILE_HOST } from '../../platform';
 import { MobileAudioRecording } from './mobileAudio';
+import { beginLocalActivity } from '../engines/localActivities';
+
 export type SendMode = 'queue' | 'steer' | 'interrupt';
 
 export type ComposerDraft = { text: string; mentions: FileMention[]; files?: File[]; missingFiles?: FileInfo[]; images?: { id: string; name: string; size: number; uploaded?: ChatImage }[] };
@@ -21,14 +23,17 @@ function recordingFilename(type: string) {
   return 'recording.webm';
 }
 
-export function MessageComposer({ onSend, onTranscription, draft, onDraftChange, projectId, disabled = false, running = false, onStop, modelControl, graphControl, placeholder = 'Message the agent' }: {
+export function MessageComposer({ onSend, onTranscription, draft, onDraftChange, projectId, disabled = false, running = false, steeringOnly: requestedSteeringOnly = false, clearOnSend = true, onStop, modelControl, graphControl, actions, placeholder = 'Message the agent' }: {
   onSend: (draft: ComposerDraft, mode?: SendMode) => boolean | void; draft: ComposerDraft; onDraftChange: (draft: ComposerDraft) => void;
   onTranscription?: (text: string) => void;
   projectId?: string;
   disabled?: boolean; running?: boolean; onStop?: () => void;
+  steeringOnly?: boolean;
+  clearOnSend?: boolean;
   modelControl?: ReactNode;
   graphControl?: ReactNode;
   placeholder?: string;
+  actions?: DelegationActions;
 }) {
   const { text, mentions } = draft;
   const files = draft.files ?? [];
@@ -37,6 +42,7 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
   const imageInput = useRef<HTMLInputElement>(null);
   const legacyImages = draft.images ?? [];
   const canSend = (!!text.trim() || files.length > 0 || legacyImages.length > 0) && missingFiles.length === 0 && legacyImages.every(image => !!image.uploaded);
+  const steeringOnly = requestedSteeringOnly || actions?.interrupt === false;
   const [caret, setCaret] = useState(0);
   const [focused, setFocused] = useState(false);
   const [composing, setComposing] = useState(false);
@@ -56,6 +62,8 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
   const mobileAudioOperation = useRef<AbortController | null>(null);
   const mobileRecording = useRef<MobileAudioRecording | null>(null);
   const mobileAudioBusy = useRef(false);
+  const audioActivity = useRef<(() => void) | undefined>(undefined);
+  function finishAudioActivity() { audioActivity.current?.(); audioActivity.current = undefined; }
   const mounted = useRef(true);
   const query = focused && !composing && projectId ? mentionQuery(text, caret, mentions) : null;
   const queryKey = query ? JSON.stringify([projectId, query.start, query.query]) : '';
@@ -94,6 +102,7 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       audioStream.current?.getTracks().forEach(track => track.stop());
       recorder.current = null;
       audioStream.current = null;
+      finishAudioActivity();
     };
   }, []);
   useEffect(() => {
@@ -110,10 +119,19 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
     setDismissed(queryKey);
   }
   function send(mode: SendMode = 'steer') {
-    if (!canSend || disabled || submittedDraft.current === draft) return;    setError('');
+    if (!canSend || disabled || submittedDraft.current === draft) return;
+    if (mode === 'interrupt' && actions?.interrupt === false) return;
+    if (running && mode === 'steer' && actions?.steer === false) mode = 'queue';
+    if (actions?.send === false || mode === 'queue' && actions?.queue === false) return;
+    setError('');
     try {
       // The parent synchronously owns the pending draft before starting HTTP.
-      if (onSend(draft, mode) !== false) { submittedDraft.current = draft; onDraftChange({ text: '', mentions: [] }); }
+      if (onSend(draft, mode) !== false) {
+        submittedDraft.current = draft;
+        // Desktop keeps the draft until the parent receives a real acceptance;
+        // an interrupted request is recoverable with its original delivery ID.
+        if (clearOnSend) onDraftChange({ text: '', mentions: [] });
+      }
     } catch (error) { setError(error instanceof Error ? error.message : 'Message could not be sent. Retry.'); }
   }
   function releaseAudio() {
@@ -203,10 +221,12 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
     }
     setAudioState('transcribing');
     setError('');
+    audioActivity.current = beginLocalActivity('Audio recording', true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (!mounted.current) {
         stream.getTracks().forEach(track => track.stop());
+        finishAudioActivity();
         return;
       }
       audioStream.current = stream;
@@ -219,6 +239,7 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       nextRecorder.onerror = () => {
         failed = true;
         releaseAudio();
+        finishAudioActivity();
         if (mounted.current) {
           setAudioState('idle');
           setError('Audio recording failed. Retry.');
@@ -227,14 +248,18 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       nextRecorder.onstop = async () => {
         const type = nextRecorder.mimeType || mimeType || 'audio/webm';
         releaseAudio();
-        if (failed || !mounted.current) return;
+        if (failed || !mounted.current) { finishAudioActivity(); return; }
         const audio = new Blob(chunks, { type });
         if (!audio.size) {
+          finishAudioActivity();
           setAudioState('idle');
           setError('No audio was recorded. Retry.');
           return;
         }
         const controller = new AbortController();
+        const recordingFinished = audioActivity.current;
+        audioActivity.current = beginLocalActivity('Audio transcription');
+        recordingFinished?.();
         transcriptionRequest.current = controller;
         try {
           const text = await transcribeAudio(audio, recordingFilename(type), controller.signal);
@@ -242,6 +267,7 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
         } catch (error) {
           if (mounted.current && !controller.signal.aborted) setError(error instanceof Error ? error.message : 'Transcription failed. Retry.');
         } finally {
+          finishAudioActivity();
           if (transcriptionRequest.current === controller) transcriptionRequest.current = null;
           if (mounted.current) setAudioState('idle');
         }
@@ -250,13 +276,14 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       setAudioState('recording');
     } catch (error) {
       releaseAudio();
+      finishAudioActivity();
       if (mounted.current) {
         setAudioState('idle');
         setError(error instanceof DOMException && error.name === 'NotAllowedError' ? 'Microphone access was denied.' : 'Could not start audio recording. Retry.');
       }
     }
   }
-  const sendButton = <IconButton label={running ? 'Send on next turn' : 'Send message'} variant="soft" type="submit" disabled={!canSend || disabled} className="send-button">{running ? <ListPlus /> : <ArrowUp />}</IconButton>;
+  const sendButton = <IconButton label={running ? actions?.steer === false ? 'Queue message' : 'Send on next turn' : 'Send message'} variant="soft" type="submit" disabled={!canSend || disabled || actions?.send === false} className="send-button">{running ? <ListPlus /> : <ArrowUp />}</IconButton>;
   const mobileSendVisible = canSend;
   return <form className="composer" aria-label="Message composer" onSubmit={event => { event.preventDefault(); send(); }}
     onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = disabled ? 'none' : 'copy'; } }}
@@ -303,6 +330,7 @@ export function MessageComposer({ onSend, onTranscription, draft, onDraftChange,
       } else if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
     }} />
     {error && <p role="alert" className="form-error composer-error">{error}</p>}
-    <div className="composer-controls"><div className="composer-graph-control"><IconButton label="Attach files" disabled={disabled} onClick={() => fileInput.current?.click()}><Paperclip /></IconButton><IconButton label="Attach images" disabled={disabled} onClick={() => imageInput.current?.click()}><ImagePlus /></IconButton>{graphControl}</div><div className="composer-model-controls">{modelControl}{running && canSend && <Button size="sm" disabled={disabled} onClick={() => void send('interrupt')}>Send now</Button>}{running && onStop && <IconButton label="Stop response" variant="outline" onClick={onStop}><Square /></IconButton>}{onTranscription && <IconButton label={audioState === 'recording' ? 'Stop recording' : audioState === 'starting' ? 'Requesting microphone access' : audioState === 'transcribing' ? 'Transcribing audio' : 'Record audio'} aria-pressed={audioState === 'recording'} variant={audioState === 'recording' ? 'danger-soft' : 'ghost'} disabled={(disabled && audioState === 'idle') || audioState === 'starting' || audioState === 'transcribing'} className={`audio-record-button ${audioState === 'recording' ? 'is-recording' : ''}`} onClick={() => void toggleRecording()}>{audioState === 'recording' ? <Square /> : audioState !== 'idle' ? <LoaderCircle className="audio-spinner" /> : <Mic />}</IconButton>}{IS_MOBILE_HOST && audioState !== 'idle' && <IconButton label="Cancel audio" onClick={() => cancelMobileRecording()}><X /></IconButton>}{IS_MOBILE_HOST ? <span className={`mobile-send-slot ${mobileSendVisible ? 'is-visible' : ''}`} inert={!mobileSendVisible} aria-hidden={!mobileSendVisible}><span className="mobile-send-slide">{sendButton}</span></span> : sendButton}</div></div>
+    <div className="composer-graph-control"><IconButton label="Attach files" disabled={disabled} onClick={() => fileInput.current?.click()}><Paperclip /></IconButton><IconButton label="Attach images" disabled={disabled} onClick={() => imageInput.current?.click()}><ImagePlus /></IconButton></div>
+    <div className="composer-controls">{graphControl && <div className="composer-graph-control">{graphControl}</div>}<div className="composer-model-controls">{modelControl}{!steeringOnly && running && text.trim() && <Button size="sm" disabled={disabled} onClick={() => void send('interrupt')}>Send now</Button>}{running && onStop && <IconButton label="Stop response" variant="outline" onClick={onStop}><Square /></IconButton>}{onTranscription && <IconButton label={audioState === 'recording' ? 'Stop recording' : audioState === 'starting' ? 'Requesting microphone access' : audioState === 'transcribing' ? 'Transcribing audio' : 'Record audio'} aria-pressed={audioState === 'recording'} variant={audioState === 'recording' ? 'danger-soft' : 'ghost'} disabled={(disabled && audioState === 'idle') || audioState === 'starting' || audioState === 'transcribing'} className={`audio-record-button ${audioState === 'recording' ? 'is-recording' : ''}`} onClick={() => void toggleRecording()}>{audioState === 'recording' ? <Square /> : audioState !== 'idle' ? <LoaderCircle className="audio-spinner" /> : <Mic />}</IconButton>}{IS_MOBILE_HOST && audioState !== 'idle' && <IconButton label="Cancel audio" onClick={() => cancelMobileRecording()}><X /></IconButton>}{IS_MOBILE_HOST ? <span className={`mobile-send-slot ${mobileSendVisible ? 'is-visible' : ''}`} inert={!mobileSendVisible} aria-hidden={!mobileSendVisible}><span className="mobile-send-slide">{sendButton}</span></span> : sendButton}</div></div>
   </form>;
 }

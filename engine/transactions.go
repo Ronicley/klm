@@ -21,17 +21,20 @@ type statePatch struct {
 }
 
 type stateTransaction struct {
-	events     map[string]map[int]Event
-	indices    map[string]map[string]int
-	baseEvents map[string]int
+	analyticsExecutions map[string]AnalyticsExecution
+	analyticsGraphs     map[string]AnalyticsGraphTiming
+	events              map[string]map[int]Event
+	indices             map[string]map[string]int
+	baseEvents          map[string]int
 }
 
 var sessionType = reflect.TypeOf(Session{})
 var eventSliceType = reflect.TypeOf([]Event{})
 
 // Strings are immutable and shared, not encoded/copied. Histories are shared
-// append-only; replacements MUST use setEvent. All other mutable metadata is
-// private to the callback, including nested queue, graph and permission data.
+// append-only; replacements MUST use setEvent. Analytics uses its own sparse
+// staged accessors. Other mutable metadata is private to the callback, including
+// nested queue, graph and permission data.
 func cloneTransactionValue(v reflect.Value) reflect.Value {
 	switch v.Kind() {
 	case reflect.Struct:
@@ -40,7 +43,7 @@ func cloneTransactionValue(v reflect.Value) reflect.Value {
 			if !n.Field(i).CanSet() || v.Type().Field(i).PkgPath != "" {
 				continue
 			}
-			if v.Type() == sessionType && v.Type().Field(i).Name == "Events" {
+			if v.Type() == sessionType && v.Type().Field(i).Name == "Events" || v.Type() == reflect.TypeOf(diskState{}) && v.Type().Field(i).Name == "Analytics" {
 				n.Field(i).Set(v.Field(i))
 			} else {
 				n.Field(i).Set(cloneTransactionValue(v.Field(i)))
@@ -131,6 +134,9 @@ func diffTransaction(before, after reflect.Value, path []string, patches *[]stat
 			if field.PkgPath != "" || after.Type() == sessionType && field.Name == "Events" {
 				continue
 			}
+			if after.Type() == reflect.TypeOf(diskState{}) && field.Name == "Analytics" {
+				continue
+			} // Sparse staged patches below.
 			name := strings.Split(field.Tag.Get("json"), ",")[0]
 			if name == "-" {
 				continue
@@ -243,6 +249,14 @@ func applyStatePatch(v reflect.Value, p statePatch) error {
 	key := p.Path[0]
 	p.Path = p.Path[1:]
 	switch v.Kind() {
+	case reflect.Pointer:
+		if v.Type() == analyticsStateType {
+			if v.IsNil() {
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			p.Path = append([]string{key}, p.Path...)
+			return applyStatePatch(v.Elem(), p)
+		}
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
 			f := v.Type().Field(i)
@@ -263,10 +277,26 @@ func applyStatePatch(v reflect.Value, p statePatch) error {
 			return applyStatePatch(v.Index(i), p)
 		}
 	case reflect.Map:
-		if v.Type().Key().Kind() != reflect.String || len(p.Path) != 0 {
+		if v.Type().Key().Kind() != reflect.String {
 			break
 		}
 		k := reflect.ValueOf(key).Convert(v.Type().Key())
+		if len(p.Path) != 0 {
+			if v.Type() != analyticsExecutionMapType && v.Type() != analyticsGraphMapType {
+				break
+			}
+			old := v.MapIndex(k)
+			if !old.IsValid() {
+				return errors.New("analytics patch references missing record")
+			}
+			n := reflect.New(v.Type().Elem()).Elem()
+			n.Set(old)
+			if err := applyStatePatch(n, p); err != nil {
+				return err
+			}
+			v.SetMapIndex(k, n)
+			return nil
+		}
 		if p.Delete {
 			v.SetMapIndex(k, reflect.Value{})
 			return nil
@@ -313,6 +343,9 @@ func replayTransaction(state *diskState, patches []statePatch) error {
 }
 
 func (a *app) commitTransactionLocked(change func(*diskState) error) error {
+	if a.store != nil {
+		return a.failStorageLocked(errors.New("legacy transaction attempted while SQLite is authoritative"))
+	}
 	if a.storageErr != nil {
 		return a.storageErr
 	}
@@ -322,6 +355,7 @@ func (a *app) commitTransactionLocked(change func(*diskState) error) error {
 	if err := change(&next); err != nil {
 		return err
 	}
+	a.syncAnalyticsGraphs(&a.state, &next)
 	if err := validateTopicRecords(&next); err != nil {
 		return err
 	}
@@ -335,6 +369,9 @@ func (a *app) commitTransactionLocked(change func(*diskState) error) error {
 	}
 	var patches []statePatch
 	if err := diffTransaction(reflect.ValueOf(a.state), reflect.ValueOf(next), nil, &patches); err != nil {
+		return a.failStorageLocked(err)
+	}
+	if err := diffAnalyticsTransaction(a.state.Analytics, &next, &patches); err != nil {
 		return a.failStorageLocked(err)
 	}
 	changes := map[string][]EventChange{}
@@ -389,6 +426,7 @@ func (a *app) commitTransactionLocked(change func(*diskState) error) error {
 			s.Events[edit.Index] = edit.Event
 		}
 	}
+	publishAnalyticsTransaction(&next) // Publication follows the same fsynced lifecycle frame.
 	next.tx = nil
 	next.GraphRevision, next.GraphViewRevision = revision, revision
 	a.state = next

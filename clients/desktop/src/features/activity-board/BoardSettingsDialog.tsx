@@ -5,17 +5,22 @@ import { Input } from '../../design-system/Input';
 import { BoardMappingsEditor } from './BoardMappingsEditor';
 import { EngineRequestError } from '../../engine';
 import { BoardMutationUnconfirmed, boardConfig, boardError, discoverPhaseMappings, saveBoardPhase, type BoardConfig, type BoardMappings, type BoardValue } from './api';
+import { bindDraftDiscard, flushDrafts, useEngineDraft } from '../drafts/draftStore';
+import { IS_DESKTOP } from '../../platform';
+import { beginLocalActivity } from '../engines/localActivities';
 
 export function BoardSettingsDialog({ config, onSaved, onClose }: { config: BoardConfig; onSaved: (config: BoardConfig) => void; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [phase, setPhase] = useState<{ id: string; name: string } | null>(null);
-  const [draftRevision, setDraftRevision] = useState('');
-  const [needsReload, setNeedsReload] = useState(false);
-  const [phaseMaps, setPhaseMaps] = useState<BoardMappings>({});
-  const [catalogs, setCatalogs] = useState<Record<string, BoardValue[]>>({});
+  const key = 'form.taskPhases';
+  const forgetDrafts = bindDraftDiscard();
+  const [phase, setPhase] = useEngineDraft<{ id: string; name: string } | null>(`${key}.phase`, null);
+  const [draftRevision, setDraftRevision] = useEngineDraft(`${key}.revision`, '');
+  const [needsReload, setNeedsReload] = useEngineDraft(`${key}.needsReload`, false);
+  const [phaseMaps, setPhaseMaps] = useEngineDraft<BoardMappings>(`${key}.mappings`, {});
+  const [catalogs, setCatalogs] = useEngineDraft<Record<string, BoardValue[]>>(`${key}.catalogs`, {});
   const syncing = config.connections.some(c => c.syncing);
   useEffect(() => {
     const element = dialog.current;
@@ -26,8 +31,9 @@ export function BoardSettingsDialog({ config, onSaved, onClose }: { config: Boar
 
   async function run(action: () => Promise<void>) {
     if (busy) return;
+    const finished = beginLocalActivity('Updating task phases');
     setBusy(true); setError('');
-    try { await action(); } catch (e) { setError(boardError(e)); if (e instanceof BoardMutationUnconfirmed || e instanceof EngineRequestError && e.status === 409) setNeedsReload(true); } finally { setBusy(false); }
+    try { await flushDrafts(); await action(); } catch (e) { setError(boardError(e)); if (e instanceof BoardMutationUnconfirmed || e instanceof EngineRequestError && e.status === 409) setNeedsReload(true); } finally { setBusy(false); finished(); }
   }
   async function loadValues() {
     await run(async () => {
@@ -40,12 +46,12 @@ export function BoardSettingsDialog({ config, onSaved, onClose }: { config: Boar
     <div className="dialog-heading"><h2 id="task-phases-title">Task phases</h2><IconButton label="Close task phases" disabled={busy} onClick={onClose}><X /></IconButton></div>
     <div className="board-settings-content">
       {error && <p className="form-error" role="alert">{error}</p>}
-      {phase && (needsReload || draftRevision !== config.revision) && <div className="board-form-actions"><span role="status">Reload phases before saving this draft.</span><Button disabled={busy} onClick={() => void run(async () => { const next = await boardConfig(); onSaved(next); setDraftRevision(next.revision); setNeedsReload(false); setPhaseMaps({}); setCatalogs({}); if (phase.id) setPhase(next.phases.find(p => p.id === phase.id) ?? null); else { setPhase({ id: '', name: phase.name }); const entries = await Promise.all(next.connections.map(async c => [c.id, (await discoverPhaseMappings(c)).values] as const)); setCatalogs(Object.fromEntries(entries)); } })}>Reload phases</Button></div>}
+      {phase && (needsReload || draftRevision !== config.revision) && <div className="board-form-actions"><span role="status">Reload phases before saving this draft.</span><Button disabled={busy} onClick={() => void run(async () => { const next = await boardConfig(); onSaved(next); const current = phase.id ? next.phases.find(p => p.id === phase.id) : undefined; if (IS_DESKTOP && phase.id && !current) { setNeedsReload(true); setError('Phase was removed.'); return; } setDraftRevision(next.revision); setNeedsReload(false); setPhaseMaps({}); setCatalogs({}); if (phase.id) setPhase(current ?? null); else { setPhase({ id: '', name: phase.name }); const entries = await Promise.all(next.connections.map(async c => [c.id, (await discoverPhaseMappings(c)).values] as const)); setCatalogs(Object.fromEntries(entries)); } })}>{IS_DESKTOP ? 'Discard and reload' : 'Reload phases'}</Button></div>}
       {syncing && <p role="status" className="muted">Refreshing connections… Configuration can be saved when refresh finishes.</p>}
-      {!phase ? <><div className="board-settings-list">{config.phases.map(p => <div key={p.id}><strong>{p.name}</strong><Button size="sm" variant="ghost" onClick={() => { setPhase(p); setDraftRevision(config.revision); setNeedsReload(false); setError(''); }}>Rename</Button></div>)}</div><Button disabled={busy || syncing} onClick={() => { setPhase({ id: '', name: '' }); setDraftRevision(config.revision); setNeedsReload(false); setPhaseMaps({}); setCatalogs({}); void loadValues(); }}><Plus />Add phase</Button></> : <form onSubmit={event => { event.preventDefault(); if (!needsReload) void run(async () => { onSaved(await saveBoardPhase(phase.name, phase.id, phaseMaps, draftRevision)); setPhase(null); }); }}>
+      {!phase ? <><div className="board-settings-list">{config.phases.map(p => <div key={p.id}><strong>{p.name}</strong><Button size="sm" variant="ghost" onClick={() => { setPhase(p); setDraftRevision(config.revision); setNeedsReload(false); setError(''); }}>Rename</Button></div>)}</div><Button disabled={busy || syncing} onClick={() => { setPhase({ id: '', name: '' }); setDraftRevision(config.revision); setNeedsReload(false); setPhaseMaps({}); setCatalogs({}); void loadValues(); }}><Plus />Add phase</Button></> : <form onSubmit={event => { event.preventDefault(); if (!needsReload) void run(async () => { onSaved(await saveBoardPhase(phase.name, phase.id, phaseMaps, draftRevision)); setPhase(null); forgetDrafts(key); }); }}>
         <label>Phase name<Input autoFocus required maxLength={100} value={phase.name} disabled={busy} onChange={e => setPhase({ ...phase, name: e.target.value })} /></label>
         {!phase.id && config.connections.map(c => <BoardMappingsEditor key={c.id} label={c.name} values={phaseMaps[c.id] ?? []} catalog={catalogs[c.id] ?? []} excluded={Object.values(c.mappings).flat().map(v => v.id)} disabled={busy} onChange={values => setPhaseMaps(current => ({ ...current, [c.id]: values }))} />)}
-        <div className="board-form-actions"><Button type="submit" variant="primary" disabled={busy || syncing || needsReload || draftRevision !== config.revision || !complete}>Save phase</Button><Button disabled={busy} onClick={() => setPhase(null)}>Cancel</Button>{!phase.id && config.connections.length > 0 && <Button disabled={busy} onClick={() => void loadValues()}>Reload values</Button>}</div>
+        <div className="board-form-actions"><Button type="submit" variant="primary" disabled={busy || syncing || needsReload || draftRevision !== config.revision || !complete}>Save phase</Button><Button disabled={busy} onClick={() => { setPhase(null); forgetDrafts(key); }}>Cancel</Button>{!phase.id && config.connections.length > 0 && <Button disabled={busy} onClick={() => void loadValues()}>Reload values</Button>}</div>
       </form>}
     </div>
   </dialog>;

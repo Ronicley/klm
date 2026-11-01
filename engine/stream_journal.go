@@ -18,13 +18,14 @@ import (
 // Both transaction and legacy stream records share one contiguous revision log.
 // Publication follows Sync; only the checkpoint worker rotates/removes segments.
 type streamRecord struct {
-	Format      int               `json:"format,omitempty"`
-	Transaction []statePatch      `json:"transaction,omitempty"`
-	Revision    uint64            `json:"revision"`
-	Session     string            `json:"session"`
-	Updated     string            `json:"updated"`
-	Updates     []streamOperation `json:"updates"`
-	Usage       *SessionUsage     `json:"usage,omitempty"`
+	Format      int                     `json:"format,omitempty"`
+	Transaction []statePatch            `json:"transaction,omitempty"`
+	Revision    uint64                  `json:"revision"`
+	Session     string                  `json:"session"`
+	Updated     string                  `json:"updated"`
+	Updates     []streamOperation       `json:"updates"`
+	Usage       *SessionUsage           `json:"usage,omitempty"`
+	Analytics   *analyticsUsageMutation `json:"analytics,omitempty"`
 }
 
 type streamOperation struct {
@@ -72,13 +73,19 @@ func replayStreamJournal(dir string, state *diskState) error {
 		return err
 	}
 	initializeActivityBoardRecords(state)
+	if err := validateAutomationRecords(state); err != nil {
+		return err
+	}
 	if err := validateTopicRecords(state); err != nil {
 		return err
 	}
 	if err := validateActivityBoardRecords(state); err != nil {
 		return err
 	}
-	return validateWebhookRecords(state)
+	if err := validateWebhookRecords(state); err != nil {
+		return err
+	}
+	return validateAnalytics(state)
 }
 
 func replayJournalFile(path string, state *diskState, transform ...func(*streamRecord) error) error {
@@ -131,7 +138,7 @@ func replayJournalFile(path string, state *diskState, transform ...func(*streamR
 				return fmt.Errorf("stream journal revision gap at %d", record.Revision)
 			}
 			if record.Format == 1 {
-				if len(record.Transaction) == 0 || len(record.Updates) != 0 || record.Usage != nil {
+				if len(record.Transaction) == 0 || len(record.Updates) != 0 || record.Usage != nil || record.Analytics != nil {
 					return errors.New("invalid transaction frame")
 				}
 				for _, clean := range transform {
@@ -148,8 +155,11 @@ func replayJournalFile(path string, state *diskState, transform ...func(*streamR
 				if s == nil {
 					return errors.New("stream journal references missing session")
 				}
-				if len(record.Updates) == 0 && record.Usage == nil {
+				if len(record.Updates) == 0 && record.Usage == nil && record.Analytics == nil {
 					return errors.New("empty stream journal record")
+				}
+				if err := state.applyAnalyticsUsage(record.Analytics, record.Session); err != nil {
+					return err
 				}
 				updates := make([]streamUpdate, len(record.Updates))
 				for i, op := range record.Updates {

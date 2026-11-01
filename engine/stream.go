@@ -16,14 +16,15 @@ type streamUpdate struct {
 // lock so harness readers keep draining even when a state checkpoint is slow.
 // Published snapshots still pass through the normal durable commit path.
 type streamBatch struct {
-	adapter *adapter
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	pending []streamUpdate
-	indices map[string]int
-	err     error
-	stop    chan struct{}
-	done    chan struct{}
+	adapter      *adapter
+	writeMu      sync.Mutex
+	mu           sync.Mutex
+	pending      []streamUpdate
+	pendingBytes int
+	indices      map[string]int
+	err          error
+	stop         chan struct{}
+	done         chan struct{}
 }
 
 func newStreamBatch(p *adapter) *streamBatch {
@@ -48,7 +49,32 @@ func newStreamBatch(p *adapter) *streamBatch {
 }
 
 func (b *streamBatch) enqueue(update streamUpdate) error {
-	b.mu.Lock()
+	bytes := len(update.event.Text) + len(update.event.ID) + len(update.event.Title) + len(update.event.Status) + len(update.event.CreatedAt) + len(update.event.ConsultationID) + 256 + protocolValueBytes(update.event.Data, map[*protocolFrame]bool{})
+	if bytes > 1<<20 {
+		return errProtocolMetadata
+	}
+	for {
+		b.mu.Lock()
+		if b.err != nil {
+			err := b.err
+			b.mu.Unlock()
+			return err
+		}
+		canQueue := b.pendingBytes+bytes <= 1<<20
+		if canQueue {
+			if err := reserveProtocolResident(bytes); err == nil {
+				b.pendingBytes += bytes
+				break
+			} else if b.pendingBytes == 0 {
+				b.mu.Unlock()
+				return err
+			}
+		}
+		b.mu.Unlock()
+		if err := b.flush(nil); err != nil {
+			return err
+		}
+	}
 	defer b.mu.Unlock()
 	if b.err != nil {
 		return b.err
@@ -97,8 +123,11 @@ func (b *streamBatch) flushUpdates(last []streamUpdate) error {
 		return err
 	}
 	updates := b.pending
+	reserved := b.pendingBytes
 	b.pending, b.indices = nil, nil
+	b.pendingBytes = 0
 	b.mu.Unlock()
+	defer func() { _ = reserveProtocolResident(-reserved) }()
 	updates = append(updates, last...)
 	if len(updates) == 0 {
 		return nil
@@ -127,6 +156,9 @@ func (p *adapter) commitStreamUpdates(updates []streamUpdate) error {
 	a := p.app
 	if a.storageErr != nil {
 		return a.storageErr
+	}
+	if a.store != nil {
+		return p.commitSQLStreamLocked(updates)
 	}
 	s := a.state.session(p.id)
 	if s == nil {

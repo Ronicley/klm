@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 )
 
@@ -54,13 +55,28 @@ func (p *adapter) spawnSession(ctx context.Context, args spawnArgs) (any, error)
 	stop := context.AfterFunc(p.turn.ctx, cancel)
 	defer cancel()
 	defer stop()
+	if p.app.store != nil {
+		result, err := p.spawnSQLSession(ctx, args)
+		var problem *AgentConfigProblem
+		if errors.As(err, &problem) {
+			hint := problem.Hint
+			if hint == "" {
+				hint = "Read agents_list/agent_get and current model options, correct the rejected settings and retry the same operationId. No session was created."
+			}
+			err = spawnProblem(problem.Field, problem.Code, problem.Message, hint)
+		}
+		return result, err
+	}
+	if args.Agent != "" {
+		return nil, spawnProblem("agent", "storage_unavailable", "Saved-agent creation requires SQLite storage.", "Use the current engine storage.")
+	}
 	a := p.app
 	a.mu.Lock()
 	if !p.activeToolLocked() {
 		a.mu.Unlock()
 		return nil, spawnProblem("turn", "turn_inactive", "The spawning turn is no longer active.", "Do not retry uncertain native delivery automatically.")
 	}
-	from := a.state.session(p.id)
+	from := a.state.automationSessionView(a.state.session(p.id))
 	if args.SourceUserEventID != "" {
 		if existing, err := a.existingSpawnLocked(from, args); err != nil {
 			a.mu.Unlock()
@@ -92,7 +108,7 @@ func (p *adapter) spawnSession(ctx context.Context, args spawnArgs) (any, error)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	from = a.state.session(p.id)
+	from = a.state.automationSessionView(a.state.session(p.id))
 	project := a.state.project(selection.ProjectID)
 	if ctx.Err() == nil && p.activeToolLocked() && args.SourceUserEventID != "" {
 		if existing, err := a.existingSpawnLocked(from, args); err != nil {
@@ -123,9 +139,12 @@ func (p *adapter) spawnOptionsForProject(ctx context.Context, projectID, harness
 	stop := context.AfterFunc(p.turn.ctx, cancel)
 	defer cancel()
 	defer stop()
+	if p.app.store != nil {
+		return p.sqlSpawnOptions(ctx, projectID, harness, cursor, limit)
+	}
 	a := p.app
 	a.mu.Lock()
-	from := a.state.session(p.id)
+	from := a.state.automationSessionView(a.state.session(p.id))
 	if !p.activeToolLocked() || !spawnSender(from, spawnArgs{ProjectID: projectID}) {
 		a.mu.Unlock()
 		return nil, spawnProblem("turn", "turn_inactive", "Session spawn options are unavailable to this turn.", "Use these tools only from a normal main/side conversation.")

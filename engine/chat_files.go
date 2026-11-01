@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	byteorder "encoding/binary"
 	"encoding/hex"
@@ -341,16 +343,92 @@ func (a *app) chatFileContent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.mu.Unlock()
+	if a.store != nil {
+		var err error
+		owned, err = a.ownsSQLChatFile(r.Context(), id, fileID)
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+	}
 	if !owned {
 		fail(w, 404, "Attachment not found.")
 		return
 	}
-	hash := sha256.Sum256([]byte(id))
-	paths, err := filepath.Glob(filepath.Join(a.dir, "attachments", hex.EncodeToString(hash[:]), "message-*", fileID+".*"))
-	if err != nil || len(paths) != 1 {
+	path, err := a.chatFilePath(id, fileID)
+	if err != nil {
 		fail(w, 404, "Attachment is unavailable.")
 		return
 	}
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
-	http.ServeFile(w, r, paths[0])
+	http.ServeFile(w, r, path)
+}
+
+func (a *app) ownsSQLChatFile(ctx context.Context, sessionID, fileID string) (bool, error) {
+	owned := false
+	hasFile := func(files []ChatFile) bool {
+		for _, file := range files {
+			if file.ID == fileID && file.URL != "" {
+				return true
+			}
+		}
+		return false
+	}
+	err := a.store.readSnapshot(ctx, func(tx *sql.Tx) error {
+		st := &sqliteSessionTx{ctx: ctx, tx: tx}
+		if _, err := st.sessionMeta(sessionID); err != nil {
+			return err
+		}
+		queue, err := st.queue(sessionID)
+		if err != nil {
+			return err
+		}
+		for _, q := range queue {
+			if hasFile(q.Files) {
+				owned = true
+				return nil
+			}
+		}
+		err = st.eachMatching("session_events", "owner_id=? AND kind IN ('user','agent_prompt')", []any{sessionID}, func(key string) error {
+			var e Event
+			if err := decodeSQLiteRecord(ctx, tx, "session_events", key, 2<<20, &e); err != nil {
+				return err
+			}
+			raw, err := json.Marshal(e.Data["files"])
+			if err != nil {
+				return err
+			}
+			var files []ChatFile
+			if err := json.Unmarshal(raw, &files); err != nil {
+				return err
+			}
+			if hasFile(files) {
+				owned = true
+				return errSQLiteFieldFound
+			}
+			return nil
+		})
+		if errors.Is(err, errSQLiteFieldFound) {
+			return nil
+		}
+		return err
+	})
+	return owned, err
+}
+
+// Callers establish ownership from queue or history before resolving the path.
+func (a *app) chatFilePath(sessionID, fileID string) (string, error) {
+	if !validAuthoringID(fileID) {
+		return "", errors.New("Invalid attachment ID.")
+	}
+	hash := sha256.Sum256([]byte(sessionID))
+	paths, err := filepath.Glob(filepath.Join(a.dir, "attachments", hex.EncodeToString(hash[:]), "message-*", fileID+".*"))
+	if err != nil || len(paths) != 1 {
+		return "", errors.New("Attachment is unavailable.")
+	}
+	info, err := os.Stat(paths[0])
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("Attachment is unavailable.")
+	}
+	return paths[0], nil
 }

@@ -1,13 +1,15 @@
-import { useEffect, useId, useState } from 'react';
+import { useContext, useEffect, useId } from 'react';
 import { Plus, Trash2, X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
 import { RadioGroup } from '../../design-system/RadioGroup';
 import { Toggle } from '../../design-system/Toggle';
-import { agentSlug as choiceSlug } from '../agents/demo';
+import { agentSlug as choiceSlug } from '../agents/types';
 import { ChoiceOutputEditor } from './ChoiceOutputEditor';
 import { ChoiceOutputPreview } from './ChoiceOutputPreview';
 import { choiceOutputFields, choiceVariables, normalizeChoiceName, outputMappingError, type ChoiceDefinition, type ChoicePayloadField } from './choice';
+import { forgetDrafts, useEngineDraft } from '../drafts/draftStore';
+import { GraphDraftScope } from './draftScope';
 
 export function ChoiceNodePanel({ choice, otherChoices, supportsSession, onSave, onClose }: {
   choice: ChoiceDefinition;
@@ -17,7 +19,8 @@ export function ChoiceNodePanel({ choice, otherChoices, supportsSession, onSave,
   onClose: () => void;
 }) {
   const id = useId();
-  const [draft, setDraft] = useState(() => ({ ...choice, name: normalizeChoiceName(choice.name, true), outputFields: choiceOutputFields(choice) }));
+  const key = useContext(GraphDraftScope);
+  const [draft, setDraft, clearDraft] = useEngineDraft(`${key}.choice`, () => ({ ...choice, name: normalizeChoiceName(choice.name, true), outputFields: choiceOutputFields(choice) }));
   const slug = choiceSlug(draft.name);
   const duplicate = !!slug && otherChoices.some(item => item.id === slug);
   const nameError = duplicate ? 'A choice with this identifier already exists.' : draft.name.trim() && !slug ? 'Use at least one letter or number in the name.' : '';
@@ -42,10 +45,10 @@ export function ChoiceNodePanel({ choice, otherChoices, supportsSession, onSave,
   }}>
     <form className="graph-choice-form" onSubmit={event => {
       event.preventDefault();
-      if (valid) onSave({ id: slug, name: normalizeChoiceName(draft.name, true), description: draft.description.trim(), terminal: draft.terminal, fields: inputFields,
+      if (valid) { onSave({ id: slug, name: normalizeChoiceName(draft.name, true), description: draft.description.trim(), terminal: draft.terminal, fields: inputFields,
         sessionPolicy: !draft.terminal && supportsSession && draft.sessionPolicy === 'continue_target' ? 'continue_target' : undefined,
         outputFields,
-      });
+      }); clearDraft(draft); }
     }}>
       <div className="graph-agent-panel-header"><h2 id={`${id}-title`}>Choice</h2><IconButton label="Close choice settings" onClick={onClose}><X /></IconButton></div>
       <div className="graph-agent-panel-field"><label htmlFor={`${id}-name`}>Name</label><Input id={`${id}-name`} required maxLength={80} pattern="[a-z0-9_]+" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={draft.name} aria-invalid={!!nameError} aria-describedby={nameError ? `${id}-error` : undefined} onChange={event => setDraft(current => ({ ...current, name: normalizeChoiceName(event.target.value) }))} onBlur={() => setDraft(current => ({ ...current, name: normalizeChoiceName(current.name, true) }))} />{nameError && <p id={`${id}-error`} className="form-error" role="alert">{nameError}</p>}</div>
@@ -67,7 +70,7 @@ export function ChoiceNodePanel({ choice, otherChoices, supportsSession, onSave,
         {validInput && validOutput && !!outputFields.length && <ChoiceOutputPreview key={JSON.stringify(inputFields.map(field => [field.name, field.required]))} inputFields={inputFields} outputFields={outputFields} />}
         {!draft.terminal && supportsSession && <RadioGroup label="Session policy" value={draft.sessionPolicy ?? 'new'} options={[{ value: 'new', label: 'New session' }, { value: 'continue_target', label: 'Continue target' }]} onChange={value => setDraft(current => ({ ...current, sessionPolicy: value === 'continue_target' ? 'continue_target' : undefined }))} />}
       </>
-      <div className="graph-choice-form-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={!valid}>Apply</Button></div>
+      <div className="graph-choice-form-actions"><Button onClick={() => { forgetDrafts(key); onClose(); }}>Cancel</Button><Button type="submit" variant="primary" disabled={!valid}>Apply</Button></div>
     </form>
   </aside>;
 }

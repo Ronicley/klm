@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package main
 
@@ -104,7 +104,7 @@ func (o *ownedProcess) Stop() error {
 func (o *ownedProcess) Close() error  { return o.Stop() }
 func (o *ownedProcess) Drained() bool { return false }
 
-func (g *runtimeProcessGroup) BeginTurn()          {}
+func (g *runtimeProcessGroup) BeginTurn() error    { return nil }
 func (g *runtimeProcessGroup) EndTurn()            {}
 func (g *runtimeProcessGroup) MarkInfrastructure() {}
 

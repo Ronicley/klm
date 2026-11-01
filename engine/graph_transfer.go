@@ -42,7 +42,7 @@ func (b GraphTransfer) validate() error {
 		if !validAuthoringID(id) || id != authoringSlug(d.Name) || !used[id] {
 			return fmt.Errorf("Agent %q must have a name-derived identifier and be referenced by the graph.", id)
 		}
-		if err := validateAgentDefinition(d); err != nil {
+		if err := validateAgentDefinition(&d); err != nil {
 			return fmt.Errorf("Agent %s: %w", id, err)
 		}
 		if d.DefaultHarness != "pi" && d.DefaultHarness != "opencode" && d.DefaultHarness != "codex" || strings.TrimSpace(d.Model) == "" {

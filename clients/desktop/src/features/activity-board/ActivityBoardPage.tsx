@@ -9,6 +9,9 @@ import { SprintPicker } from './SprintPicker';
 import type { ActivityBoardState } from './useActivityBoard';
 import { boardError, boardItems, boardMoveReceipt, cancelUnacceptedMove, moveBoardItem, providerName, scopeName, type BoardConfig, type BoardItem, type BoardMove, type BoardPage, type BoardPhase, type BoardSprint } from './api';
 import './activity-board.css';
+import { flushDrafts, useEngineDraft } from '../drafts/draftStore';
+import { IS_DESKTOP } from '../../platform';
+import { beginLocalActivity } from '../engines/localActivities';
 
 function externalURL(item: BoardItem) {
   try { const url = new URL(item.url); return url.protocol === 'https:' && url.hostname === (item.provider === 'github' ? 'github.com' : 'dev.azure.com') ? url.href : undefined; } catch { return undefined; }
@@ -71,14 +74,14 @@ function BoardColumn({ phase, projectId, sprintId, config, projects, moving, act
 }
 
 export function ActivityBoardPage({ projects, projectId, visible, board, onProjectChange, onBack, onConnections }: { projects: Project[]; projectId: string; visible: boolean; board: ActivityBoardState; onProjectChange: (id: string) => void; onBack: () => void; onConnections: (projectId: string) => void }) {
-  const [settings, setSettings] = useState(false);
-  const [sprintFilter, setSprintFilter] = useState<{ projectId: string; sprint?: BoardSprint }>();
+  const [settings, setSettings] = useEngineDraft('ui.taskPhases', false);
+  const [sprintFilter, setSprintFilter] = useEngineDraft<{ projectId: string; sprint?: BoardSprint } | undefined>('ui.taskSprint', undefined);
   const [moving, setMoving] = useState(false);
-  const [receipt, setReceipt] = useState<BoardMove>();
-  const [unknownOperation, setUnknownOperation] = useState('');
-  const [missingReceipt, setMissingReceipt] = useState('');
-  const [attempt, setAttempt] = useState<{ item: BoardItem; phaseId: string; revision: string; operationId: string }>();
-  const [notice, setNotice] = useState('');
+  const [receipt, setReceipt] = useEngineDraft<BoardMove | undefined>('form.taskMove.receipt', undefined);
+  const [unknownOperation, setUnknownOperation] = useEngineDraft('form.taskMove.unknown', '');
+  const [missingReceipt, setMissingReceipt] = useEngineDraft('form.taskMove.missing', '');
+  const [attempt, setAttempt] = useEngineDraft<{ item: BoardItem; phaseId: string; revision: string; operationId: string } | undefined>('form.taskMove.attempt', undefined);
+  const [notice, setNotice] = useEngineDraft('form.taskMove.notice', '');
   const live = useRef(true);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const { config } = board;
@@ -112,23 +115,29 @@ export function ActivityBoardPage({ projects, projectId, visible, board, onProje
 
   async function move(item: BoardItem, phaseId: string) {
     if (!config || moving || receipt?.status === 'pending' || unknownOperation) return;
+    const finished = beginLocalActivity('Updating task');
     setMoving(true); setNotice('');
     const id = operationID();
     setAttempt({ item, phaseId, revision: config.revision, operationId: id }); setMissingReceipt('');
-    try { const next = await moveBoardItem(item, phaseId, config.revision, id); if (live.current) { setReceipt(next); setNotice(next.message ?? 'Updating…'); void board.load(); } }
+    try {
+      if (IS_DESKTOP) { setUnknownOperation(id); setNotice('Update delivery unconfirmed. Check its receipt.'); }
+      await flushDrafts();
+      const next = await moveBoardItem(item, phaseId, config.revision, id); if (live.current) { setReceipt(next); setUnknownOperation(''); setNotice(next.message ?? 'Updating…'); void board.load(); }
+    }
     catch (e) {
-      if (e instanceof EngineRequestError && e.status >= 400 && e.status < 500) { if (live.current) setNotice(boardError(e)); }
+      if (e instanceof EngineRequestError && e.status >= 400 && e.status < 500) { if (live.current) { if (IS_DESKTOP) setUnknownOperation(''); setNotice(boardError(e)); } }
       else await checkReceipt(id);
-    } finally { if (live.current) setMoving(false); }
+    } finally { if (live.current) setMoving(false); finished(); }
   }
   async function cancelMissingUpdate() {
     if (!attempt || attempt.operationId !== missingReceipt || moving) return;
+    const finished = beginLocalActivity('Reconciling task request');
     setMoving(true);
     try {
       const result = await cancelUnacceptedMove(attempt.item, attempt.phaseId, attempt.revision, attempt.operationId);
       if (live.current) { setReceipt(result); setUnknownOperation(''); setMissingReceipt(''); setNotice(result.message ?? 'The engine already accepted this update; check its receipt.'); await board.load(true); }
     } catch { await checkReceipt(attempt.operationId); }
-    finally { if (live.current) setMoving(false); }
+    finally { if (live.current) setMoving(false); finished(); }
   }
   return <section className="activity-board-page" aria-label="Tasks">
     <div className="board-toolbar"><Button size="sm" variant="ghost" onClick={onBack}><ArrowLeft />Back</Button><SearchSelect label="Tasks project" value={projectId} options={[{ value: '', label: 'All projects' }, ...projects.map(p => ({ value: p.id, label: p.name }))]} onChange={id => { setSprintFilter(undefined); onProjectChange(id); }} />{config && (sprint || hasAzure) && <SprintPicker key={projectId} projectId={projectId} projectionRevision={config.projectionRevision} visible={visible} initialized={!!activeSprintFilter} value={sprint} onChange={next => setSprintFilter({ projectId, sprint: next })} />}<div className="board-toolbar-actions"><Button size="sm" disabled={!config || board.busy} onClick={() => void board.refresh()}><RefreshCw />{board.busy ? 'Refreshing…' : 'Refresh'}</Button><Button size="sm" disabled={!config} onClick={() => setSettings(true)}><Settings />Phases</Button>{projectId ? <Button size="sm" onClick={() => onConnections(projectId)}><ListTodo />Connections</Button> : <SearchSelect label="Task connections for project" value="" placeholder="Connections" disabled={!projects.length} options={projects.map(p => ({ value: p.id, label: p.name }))} onChange={onConnections} />}</div></div>

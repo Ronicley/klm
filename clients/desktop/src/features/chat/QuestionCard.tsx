@@ -5,6 +5,9 @@ import { request, type QuestionRequest, type SessionResponse } from '../../engin
 import { MarkdownContent } from './ChatMessage';
 import { PlanReader } from '../graphs/PlanReader';
 import { MCPElicitationCard } from '../library/MCPElicitationCard';
+import { bindDraftDiscard, draftRecord, flushDrafts, useEngineDraft } from '../drafts/draftStore';
+import { beginLocalActivity } from '../engines/localActivities';
+
 export function QuestionCard({ question, sessionId, origin, onResolved }: {
   question: QuestionRequest; sessionId: string; origin?: string; onResolved: (session: SessionResponse) => void;
 }) {
@@ -13,7 +16,10 @@ export function QuestionCard({ question, sessionId, origin, onResolved }: {
 }
 
 function NativeQuestionCard({ question, sessionId, origin, onResolved }: { question: QuestionRequest; sessionId: string; origin?: string; onResolved: (session: SessionResponse) => void }) {
-  const [responses, setResponses] = useState(() => question.items.map(() => ({ selected: [] as string[], custom: '' })));
+  const key = `form.question:${sessionId}:${question.id}:${JSON.stringify(question.items)}`;
+  const forgetDrafts = bindDraftDiscard();
+  const [responses, setResponses] = useEngineDraft(key, () => question.items.map(() => ({ selected: [] as string[], custom: '' })), false,
+    value => Array.isArray(value) && value.length === question.items.length && value.every(response => draftRecord(response) && typeof response.custom === 'string' && Array.isArray(response.selected) && response.selected.every(item => typeof item === 'string')));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [reading, setReading] = useState<{ title: string; text: string } | null>(null);
@@ -27,12 +33,15 @@ function NativeQuestionCard({ question, sessionId, origin, onResolved }: { quest
 
   async function submit(cancelled = false) {
     if (pending.current || question.resolving || (!cancelled && !ready)) return;
+    const finished = beginLocalActivity('Delivering answer');
     pending.current = true; setSubmitting(true); setError('');
     try {
+      await flushDrafts();
       const snapshot = await request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/questions/${encodeURIComponent(question.id)}/reply`, 'POST', cancelled ? { cancelled: true } : { answers });
+      forgetDrafts(key);
       onResolved(snapshot);
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not send the answer. Please retry.'); }
-    finally { pending.current = false; setSubmitting(false); }
+    finally { pending.current = false; setSubmitting(false); finished(); }
   }
 
   const harness = question.harness === 'opencode' ? 'OpenCode' : question.harness === 'pi' ? 'Pi' : 'Codex';

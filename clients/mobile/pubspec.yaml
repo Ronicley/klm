@@ -1,7 +1,7 @@
 name: klm_harness
 description: "KLM Harness mobile host launcher."
 publish_to: 'none'
-version: 0.5.0+2
+version: 0.6.0+3
 
 environment:
   sdk: ^3.12.2
@@ -13,6 +13,7 @@ dependencies:
   shared_preferences: ^2.5.5
   webview_flutter: ^4.14.1
   file_picker: ^13.1.0
+  url_launcher: ^6.3.2
   record: ^7.1.2
   path_provider: ^2.1.5
   network_info_plus: ^8.2.2

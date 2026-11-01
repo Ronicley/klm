@@ -53,6 +53,9 @@ to original, but never chooses fresh/reuse for the user. For reuse provide
 sourceRunId and reuse: {"initial": "<recorded workspace ID>", ...} with the
 needed Fork/Join associations from graph_get_run. Retry retains the activity's
 authorization. Non-retry updates leave its saved workspace decision intact.
+An accepted retry automatically schedules the same activity. A response with
+started=false can mean its snapshot is still preparing or it is queued; do not
+call graph_invoke to start that retry, which would create a duplicate activity.
 
 Ready corrective work precedes independent work. If correction needs the user,
 already authorized independent work may proceed. Do not abandon prerequisites,

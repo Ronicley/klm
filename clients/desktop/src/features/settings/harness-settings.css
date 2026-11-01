@@ -1,0 +1,20 @@
+.harness-settings .harness-host { margin: 0 0 1.25rem; }
+.harness-rows { display: grid; }
+.harness-row { padding: 1.125rem 0; border-bottom: 1px solid var(--color-border); min-width: 0; }
+.harness-row-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.harness-row h4 { margin: 0 0 .25rem; font-size: .9375rem; }
+.harness-version { font-variant-numeric: tabular-nums; color: var(--color-text-secondary); font-size: .8125rem; }
+.harness-row p { margin: .5rem 0; font-size: .8125rem; overflow-wrap: anywhere; }
+.harness-row summary { cursor: pointer; font-size: .8125rem; padding: .375rem 0; }
+.harness-row dl, .harness-install-confirmation dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .5rem 1rem; font-size: .8125rem; }
+.harness-row dt, .harness-install-confirmation dt { color: var(--color-text-secondary); }
+.harness-row dd, .harness-install-confirmation dd { margin: 0; overflow-wrap: anywhere; }
+.harness-install-log { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 12rem; padding: .75rem; font-size: .75rem; background: var(--color-subtle); border-radius: var(--radius-md); }
+.harness-uncertain { padding: .75rem 0; }
+.harness-uncertain code { overflow-wrap: anywhere; font-size: .75rem; }
+.harness-install-confirmation { max-width: min(32rem, calc(100vw - 2rem)); }
+@media (max-width: 520px) {
+  .harness-row-heading { align-items: flex-start; flex-wrap: wrap; gap: .75rem; }
+  .harness-row dl, .harness-install-confirmation dl { grid-template-columns: minmax(0, 1fr); gap: .25rem; }
+  .harness-row dd, .harness-install-confirmation dd { margin-bottom: .5rem; }
+}

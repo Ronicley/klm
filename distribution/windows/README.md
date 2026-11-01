@@ -15,6 +15,11 @@ number. For example, base 0.1.0 and run 12 produce 0.1.12. Re-running a job reta
 that version. Keep this workflow's identity and increase the base major/minor
 when starting a new version series. Do not lower the base version.
 
+Settings → **About** shows the desktop client and connected engine versions.
+The engine build embeds `-Version` in its binary; the combined release build also
+embeds that version in the shared frontend for browser Focus. Native desktop reads
+its version from Tauri. Unversioned local engine builds report `development`.
+
 Only after both builds succeed does the publish job create a draft release at
 the triggering commit, upload both installers plus SHA256SUMS.txt, and publish
 it. Failed uploads leave a draft; a retry completes it. Already published releases

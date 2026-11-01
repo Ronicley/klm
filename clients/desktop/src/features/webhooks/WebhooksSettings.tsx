@@ -9,6 +9,8 @@ import { Toggle } from '../../design-system/Toggle';
 import { EngineRequestError } from '../../engine';
 import { createWebhook, listWebhooks, removeWebhook, updateWebhook, validateWebhookSecret, webhookRetentions, webhookURL, type WebhookConnection, type WebhookRetention } from './api';
 import './webhooks.css';
+import { bindDraftDiscard, flushDrafts, useEngineDraft } from '../drafts/draftStore';
+import { beginLocalActivity } from '../engines/localActivities';
 
 type WebhookFormInput = { name: string; retention: WebhookRetention; secret?: string; enabled?: boolean };
 
@@ -58,15 +60,16 @@ function WebhookURL({ connection, readMode = false }: { connection?: WebhookConn
   </>;
 }
 
-function WebhookForm({ connection, busy, onSave, onCancel }: {
+function WebhookForm({ connection, busy, onSave, onCancel, draftKey }: {
+  draftKey: string;
   connection?: WebhookConnection; busy: boolean;
   onSave: (input: WebhookFormInput) => void; onCancel: () => void;
 }) {
-  const [name, setName] = useState(connection?.name ?? '');
-  const [retention, setRetention] = useState<WebhookRetention | ''>(connection?.retention ?? '');
-  const [enabled, setEnabled] = useState(connection?.enabled ?? true);
-  const [changeSecret, setChangeSecret] = useState(!connection);
-  const [secret, setSecret] = useState(() => connection ? '' : generateWebhookSecret());
+  const [name, setName] = useEngineDraft(`${draftKey}.name`, connection?.name ?? '');
+  const [retention, setRetention] = useEngineDraft<WebhookRetention | ''>(`${draftKey}.retention`, connection?.retention ?? '');
+  const [enabled, setEnabled] = useEngineDraft(`${draftKey}.enabled`, connection?.enabled ?? true);
+  const [changeSecret, setChangeSecret] = useEngineDraft(`${draftKey}.changeSecret`, !connection);
+  const [secret, setSecret] = useEngineDraft(`${draftKey}.secret`, () => connection ? '' : generateWebhookSecret(), true);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const active = useRef(false);
@@ -119,16 +122,17 @@ function WebhookForm({ connection, busy, onSave, onCancel }: {
 }
 
 export function WebhooksSettings({ projectId, onBusyChange }: { projectId: string; onBusyChange: (busy: boolean) => void }) {
+  const forgetDrafts = bindDraftDiscard();
   const [items, setItems] = useState<WebhookConnection[]>([]);
   const [now, setNow] = useState(Date.now);
   const [nextCursor, setNextCursor] = useState<string>();
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState('');
-  const [mutationError, setMutationError] = useState('');
+  const [mutationError, setMutationError] = useEngineDraft(`form.webhooks:${projectId}.error`, '');
   const [busy, setBusy] = useState(false);
-  const [editor, setEditor] = useState<WebhookConnection | 'new' | null>(null);
-  const [selected, setSelected] = useState<WebhookConnection | null>(null);
+  const [editor, setEditor] = useEngineDraft<WebhookConnection | 'new' | null>(`ui.webhooks:${projectId}.editor`, null);
+  const [selected, setSelected] = useEngineDraft<WebhookConnection | null>(`ui.webhooks:${projectId}.selected`, null);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [removingId, setRemovingId] = useState('');
   const active = useRef(false);
@@ -186,10 +190,12 @@ export function WebhooksSettings({ projectId, onBusyChange }: { projectId: strin
 
   async function mutate<T>(action: (signal: AbortSignal) => Promise<T>, afterSuccess: (result: T) => void) {
     if (mutation.current) return;
+    const finished = beginLocalActivity('Updating webhooks');
     const controller = new AbortController(); mutation.current = controller;
     listing.current?.abort(); listing.current = null; setLoading(false);
     setBusy(true); onBusyChange(true); setMutationError('');
     try {
+      await flushDrafts();
       const result = await action(AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]));
       if (!active.current || controller.signal.aborted || mutation.current !== controller) return;
       afterSuccess(result);
@@ -207,6 +213,7 @@ export function WebhooksSettings({ projectId, onBusyChange }: { projectId: strin
       }
       await load();
     } finally {
+      finished();
       if (mutation.current === controller) {
         mutation.current = null;
         if (active.current) { setBusy(false); onBusyChange(false); restoreFocus(); }
@@ -220,9 +227,9 @@ export function WebhooksSettings({ projectId, onBusyChange }: { projectId: strin
     if (target === 'new') {
       if (input.secret === undefined) return;
       const secret = input.secret;
-      void mutate(signal => createWebhook(projectId, { provider: 'github', name: input.name, retention: input.retention, secret }, signal), connection => { setSelected(connection); setEditor(null); });
+      void mutate(signal => createWebhook(projectId, { provider: 'github', name: input.name, retention: input.retention, secret }, signal), connection => { forgetDrafts(`form.webhook:${projectId}:new`); setSelected(connection); setEditor(null); });
     } else {
-      void mutate(signal => updateWebhook(projectId, target.id, input, signal), connection => { setSelected(connection); setEditor(null); });
+      void mutate(signal => updateWebhook(projectId, target.id, input, signal), connection => { forgetDrafts(`form.webhook:${projectId}:${target.id}`); setSelected(connection); setEditor(null); });
     }
   }
 
@@ -264,6 +271,6 @@ export function WebhooksSettings({ projectId, onBusyChange }: { projectId: strin
           <Button size="sm" variant="danger-soft" disabled={busy} onClick={() => void mutate(signal => removeWebhook(projectId, selected.id, signal), () => { setRemovingId(''); setSelected(null); restoreFocus(); })}>{busy ? 'Removing...' : 'Remove webhook'}</Button></div>
       </div>}
     </div>}
-    {editor !== null && <WebhookForm key={editor === 'new' ? 'new' : editor.id} connection={editor === 'new' ? undefined : editor} busy={busy} onSave={save} onCancel={() => { setEditor(null); setMutationError(''); if (!selected) restoreFocus(); else requestAnimationFrame(() => { if (active.current) section.current?.querySelector<HTMLElement>('[data-webhook-edit]')?.focus(); }); }} />}
+    {editor !== null && <WebhookForm key={editor === 'new' ? 'new' : editor.id} draftKey={`form.webhook:${projectId}:${editor === 'new' ? 'new' : editor.id}`} connection={editor === 'new' ? undefined : editor} busy={busy} onSave={save} onCancel={() => { forgetDrafts(`form.webhook:${projectId}:${editor === 'new' ? 'new' : editor.id}`); setEditor(null); setMutationError(''); if (!selected) restoreFocus(); else requestAnimationFrame(() => { if (active.current) section.current?.querySelector<HTMLElement>('[data-webhook-edit]')?.focus(); }); }} />}
   </section>;
 }

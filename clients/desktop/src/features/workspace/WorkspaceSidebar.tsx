@@ -1,5 +1,5 @@
-import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ListTodo, MoreHorizontal, PanelLeftClose, Pencil, Plus, Search, Settings, SquarePen, Workflow, Trash2 } from 'lucide-react';
-import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ListTodo, MoreHorizontal, PanelLeftClose, Pencil, Plus, Search, Settings, SquarePen, Trash2, Workflow } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Menu, MenuItem } from '../../design-system/Menu';
 import { ENGINE_URL, type Session, type Project, type Topic } from '../../engine';
@@ -24,23 +24,17 @@ function readSidebarWidth() {
 
 function sessionRuntimeState(session: Session) {
   if (session.status === 'error') return { state: 'error', label: 'Runtime error' };
-  if ((session.permissions?.length ?? 0) > 0) return { state: 'waiting', label: 'Waiting for approval' };
-  if ((session.questions?.length ?? 0) > 0) return { state: 'waiting', label: 'Waiting for input' };
-  const graphRun = session.graph?.run;
-  if (graphRun?.active) {
-    const requests = session.graph?.requests.filter(request => request.runId === graphRun.id) ?? [];
-    if (requests.some(request => request.kind === 'permission')) return { state: 'waiting', label: 'Waiting for approval' };
-    if (requests.some(request => request.kind === 'question')) return { state: 'waiting', label: 'Waiting for input' };
-    return { state: 'running', label: 'Graph running' };
-  }
+  if ((session.permissionCount ?? session.permissions?.length ?? 0) > 0) return { state: 'waiting', label: 'Waiting for approval' };
+  if ((session.questionCount ?? session.questions?.length ?? 0) > 0) return { state: 'waiting', label: 'Waiting for input' };
   if (session.status === 'running') return { state: 'running', label: 'Turn running' };
   if (session.runtimeActive) return { state: 'active', label: 'Runtime active' };
   return { state: 'off', label: 'Runtime stopped' };
 }
 
-export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onRename, onDelete, onEditTopic, onCreateTopic, onArchiveSession, onArchiveTopic, onMoveSession, onReorderTopic, onClose, onAgents, onGraphs, onProjectSettings, onActivityBoard, hasTaskProvider }: {
-  project: Project; sessions: Session[]; activeId: string; collapsed: string[]; archivedCollapsed: boolean; onCollapsedChange: Dispatch<SetStateAction<string[]>>; onArchivedCollapsedChange: (collapsed: boolean) => void;
+export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onRename, onDelete, onEditTopic, onCreateTopic, onArchiveSession, onArchiveTopic, onMoveSession, onReorderTopic, onClose, onAgents, onGraphs, onProjectSettings, onActivityBoard, hasTaskProvider, paging, onSearchChange }: {
   onDelete: (session: Session) => void;
+  paging?: ReactNode; onSearchChange?: (query: string) => void;
+  project: Project; sessions: Session[]; activeId: string; collapsed: Record<string, boolean>; archivedCollapsed: boolean; onCollapsedChange: Dispatch<SetStateAction<Record<string, boolean>>>; onArchivedCollapsedChange: (collapsed: boolean) => void;
   onSelect: (id: string) => void; onNew: (topic?: Topic) => void; onRename: (session: Session) => void; onEditTopic: (topic: Topic) => void; onCreateTopic: () => void;
   onArchiveSession: (session: Session, archived: boolean) => Promise<boolean>; onArchiveTopic: (topic: Topic, archived: boolean) => Promise<boolean>;
   onMoveSession: (session: Session, topic: Topic) => Promise<boolean>; onReorderTopic: (topic: Topic, beforeId: string) => Promise<boolean>;
@@ -78,6 +72,7 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
   const [sessionMenu, setSessionMenu] = useState('');
   const [topicMenu, setTopicMenu] = useState('');
   const [search, setSearch] = useState<string | null>(null);
+  useEffect(() => { const timer = setTimeout(() => onSearchChange?.(search ?? ''), 250); return () => clearTimeout(timer); }, [search, onSearchChange]);
   const [busyAction, setBusyAction] = useState('');
   const [actionError, setActionError] = useState('');
   const [dragging, setDragging] = useState<SidebarDrag | null>(null);
@@ -104,7 +99,7 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
 
   async function moveSession(session: Session, topic: Topic) {
     if (session.topicId === topic.id) return;
-    if (await runAction(`move:${session.id}`, () => onMoveSession(session, topic), 'Could not move the session. Restore archived content first, then try again.')) onCollapsedChange(current => current.filter(id => id !== topic.id));
+    if (await runAction(`move:${session.id}`, () => onMoveSession(session, topic), 'Could not move the session. Restore archived content first, then try again.')) onCollapsedChange(current => ({ ...current, [topic.id]: false }));
   }
 
   function reorderTopic(topic: Topic, beforeId: string) {
@@ -144,7 +139,7 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
     if (query && !matches.length && !group.name.toLowerCase().includes(query)) return null;
     if (archived && !matches.length && !group.topic?.archived) return null;
     const collapseKey = `${archived ? 'archived:' : ''}${group.id}`;
-    const expanded = search !== null || !collapsed.includes(collapseKey);
+    const expanded = search !== null || collapsed[collapseKey] === false;
     const dropSide = !archived && drop?.topicId === group.id ? drop.side : undefined;
     const index = activeTopics.findIndex(topic => topic.id === group.id);
     return <section key={collapseKey} className={`workspace-group topic-group ${group.topic ? `topic-color-${group.topic.color}` : 'is-ungrouped'} ${dropSide ? `topic-drop-${dropSide}` : ''} ${!archived && dragging?.kind === 'topic' && dragging.id === group.id ? 'is-dragging' : ''}`} aria-label={group.name}
@@ -170,7 +165,7 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
       <div className={`workspace-folder-row topic-heading ${group.topic && !archived && topicMenu === group.id ? 'has-open-menu' : ''}`}>
         <button className="workspace-folder" title={group.name} aria-expanded={expanded} draggable={!!group.topic && !archived && !busyAction && search === null}
           onDragStart={event => { event.stopPropagation(); suppressClick.current = true; setSessionMenu(''); setTopicMenu(''); setDragging({ kind: 'topic', id: group.id }); setDrop(null); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-klm-topic', group.id); }} onDragEnd={endDrag}
-          onClick={() => { if (search === null && !suppressClick.current) onCollapsedChange(collapsed.includes(collapseKey) ? collapsed.filter(item => item !== collapseKey) : [...collapsed, collapseKey]); }}>{expanded ? <ChevronDown /> : <ChevronRight />}<span>{group.name}</span></button>
+          onClick={() => { if (search === null && !suppressClick.current) onCollapsedChange(current => ({ ...current, [collapseKey]: current[collapseKey] === false })); }}>{expanded ? <ChevronDown /> : <ChevronRight />}<span>{group.name}</span></button>
         {group.topic && (group.topic.archived
           ? <IconButton label={`Restore topic ${group.name}`} disabled={!!busyAction} onClick={() => void runAction(`restore-topic:${group.id}`, () => onArchiveTopic(group.topic!, false), 'Could not restore the topic. Try again.')}><ArchiveRestore /></IconButton>
           : !archived && <><IconButton label={`Add session to ${group.name}`} disabled={!!busyAction} onClick={() => { setTopicMenu(''); onNew(group.topic); }}><Plus /></IconButton><Menu label={`${group.name} actions`} role="menu" className="workspace-action-menu" open={topicMenu === group.id} onOpenChange={open => { setActionError(''); setTopicMenu(open ? group.id : ''); }} side="bottom" trigger={props => <IconButton {...props} label={`${group.name} actions`}><MoreHorizontal /></IconButton>}>
@@ -202,6 +197,7 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
         {(search !== null || !archivedCollapsed) && <div className="archived-topic-list">{groups.map(group => groupView(group, true))}{!sessions.some(session => session.archived) && !project.topics?.some(topic => topic.archived) && <p className="empty-workspace">No sessions</p>}</div>}
       </div>
       {actionError && <p role="alert" className="form-error sidebar-action-error">{actionError}</p>}
+      {paging}
     </div>
     {!IS_MOBILE_HOST && <div className="session-rail-resize" role="separator" aria-label="Resize sessions" aria-orientation="vertical" aria-controls={panelId} aria-valuemin={minimumSidebarWidth} aria-valuemax={Math.round(maximumWidth)} aria-valuenow={Math.round(width)} aria-valuetext={`${Math.round(width)} pixels`} tabIndex={0}
       onPointerDown={event => {

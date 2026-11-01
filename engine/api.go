@@ -65,12 +65,39 @@ func loopbackHost(hostport string) bool {
 
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/auth/pair", a.redeemClient)
+	mux.HandleFunc("GET /api/auth/session", func(w http.ResponseWriter, r *http.Request) {
+		respond(w, 200, map[string]string{"clientId": clientIdentity(r)})
+	})
+	mux.HandleFunc("GET /api/auth/devices", a.connectedClients)
+	mux.HandleFunc("DELETE /api/auth/devices/{clientId}", a.revokeClient)
+	mux.HandleFunc("DELETE /api/auth/devices", a.revokeClient)
+	mux.HandleFunc("GET /api/settings/access", a.getEngineAccessSettings)
+	mux.HandleFunc("PATCH /api/settings/access", a.updateEngineAccessSettings)
+	mux.HandleFunc("POST /api/engine/restart", a.restartEngineHTTP)
+	a.harnessRoutes(mux)
 	a.libraryRoutes(mux)
+	a.automationRoutes(mux)
 	a.activityBoardRoutes(mux)
 	mux.HandleFunc("GET /api/health", a.health)
+	mux.HandleFunc("GET /api/version", a.getVersion)
 	mux.HandleFunc("GET /api/state", a.getState)
 	mux.HandleFunc("GET /api/opencode/settings", a.getOpenCodeSettings)
 	mux.HandleFunc("PATCH /api/opencode/settings", a.updateOpenCodeSettings)
+	if a.store != nil {
+		mux.HandleFunc("POST /api/sessions/{id}/content-downloads", a.createContentDownload)
+		mux.HandleFunc("POST /api/sessions/{id}/export-downloads", a.createSessionExportDownload)
+		mux.HandleFunc("GET /api/content-downloads/{ticket}", a.consumeContentDownload)
+		mux.HandleFunc("GET /api/activity/sessions", a.sqlSessionActivity)
+		mux.HandleFunc("GET /api/projects/{id}/sessions", a.projectSQLSessions)
+		mux.HandleFunc("GET /api/projects/{id}/topics", a.projectSQLTopics)
+		mux.HandleFunc("GET /api/projects/{id}/topics/{topicId}", a.getSQLTopic)
+		mux.HandleFunc("GET /api/sessions/{id}", a.chatSessionHandler(a.getSQLSession))
+		mux.HandleFunc("GET /api/sessions/{id}/content", a.chatSessionHandler(a.sqlEventContent))
+		mux.HandleFunc("GET /api/sessions/{id}/pending", a.chatSessionHandler(a.sqlPendingPage))
+		mux.HandleFunc("GET /api/sessions/{id}/graph/content", a.sqlGraphContentHTTP)
+	}
+	mux.HandleFunc("GET /api/analytics", a.getAnalytics)
 	mux.HandleFunc("GET /api/transcription/settings", a.getTranscriptionSettings)
 	mux.HandleFunc("PATCH /api/transcription/settings", a.updateTranscriptionSettings)
 	mux.HandleFunc("POST /api/transcriptions", a.transcribe)
@@ -98,6 +125,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/projects/{id}/topics", a.createTopic)
 	mux.HandleFunc("GET /api/projects/{id}/paths", a.projectPaths)
 	mux.HandleFunc("GET /api/projects/{id}/authoring", a.authoring)
+	a.registerAgentRoutes(mux)
+	a.delegationRoutes(mux)
 	mux.HandleFunc("GET /api/projects/{id}/models/{harness}", a.projectModels)
 	mux.HandleFunc("POST /api/projects/{id}/agents", a.saveAgent)
 	mux.HandleFunc("PATCH /api/projects/{id}/agents/{item}", a.saveAgent)
@@ -116,7 +145,6 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/graph/runs/{runId}/nodes/{nodeId}/activity", a.getGraphNodeActivity)
 	mux.HandleFunc("POST /api/sessions/{id}/graph/runs/{runId}/nodes/{nodeId}/retry", a.retryGraphNode)
 	mux.HandleFunc("PATCH /api/sessions/{id}/graph", a.selectConversationGraph)
-	mux.HandleFunc("PATCH /api/sessions/{id}/agent", a.chatSessionHandler(a.selectConversationAgent))
 	mux.HandleFunc("GET /api/sessions/{id}/files/{fileID}", a.chatSessionHandler(a.chatFileContent))
 	mux.HandleFunc("GET /api/images/{imageID}", a.getStoredImage)
 	mux.HandleFunc("GET /api/graph-runs/{runID}", a.getGraphRun)
@@ -145,17 +173,32 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/permission-rules/{ruleID}", a.deletePermissionRule)
 	mux.HandleFunc("POST /api/sessions/{id}/questions/{questionID}/reply", a.answerQuestion)
 	mux.HandleFunc("POST /api/dialogs/directory", a.directory)
+	mux.HandleFunc("GET /api/filesystem/roots", a.filesystemRoots)
+	mux.HandleFunc("GET /api/filesystem/directories", a.filesystemDirectories)
+	mux.HandleFunc("POST /api/filesystem/directories", a.createFilesystemDirectory)
+	mux.HandleFunc("PATCH /api/filesystem/directories", a.renameFilesystemDirectory)
+	mux.HandleFunc("DELETE /api/filesystem/directories", a.deleteFilesystemDirectory)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { fail(w, 404, "Endpoint not found.") })
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		// Public clients may use any domain/IP, including reverse proxies and tunnels.
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "*")
-			w.WriteHeader(http.StatusNoContent)
-			return
+		if a.store != nil {
+			_, pattern := mux.Handler(r)
+			if identity := r.Header.Get("X-KLM-Engine-ID"); identity != "" && r.URL.Path != "/api/state" && r.URL.Path != "/api/health" && r.URL.Path != "/api/version" && !strings.HasPrefix(r.URL.Path, "/api/auth/") && pattern != "POST /api/webhooks/github/{webhookId}" && pattern != "GET /api/library/mcp/oauth/callback" {
+				var current string
+				if err := a.store.readers.QueryRowContext(r.Context(), `SELECT value FROM store_meta WHERE key='database_id'`).Scan(&current); err != nil {
+					sqlHTTPError(w, err)
+					return
+				}
+				if current != identity {
+					fail(w, 409, "Engine identity changed. Reload the workspace before continuing.")
+					return
+				}
+			}
+			if pattern != "POST /api/webhooks/github/{webhookId}" && !strings.HasPrefix(r.URL.Path, "/api/auth/") && r.URL.Path != "/api/health" && r.URL.Path != "/api/version" && r.URL.Path != "/api/library/mcp/oauth/callback" && r.Header.Get("X-KLM-Read-Contract") != sqliteReadContract && r.URL.Query().Get("contract") != sqliteReadContract {
+				fail(w, 426, "Update the client to use this engine's storage contract.")
+				return
+			}
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			_, pattern := mux.Handler(r)
@@ -187,6 +230,10 @@ func (a *app) routes() http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+	if a.clientAuth == nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fail(w, 503, "Client authentication is unavailable.") })
+	}
+	return a.clientAuth.protect(mux, handler)
 }
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +245,17 @@ func (a *app) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	activeGraphs := 0
+	if a.store != nil {
+		running := len(a.runs)
+		a.mu.Unlock()
+		count, err := a.sqlHealth(r.Context())
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		respond(w, 200, map[string]any{"status": "ok", "version": 2, "contract": sqliteReadContract, "runningSessions": running, "activeGraphRuns": count})
+		return
+	}
 	for _, run := range a.state.GraphRuns {
 		if graphRunActive(run.Status) {
 			activeGraphs++
@@ -209,6 +267,10 @@ func (a *app) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) getState(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.getSQLState(w, r)
+		return
+	}
 	a.mu.Lock()
 	projects := []Project{}
 	sessions := []SessionSummary{}
@@ -371,6 +433,17 @@ func (a *app) createProject(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err.Error())
 		return
 	}
+	if a.store != nil {
+		a.mu.Lock()
+		registered, _, err := a.registerSQLProjectLocked(r.Context(), p, false, "")
+		a.mu.Unlock()
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		respond(w, 201, projectSQLView(registered))
+		return
+	}
 	a.mu.Lock()
 	var previous *Project
 	for i := range a.state.Projects {
@@ -414,6 +487,26 @@ func (a *app) updateProject(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Icon must be a PNG data URL, at most 128 KiB and 1024 by 1024 pixels.")
 		return
 	}
+	if a.store != nil {
+		var before *string
+		if body.Position != nil {
+			before = &body.Position.BeforeID
+		}
+		var p Project
+		a.mu.Lock()
+		err := a.writeSQLLocked(r.Context(), func(st *sqliteSessionTx) error {
+			var err error
+			p, err = st.patchProject(r.PathValue("id"), body.Name, body.Icon, before)
+			return err
+		})
+		a.mu.Unlock()
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		respond(w, 200, projectSQLView(p))
+		return
+	}
 	a.mu.Lock()
 	id := r.PathValue("id")
 	if p := a.state.project(id); p == nil || p.Removed {
@@ -451,6 +544,17 @@ func (a *app) updateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) removeProject(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.mu.Lock()
+		err := a.removeSQLProjectLocked(r.Context(), r.PathValue("id"))
+		a.mu.Unlock()
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		respond(w, 200, map[string]bool{"removed": true})
+		return
+	}
 	a.mu.Lock()
 	id := r.PathValue("id")
 	p := a.state.project(id)
@@ -531,12 +635,17 @@ func workspace(p *Project, name string) (string, bool) {
 
 func (a *app) createSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ProjectID string `json:"projectId"`
-		TopicID   string `json:"topicId"`
-		Title     string `json:"title"`
-		Workspace string `json:"workspace"`
-		Harness   string `json:"harness"`
-		Model     string `json:"model"`
+		ProjectID      string                `json:"projectId"`
+		TopicID        string                `json:"topicId"`
+		Title          string                `json:"title"`
+		Workspace      string                `json:"workspace"`
+		Harness        string                `json:"harness"`
+		Model          string                `json:"model"`
+		Effort         string                `json:"effort"`
+		Agent          string                `json:"agent"`
+		AgentSourceUID string                `json:"agentSourceUid"`
+		AgentRevision  string                `json:"agentRevision"`
+		AgentOverrides *AgentConfigOverrides `json:"agentOverrides"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -547,11 +656,46 @@ func (a *app) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	model := strings.TrimSpace(body.Model)
+	if body.Agent != "" {
+		if body.Workspace != "" && body.Workspace != "Ungrouped" {
+			fail(w, 400, "Omit workspace. Use topicId.")
+			return
+		}
+		id, err := a.createManualAgentSession(r.Context(), body.ProjectID, title, body.TopicID, body.Harness, body.Model, body.Effort, body.Agent, body.AgentSourceUID, body.AgentRevision, body.AgentOverrides)
+		if err != nil {
+			agentHTTPError(w, err)
+			return
+		}
+		a.respondSQLSession(w, r, id, 201)
+		return
+	}
 	if model != "" {
 		if _, ok := cleanLabel(model, 200); !ok || strings.HasPrefix(model, "-") {
 			fail(w, 400, "Invalid model identifier.")
 			return
 		}
+	}
+	if a.store != nil {
+		if body.Workspace != "" && body.Workspace != "Ungrouped" {
+			fail(w, 400, "Omit workspace. Use topicId to choose an existing topic.")
+			return
+		}
+		a.mu.Lock()
+		if _, ok := a.binaries[body.Harness]; !ok {
+			a.mu.Unlock()
+			fail(w, 400, "Harness is unknown or not installed.")
+			return
+		}
+		s := newTopLevelSession(body.ProjectID, title, "Ungrouped", body.Harness, model, body.Effort)
+		s.TopicID = body.TopicID
+		err := a.writeSQLLocked(r.Context(), func(st *sqliteSessionTx) error { return st.createSession(s, a.dir) })
+		a.mu.Unlock()
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		a.respondSQLSession(w, r, s.ID, 201)
+		return
 	}
 	a.mu.Lock()
 	p := a.state.project(body.ProjectID)
@@ -612,6 +756,19 @@ func (a *app) patchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Title == nil && body.Archived == nil && body.TopicID == nil {
 		fail(w, 400, "Provide title, archived or topicId.")
+		return
+	}
+	if a.store != nil {
+		a.mu.Lock()
+		err := a.writeSQLLocked(r.Context(), func(st *sqliteSessionTx) error {
+			return st.patchSessionLabels(r.PathValue("id"), body.Title, body.TopicID, body.Archived, nil)
+		})
+		a.mu.Unlock()
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		a.respondSQLSession(w, r, r.PathValue("id"), 200)
 		return
 	}
 	a.mu.Lock()
@@ -676,6 +833,10 @@ func (a *app) patchEvent(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Provide favorite to update the message.")
 		return
 	}
+	if a.store != nil {
+		a.patchSQLFavorite(w, r, *body.Favorite)
+		return
+	}
 	a.mu.Lock()
 	s := a.state.session(r.PathValue("id"))
 	if s == nil {
@@ -719,6 +880,10 @@ func (a *app) patchEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) revertEvent(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.revertSQLEvent(w, r)
+		return
+	}
 	var body struct {
 		Text *string `json:"text"`
 	}
@@ -866,15 +1031,18 @@ func (a *app) revertEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) message(w http.ResponseWriter, r *http.Request) {
-	a.mu.Lock()
-	initial := a.state.session(r.PathValue("id"))
-	if initial == nil {
+	var submissionStopVersion uint64
+	if a.store == nil {
+		a.mu.Lock()
+		initial := a.state.session(r.PathValue("id"))
+		if initial == nil {
+			a.mu.Unlock()
+			fail(w, 404, "Session not found.")
+			return
+		}
+		submissionStopVersion = a.stopVersions[initial.ID]
 		a.mu.Unlock()
-		fail(w, 404, "Session not found.")
-		return
 	}
-	submissionStopVersion := a.stopVersions[initial.ID]
-	a.mu.Unlock()
 	var body messageBody
 	files, uploadDir, decoded := a.decodeMessage(w, r, &body)
 	if !decoded {
@@ -901,6 +1069,24 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 	}
 	if (strings.TrimSpace(body.Text) == "" && len(files) == 0 && len(body.Images) == 0) || len(body.Text) > 128<<10 || !utf8.ValidString(body.Text) || strings.ContainsRune(body.Text, 0) {
 		fail(w, 400, "Provide text or files; text must be UTF-8, at most 128 KiB, without NUL characters.")
+		return
+	}
+	if a.store != nil {
+		identity := body.ClientID
+		if identity == "" {
+			identity = newID()
+		}
+		if len(body.Images) > 0 {
+			fail(w, 409, "Reselect image attachments before sending this message.")
+			return
+		}
+		retained, err := a.admitSQLMessage(r, r.PathValue("id"), identity, body.Text, body.Mode, body.Sources, body.Mentions, files)
+		retainFiles = retained
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		a.respondSQLSession(w, r, r.PathValue("id"), 202)
 		return
 	}
 	a.mu.Lock()
@@ -1065,6 +1251,13 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mode, status := body.Mode, "queued"
+	if a.state.activeAutomation(id) != nil {
+		if mode != "steer" {
+			a.mu.Unlock()
+			fail(w, 409, "Only steering is available during an automation run.")
+			return
+		}
+	}
 	if mode == "steer" {
 		status = "steering"
 	}
@@ -1127,7 +1320,47 @@ func (a *app) message(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) stop(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	var body struct {
+		AutomationRunID string `json:"automationRunId"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if a.store != nil {
+		a.mu.Lock()
+		err := a.confirmSQLAutomationStopLocked(r.Context(), id, body.AutomationRunID)
+		var t *turn
+		if err == nil {
+			t, err = a.stopSQLSessionLocked(id, nil)
+		}
+		a.mu.Unlock()
+		if err == nil {
+			err = waitSessionStop(r.Context(), t)
+		}
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		a.respondSQLSession(w, r, id, 200)
+		return
+	}
 	a.mu.Lock()
+	if run := a.state.activeAutomation(id); run != nil {
+		if body.AutomationRunID != run.ID {
+			a.mu.Unlock()
+			fail(w, 409, "Confirm stopping this automation run first.")
+			return
+		}
+		if err := a.commitLocked(func(d *diskState) { d.automationRun(run.ID).StopRequested = true }); err != nil {
+			a.mu.Unlock()
+			fail(w, 503, err.Error())
+			return
+		}
+	} else if body.AutomationRunID != "" {
+		a.mu.Unlock()
+		fail(w, 409, "This automation run has already ended. Refresh the conversation before stopping it.")
+		return
+	}
 	t, err := a.stopSessionLocked(id, nil)
 	a.mu.Unlock()
 	if err == nil {
@@ -1150,6 +1383,12 @@ func (a *app) stop(w http.ResponseWriter, r *http.Request) {
 
 // Caller holds app.mu. Cancellation precedes persistence, even on write failure.
 func (a *app) stopSessionLocked(id string, origin *SpawnOrigin) (*turn, error) {
+	if a.store != nil {
+		return a.stopSQLSessionLocked(id, origin)
+	}
+	if r := a.state.activeAutomation(id); r != nil && !r.StopRequested {
+		return nil, controlError(409, "Confirm stopping the automation run in its conversation first.")
+	}
 	if a.state.session(id) == nil {
 		return nil, controlError(404, "Session not found.")
 	}
@@ -1177,6 +1416,31 @@ func (a *app) stopSessionLocked(id string, origin *SpawnOrigin) (*turn, error) {
 	if err := a.cancelLinkedLocked(id); err != nil {
 		return t, err
 	}
+	if t == nil && a.state.activeAutomation(id) != nil {
+		ctx, cancel := context.WithCancel(a.ctx)
+		cancel()
+		t = &turn{ctx: ctx, cancel: cancel, done: make(chan struct{})}
+		a.runs[id] = t
+		runtime := a.runtimes[id]
+		runID := a.state.activeAutomation(id).ID
+		a.wg.Add(1)
+		go func(t *turn) {
+			defer a.wg.Done()
+			if runtime != nil {
+				t.stopErr = runtime.shutdown()
+			}
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			if t.stopErr == nil {
+				_ = a.commitLocked(func(d *diskState) {
+					finishAutomation(d, d.automationRun(runID), "interrupted_by_user", "Stopped by user.")
+				})
+			}
+			delete(a.runs, id)
+			close(t.done)
+			a.scheduleLinkedLocked()
+		}(t)
+	}
 	return t, nil
 }
 
@@ -1197,6 +1461,17 @@ func waitSessionStop(ctx context.Context, t *turn) error {
 }
 
 func (a *app) events(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		copy := r.Clone(r.Context())
+		u := *r.URL
+		query := u.Query()
+		query.Set("scope", "conversation")
+		query.Set("id", r.PathValue("id"))
+		u.RawQuery = query.Encode()
+		copy.URL = &u
+		a.scopedSQLUpdates(w, copy)
+		return
+	}
 	id := r.PathValue("id")
 	ch := make(chan struct{}, 1)
 	since, resumable := parseEventRevision(r)
@@ -1268,6 +1543,36 @@ func (a *app) events(w http.ResponseWriter, r *http.Request) {
 // Node sessions expose their request reply routes, but are not independent chats.
 func (a *app) chatSessionHandler(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if a.store != nil {
+			s, err := a.store.readSessionMeta(r.Context(), r.PathValue("id"))
+			if err != nil {
+				sqlHTTPError(w, err)
+				return
+			}
+			if s.GraphRunID != "" || s.Role == sessionRoleSubagent && r.Method != http.MethodGet {
+				fail(w, 404, "Conversation not found.")
+				return
+			}
+			if s.Role == sessionRoleSubagent {
+				if err := a.validateGraphChildRead(r.Context(), s.ID); err != nil {
+					sqlHTTPError(w, err)
+					return
+				}
+			}
+			if s.ProjectID != "" {
+				p, err := a.store.readProjectMeta(r.Context(), s.ProjectID)
+				if err != nil {
+					sqlHTTPError(w, err)
+					return
+				}
+				if p.Removed {
+					fail(w, 404, "Project not found.")
+					return
+				}
+			}
+			handler(w, r)
+			return
+		}
 		a.mu.Lock()
 		s := a.state.session(r.PathValue("id"))
 		private := s != nil && s.GraphRunID != ""
@@ -1282,6 +1587,10 @@ func (a *app) chatSessionHandler(handler http.HandlerFunc) http.HandlerFunc {
 }
 
 func (a *app) getConversationGraph(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.getSQLConversationGraph(w, r)
+		return
+	}
 	a.mu.Lock()
 	s := a.state.session(r.PathValue("id"))
 	if s == nil || s.Role == sessionRoleGeneralAgent || s.ParentID != "" || s.GraphRunID != "" {
@@ -1310,6 +1619,10 @@ func (a *app) selectConversationGraph(w http.ResponseWriter, r *http.Request) {
 		failSessionControl(w, err)
 		return
 	}
+	if a.store != nil {
+		a.getSQLConversationGraph(w, r)
+		return
+	}
 	a.mu.Lock()
 	projection := a.state.graphProjection(id)
 	a.mu.Unlock()
@@ -1330,6 +1643,10 @@ type GraphRunSummary struct {
 }
 
 func (a *app) getGraphRun(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.getSQLGraphRun(w, r)
+		return
+	}
 	a.mu.Lock()
 	run := a.state.graphRun(r.PathValue("runID"))
 	if run == nil {

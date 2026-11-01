@@ -1,10 +1,11 @@
-import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { ActivityPagingContext } from './activityPaging';
 import { createPortal } from 'react-dom';
-import { ArrowLeftRight, ArrowUp, ArrowUpRight, ChevronDown, MessageSquare, PanelLeft, PanelsTopLeft, Radio, Search, Settings2, RefreshCw } from 'lucide-react';
+import { ArrowLeftRight, ArrowUp, ArrowUpRight, BarChart3, ChevronDown, Home, Maximize2, MessageSquare, Minimize2, Minus, PanelLeft, PanelsTopLeft, Radio, Search, Settings2, RefreshCw, X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
-import { TabNav } from '../../design-system/TabNav';
+import { AnalyticsPage } from '../analytics/AnalyticsPage';
 import { IS_MOBILE_HOST } from '../../platform';
-import type { Project, Session } from '../../engine';
+import { ENGINE_URL, type Project, type Session } from '../../engine';
 import type { ActivityCategory } from './githubActivityApi';
 import { GithubActivityCard } from './GithubActivityCard';
 import { ActivityFeedSettings } from './ActivityFeedSettings';
@@ -15,17 +16,28 @@ import { useFeedPullToRefresh } from './useFeedPullToRefresh';
 import { saveHappeningOrder, useHappeningOrder } from './happeningOrder';
 import { topicArchived } from '../workspace/topics';
 import './klm-agent.css';
+import './agent-home.css';
 
 type FeedProject = Pick<Project, 'name' | 'icon'>;
 type FeedFilter = 'All' | ActivityCategory;
 type SessionActions = { overlaySessionId?: string; onOpenOverlay: (session: Session) => void; onOpenProject: (session: Session) => void };
 type ProjectRailControl = { projectRailOpen?: boolean; onToggleProjectRail?: () => void; onOpenBoard?: () => void };
 const filters: FeedFilter[] = ['All', 'PRs', 'Pipelines', 'Issues', 'Security', 'Repository', 'Other'];
-const defaultChatRatio = 100 / 3;
+const defaultMenuWidth = 240;
+const minimumMenuWidth = 160;
+const maximumMenuWidth = 360;
+const menuWidthKey = `klm.agent.menu-width.v1:${ENGINE_URL}`;
+
+function readDiscoveryWidth() {
+  try {
+    const value = Number(localStorage.getItem('klm.agent.discovery-width.v1'));
+    return Number.isFinite(value) && value >= 200 ? value : 230;
+  } catch { return 230; }
+}
 
 function WorkspaceDivider({ label, swapLabel, controls, value, minimum, maximum, valueText, dragScale, step, onChange, onReset, onSwap, className = '' }: {
-  label: string; swapLabel: string; controls: string; value: number; minimum: number; maximum: number; valueText: string;
-  dragScale: number; step: number; onChange: (value: number) => void; onReset: () => void; onSwap: () => void; className?: string;
+  label: string; swapLabel?: string; controls: string; value: number; minimum: number; maximum: number; valueText: string;
+  dragScale: number; step: number; onChange: (value: number) => void; onReset: () => void; onSwap?: () => void; className?: string;
 }) {
   const resize = useRef<{ pointerId: number; x: number; value: number } | null>(null);
   const clamp = (next: number) => Math.max(minimum, Math.min(maximum, next));
@@ -53,7 +65,7 @@ function WorkspaceDivider({ label, swapLabel, controls, value, minimum, maximum,
         event.preventDefault();
         onChange(event.key === 'Home' ? minimum : event.key === 'End' ? maximum : clamp(value + (event.key === 'ArrowLeft' ? -step : step) * Math.sign(dragScale)));
       }} />
-    <IconButton label={swapLabel} className="klm-agent-swap" onClick={onSwap}><ArrowLeftRight /></IconButton>
+    {onSwap && swapLabel && <IconButton label={swapLabel} className="klm-agent-swap" onClick={onSwap}><ArrowLeftRight /></IconButton>}
   </div>;
 }
 
@@ -66,12 +78,13 @@ function ProjectAvatar({ project, small = false }: { project: FeedProject; small
 function happeningStatus(session: Session) {
   // Keep the sessions rail's runtime precedence, including retained idle runtimes.
   if (session.status === 'error') return { state: 'error', label: 'Failed', tone: 'danger' };
-  if (session.permissions?.length || session.questions?.length) return { state: 'waiting', label: 'Needs attention', tone: 'warning' };
+  if (session.permissions?.length || session.questions?.length || session.permissionCount || session.questionCount) return { state: 'waiting', label: 'Needs attention', tone: 'warning' };
   if (session.status === 'running') return { state: 'running', label: 'Working', tone: 'success' };
   return { state: session.runtimeActive ? 'active' : 'off', label: 'Idle', tone: 'muted' };
 }
 
 export function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverlay, onOpenProject, floating = false, rowTarget = floating ? 'main window' : 'overlay' }: { projects: Project[]; sessions: Session[]; floating?: boolean; rowTarget?: 'main window' | 'floating window' | 'overlay' } & SessionActions) {
+  const paging = useContext(ActivityPagingContext);
   const [showAll, setShowAll] = useState(false);
   const list = useRef<HTMLDivElement>(null);
   const listId = useId();
@@ -84,8 +97,8 @@ export function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverl
   const projectsById = new Map(projects.map(project => [project.id, project]));
   const activeSessions = sessions.flatMap(session => {
     const project = projectsById.get(session.projectId);
-    if (!project || session.parentId || session.role || session.archived || topicArchived(project, session)) return [];
-    if (!session.runtimeActive && session.status !== 'running' && session.status !== 'error' && !session.permissions?.length && !session.questions?.length) return [];
+    if (!project || session.activityListed === false || session.parentId || session.role || session.archived || topicArchived(project, session)) return [];
+    if (!session.runtimeActive && session.status !== 'running' && session.status !== 'error' && !session.permissions?.length && !session.questions?.length && !session.permissionCount && !session.questionCount) return [];
     return [{ session, project }];
   // New arrivals precede the saved order, newest first. Streaming never reorders cards.
   }).sort((left, right) => (orderIndex.get(left.session.id) ?? -1) - (orderIndex.get(right.session.id) ?? -1) || Date.parse(right.session.createdAt) - Date.parse(left.session.createdAt));
@@ -152,6 +165,8 @@ export function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverl
       })}
       {!activeSessions.length && <p className="activity-happening-empty">No active sessions.</p>}
     </div>
+    {paging.older && <Button size="sm" variant="ghost" onClick={paging.latest}>Latest activity</Button>}
+    {paging.hasMore && (showAll || floating || activeSessions.length <= 3) && <Button size="sm" variant="ghost" onClick={paging.next}>More active sessions</Button>}
     {!IS_MOBILE_HOST && !floating && (showAll || activeSessions.length > 3) && <Button variant="ghost" className="activity-show-more" aria-expanded={showAll} aria-controls={listId} onClick={() => {
       setShowAll(value => !value);
       list.current?.scrollTo({ top: 0, left: 0 });
@@ -159,7 +174,7 @@ export function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverl
   </aside>;
 }
 
-export function ActivityFeed({ projects, sessions, visible, standalone = false, actionsTarget, projectRailOpen = false, onToggleProjectRail, onOpenBoard, ...actions }: { projects: Project[]; sessions: Session[]; visible: boolean; standalone?: boolean; actionsTarget?: HTMLElement | null } & SessionActions & ProjectRailControl) {
+export function ActivityFeed({ projects, sessions, visible, standalone = false, fixedSidebar = false, actionsTarget, projectRailOpen = false, onToggleProjectRail, onOpenBoard, onSidebarWidthChange, ...actions }: { projects: Project[]; sessions: Session[]; visible: boolean; standalone?: boolean; fixedSidebar?: boolean; actionsTarget?: HTMLElement | null; onSidebarWidthChange?: (width: number) => void } & SessionActions & ProjectRailControl) {
   const [filter, setFilter] = useState<FeedFilter>('All');
   const [search, setSearch] = useState('');
   const grid = useRef<HTMLDivElement>(null);
@@ -169,6 +184,7 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
   const feed = useGithubActivityFeed(filter, search, projects, visible, timeline);
   const pull = useFeedPullToRefresh(scroller, IS_MOBILE_HOST && visible && !standalone && !!feed.catalog && !feed.setupError, feed.busy, feed.refresh);
   const bookmarks = useActivityBookmarks(feed.asOf, feed.clock, feed.highWatermark);
+  const projectCount = projects.length;
   const projectsById = new Map(projects.map(project => [project.id, project]));
   const newPostProjects = [...new Set(feed.newPosts.map(post => post.projectId))].flatMap(id => {
     const project = projectsById.get(id);
@@ -176,16 +192,13 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
   });
   const discoveryId = useId();
   const [available, setAvailable] = useState(0);
-  const [savedWidth, setSavedWidth] = useState(() => {
-    try {
-      const value = Number(localStorage.getItem('klm.agent.discovery-width.v1'));
-      return Number.isFinite(value) && value >= 200 ? value : 230;
-    } catch { return 230; }
-  });
-  const [swapped, setSwapped] = useState(() => {
+  const [savedWidth, setSavedWidth] = useState(readDiscoveryWidth);
+  useEffect(() => { onSidebarWidthChange?.(savedWidth); }, [savedWidth, onSidebarWidthChange]);
+  const [savedSwapped, setSwapped] = useState(() => {
     try { return localStorage.getItem('klm.agent.discovery-swapped.v1') === 'true'; }
     catch { return false; }
   });
+  const swapped = !fixedSidebar && savedSwapped;
   const maximum = Math.max(200, available - 320);
   const width = Math.min(savedWidth, maximum);
   useEffect(() => {
@@ -202,22 +215,25 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
     catch { /* Resizing still works without browser storage. */ }
   }, [savedWidth]);
   useEffect(() => {
-    try { localStorage.setItem('klm.agent.discovery-swapped.v1', String(swapped)); }
+    try { localStorage.setItem('klm.agent.discovery-swapped.v1', String(savedSwapped)); }
     catch { /* Swapping still works without browser storage. */ }
-  }, [swapped]);
+  }, [savedSwapped]);
   const settingsButton = <IconButton label="Feed settings" disabled={!feed.catalog} onClick={() => setSettings(true)}><Settings2 /></IconButton>;
   const searchInput = <><Search aria-hidden="true" /><input aria-label="Search activity" type="search" maxLength={200} placeholder="Search activity" value={search} onChange={event => setSearch(event.target.value)} /></>;
   const searchControl = IS_MOBILE_HOST ? <div className="activity-search">{onToggleProjectRail && <IconButton label={projectRailOpen ? 'Hide projects' : 'Show projects'} aria-expanded={projectRailOpen} onClick={onToggleProjectRail}><PanelLeft /></IconButton>}{searchInput}{settingsButton}</div> : <label className="activity-search">{searchInput}</label>;
   const feedActions = <><IconButton label="Refresh activity" disabled={feed.busy || !feed.catalog} onClick={feed.refresh}><RefreshCw /></IconButton>{settingsButton}</>;
+  const timelineHeading = fixedSidebar && !standalone && !IS_MOBILE_HOST;
+  const feedHeading = !IS_MOBILE_HOST && <header className="activity-feed-heading">{searchControl}<div className="activity-feed-tools"><span className="activity-project-count">{projectCount} {projectCount === 1 ? 'project' : 'projects'}</span>{feedActions}</div></header>;
   return <section className={`activity-feed${standalone ? ' activity-feed--standalone' : ''}`} aria-label="Project activity">
-    {standalone ? actionsTarget && createPortal(feedActions, actionsTarget) : !IS_MOBILE_HOST && <header className="activity-feed-heading"><div><h2>Activity</h2><span>Across your projects</span></div><div className="activity-feed-tools"><span className="activity-project-count">{projects.length} {projects.length === 1 ? 'project' : 'projects'}</span>{feedActions}</div></header>}
+    {standalone ? actionsTarget && createPortal(feedActions, actionsTarget) : !timelineHeading && feedHeading}
     {standalone && searchControl}
     {settings && feed.catalog && <ActivityFeedSettings items={feed.catalog.items} overrides={feed.overrides} error={feed.preferenceError} onChange={feed.savePreferences} onClose={() => setSettings(false)} />}
     {IS_MOBILE_HOST && !standalone && <div className="mobile-feed-refresh" data-pulling={pull.distance > 0 || undefined} data-refreshing={pull.refreshing || undefined} style={{ height: pull.refreshing ? 44 : pull.distance }} role="status" aria-live="polite" aria-hidden={!pull.refreshing && pull.distance === 0}>
       <div><RefreshCw aria-hidden="true" style={pull.refreshing ? undefined : { transform: `rotate(${pull.distance * 3}deg)` }} /><span>{pull.refreshing ? 'Refreshing…' : pull.ready ? 'Release to refresh' : 'Pull to refresh'}</span></div>
     </div>}
     <div className="activity-feed-scroll" ref={scroller}>
-      <div ref={grid} className={`activity-feed-grid${swapped ? ' is-swapped' : ''}`} style={{ '--activity-sidebar-width': `${width}px` } as CSSProperties}>
+      <div ref={grid} className={`activity-feed-grid${swapped ? ' is-swapped' : ''}${timelineHeading ? ' has-timeline-heading' : ''}`} style={{ '--activity-sidebar-width': `${width}px` } as CSSProperties}>
+        {timelineHeading && feedHeading}
         <div className="activity-timeline" ref={timeline} tabIndex={-1}>
           <nav className="activity-filters" aria-label="Filter activity">{filters.map(value => <button type="button" key={value} aria-current={filter === value ? 'page' : undefined} className={filter === value ? 'is-active' : ''} onClick={() => setFilter(value)}>{value}</button>)}</nav>
           <div className="activity-new-posts">
@@ -242,7 +258,7 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
           value={width} minimum={200} maximum={maximum} valueText={`${Math.round(width)}px sidebar`} dragScale={available > 660 ? (swapped ? 1 : -1) : 0} step={24}
           onChange={setSavedWidth} onReset={() => setSavedWidth(230)} onSwap={() => setSwapped(value => !value)} />
         <div id={discoveryId} className="activity-discovery">
-          {searchControl}
+          {IS_MOBILE_HOST && searchControl}
           <HappeningNow projects={projects} sessions={sessions} {...actions} />
           {onOpenBoard && <ActivityBoardEntry onOpen={onOpenBoard} />}
         </div></>}
@@ -251,52 +267,74 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
   </section>;
 }
 
-export function KlmAgentWorkspace({ enabled, visible = true, projects, sessions, children, onCloseOverlay, onOpenFloatingChat, openingFloatingChat = false, projectRailOpen, onToggleProjectRail, ...actions }: { enabled: boolean; visible?: boolean; projects: Project[]; sessions: Session[]; children: ReactNode; onCloseOverlay: () => void; onOpenFloatingChat?: () => void; openingFloatingChat?: boolean } & SessionActions & ProjectRailControl) {
-  const [mobilePane, setMobilePane] = useState<'chat' | 'activity'>(() => IS_MOBILE_HOST ? 'activity' : 'chat');
-  const columns = useRef<HTMLDivElement>(null);
+export function KlmAgentWorkspace({ enabled, visible = true, projects, sessions, children, onChatVisibility, onCloseOverlay, onOpenFloatingChat, openingFloatingChat = false, projectRailOpen, onToggleProjectRail, ...actions }: { enabled: boolean; visible?: boolean; projects: Project[]; sessions: Session[]; children: ReactNode; onChatVisibility?: (visible: boolean) => void; onCloseOverlay: () => void; onOpenFloatingChat?: () => void; openingFloatingChat?: boolean } & SessionActions & ProjectRailControl) {
+  const [page, setPage] = useState<'home' | 'analytics'>('home');
+  const [dock, setDock] = useState<'open' | 'minimized'>('minimized');
+  useEffect(() => { onChatVisibility?.(enabled && visible && dock === 'open'); }, [enabled, visible, dock, onChatVisibility]);
+  const [expanded, setExpanded] = useState(false);
+  const [discoveryWidth, setDiscoveryWidth] = useState(readDiscoveryWidth);
   const chatId = useId();
-  const [available, setAvailable] = useState(0);
-  const [savedRatio, setSavedRatio] = useState(() => {
+  const menuId = useId();
+  const layout = useRef<HTMLDivElement>(null);
+  const [savedMenuWidth, setSavedMenuWidth] = useState(() => {
     try {
-      const saved = localStorage.getItem('klm.agent.chat-ratio.v2');
-      const value = Number(saved ?? localStorage.getItem('klm.agent.chat-ratio.v1'));
-      // Replace the previous auto-saved 50/50 default, retaining custom widths.
-      return Number.isFinite(value) && value > 0 && value < 100 && (saved !== null || value !== 50) ? value : defaultChatRatio;
-    } catch { return defaultChatRatio; }
+      const value = Number(localStorage.getItem(menuWidthKey));
+      return Number.isFinite(value) && value >= minimumMenuWidth ? Math.min(value, maximumMenuWidth) : defaultMenuWidth;
+    } catch { return defaultMenuWidth; }
   });
-  const [swapped, setSwapped] = useState(() => {
-    try { return localStorage.getItem('klm.agent.panels-swapped.v1') === 'true'; }
-    catch { return false; }
-  });
-  const minimum = Math.min(50, 360 / Math.max(available, 1) * 100);
-  const maximum = 100 - minimum;
-  const ratio = Math.max(minimum, Math.min(maximum, savedRatio));
+  const [menuMaximum, setMenuMaximum] = useState(maximumMenuWidth);
+  const menuWidth = Math.min(savedMenuWidth, menuMaximum);
   useEffect(() => {
-    const element = columns.current;
-    if (!enabled || !element) return;
-    const measure = () => setAvailable(element.getBoundingClientRect().width);
+    const element = layout.current;
+    if (!enabled || IS_MOBILE_HOST || !element) return;
+    // Constrain the displayed width, not the saved preference, in smaller windows.
+    const measure = () => setMenuMaximum(Math.max(minimumMenuWidth, Math.min(maximumMenuWidth, element.clientWidth - 480)));
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
   }, [enabled]);
   useEffect(() => {
-    try { localStorage.setItem('klm.agent.chat-ratio.v2', String(savedRatio)); }
-    catch { /* Resizing still works without browser storage. */ }
-  }, [savedRatio]);
-  useEffect(() => {
-    try { localStorage.setItem('klm.agent.panels-swapped.v1', String(swapped)); }
-    catch { /* Swapping still works without browser storage. */ }
-  }, [swapped]);
+    if (!enabled || IS_MOBILE_HOST) return;
+    try { localStorage.setItem(menuWidthKey, String(savedMenuWidth)); }
+    catch { /* Resizing remains available without storage. */ }
+  }, [enabled, savedMenuWidth]);
+  const reopen = useRef<HTMLButtonElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const overlaid = !IS_MOBILE_HOST && !!actions.overlaySessionId;
+  const dockSession = sessions.find(session => overlaid ? session.id === actions.overlaySessionId : session.role === 'general_agent');
+  const dockStatus = dockSession ? happeningStatus(dockSession) : undefined;
+  // Hide, never unmount, the chat on minimize/close or page navigation. Its real
+  // composer, requests, subscriptions and drafts remain owned by App.
+  function openChat() { setDock('open'); }
+  function hideChat() { setDock('minimized'); requestAnimationFrame(() => reopen.current?.focus()); }
+  useEffect(() => { if (enabled && dock === 'open') heading.current?.focus(); }, [enabled, dock]);
+  useEffect(() => { if (overlaid) setDock('open'); }, [overlaid, actions.overlaySessionId]);
   if (!enabled) return children;
-  return <div className="klm-agent-workspace" data-mobile-pane={mobilePane}>
-    <div className="klm-agent-mobile-tabs"><TabNav value={mobilePane} onChange={setMobilePane} items={IS_MOBILE_HOST ? [{ value: 'activity', label: 'Feed' }, { value: 'chat', label: 'KLM Agent' }] : [{ value: 'chat', label: 'Chat' }, { value: 'activity', label: 'Activity' }]} /></div>
-    <div ref={columns} className={`klm-agent-columns${swapped ? ' is-swapped' : ''}`} style={{ '--klm-left-width': `${swapped ? 100 - ratio : ratio}%` } as CSSProperties}>
-      <section id={chatId} className={`klm-agent-chat${actions.overlaySessionId ? ' has-session-overlay' : ''}`} aria-label="KLM Agent chat"><div className="klm-agent-chat-heading"><MessageSquare aria-hidden="true" /><h2>Chat</h2>{onOpenFloatingChat && <IconButton className="klm-agent-open-floating" label="Open KLM Agent in floating window" disabled={openingFloatingChat} onClick={onOpenFloatingChat}><PanelsTopLeft /></IconButton>}</div>{actions.overlaySessionId && <button type="button" className="klm-overlay-backdrop" aria-label="Dismiss session overlay" onClick={onCloseOverlay} />}{children}</section>
-      <WorkspaceDivider label="Resize chat and activity" swapLabel="Swap chat and activity" controls={chatId}
-        value={ratio} minimum={minimum} maximum={maximum} valueText={`${Math.round(ratio)}% chat`} dragScale={available > 800 ? 100 / available * (swapped ? -1 : 1) : 0} step={2}
-        onChange={setSavedRatio} onReset={() => setSavedRatio(defaultChatRatio)} onSwap={() => setSwapped(value => !value)} />
-      <ActivityFeed projects={projects} sessions={sessions} visible={visible && (available > 800 || mobilePane === 'activity')} projectRailOpen={projectRailOpen} onToggleProjectRail={onToggleProjectRail} {...actions} onOpenOverlay={session => { if (!IS_MOBILE_HOST) setMobilePane('chat'); actions.onOpenOverlay(session); }} />
+  return <div className="klm-agent-workspace agent-home-workspace">
+    <div ref={layout} className="agent-home-layout" data-page={page} style={{ '--agent-menu-width': `${menuWidth}px`, '--agent-context-width': `${discoveryWidth}px` } as CSSProperties}><nav id={menuId} className="agent-home-nav" aria-label="KLM Agent navigation">
+      {onToggleProjectRail && <IconButton label={projectRailOpen ? 'Hide projects' : 'Show projects'} aria-expanded={projectRailOpen} onClick={onToggleProjectRail}><PanelLeft /></IconButton>}
+      <button type="button" aria-current={page === 'home' ? 'page' : undefined} onClick={() => setPage('home')}><Home /><span>Home</span></button>
+      <button type="button" aria-current={page === 'analytics' ? 'page' : undefined} onClick={() => setPage('analytics')}><BarChart3 /><span>Analytics</span></button>
+      <Button className="agent-home-chat-action" onClick={openChat}><MessageSquare /><span>Message KLM Agent</span></Button>
+      {!IS_MOBILE_HOST && <WorkspaceDivider className="agent-menu-divider" label="Resize navigation menu" controls={menuId}
+        value={menuWidth} minimum={minimumMenuWidth} maximum={menuMaximum} valueText={`${Math.round(menuWidth)} pixels`}
+        dragScale={1} step={16} onChange={setSavedMenuWidth} onReset={() => setSavedMenuWidth(defaultMenuWidth)} />}
+    </nav>
+    <div className="agent-home-content">
+      <div className="agent-home-page" hidden={page !== 'home'}><ActivityFeed fixedSidebar onSidebarWidthChange={setDiscoveryWidth} projects={projects} sessions={sessions} visible={visible && page === 'home'} projectRailOpen={projectRailOpen} onToggleProjectRail={onToggleProjectRail} {...actions} onOpenOverlay={session => { if (!IS_MOBILE_HOST) openChat(); actions.onOpenOverlay(session); }} /></div>
+      <div className="agent-home-page" hidden={page !== 'analytics'}><AnalyticsPage visible={visible && page === 'analytics'} projects={projects} /></div>
+    </div>
+    <section id={chatId} hidden={dock !== 'open'} className={`klm-agent-chat agent-chat-dock${expanded ? ' is-expanded' : ''}${overlaid ? ' has-session-overlay' : ''}`} aria-label="KLM Agent chat">
+      <div className="klm-agent-chat-heading"><MessageSquare aria-hidden="true" /><h2 ref={heading} tabIndex={-1}>KLM Agent</h2><div className="agent-chat-actions">
+        {onOpenFloatingChat && <IconButton label="Open KLM Agent in floating window" disabled={openingFloatingChat} onClick={onOpenFloatingChat}><PanelsTopLeft /></IconButton>}
+        <IconButton label={expanded ? 'Restore chat size' : 'Expand chat'} onClick={() => setExpanded(value => !value)}>{expanded ? <Minimize2 /> : <Maximize2 />}</IconButton>
+        <IconButton label="Minimize chat" onClick={hideChat}><Minus /></IconButton>
+        <IconButton label="Close chat" onClick={hideChat}><X /></IconButton>
+      </div></div>
+      {overlaid && <button type="button" className="klm-overlay-backdrop" aria-label="Dismiss session overlay" onClick={onCloseOverlay} />}{dock === 'open' ? children : null}
+    </section>
+    <button ref={reopen} type="button" className="agent-chat-launcher" hidden={dock === 'open'} aria-expanded={dock === 'open'} aria-controls={chatId} onClick={openChat}><MessageSquare /><span>KLM Agent</span>{dockStatus && <span className={`session-runtime-led is-${dockStatus.state}`} role="img" aria-label={dockStatus.label} title={dockStatus.label} />}<ChevronDown /></button>
     </div>
   </div>;
 }

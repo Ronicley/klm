@@ -200,6 +200,10 @@ func retryGraphCheckpoint(d *diskState, source GraphRun, selectedID, operationID
 }
 
 func (a *app) retryGraphNode(w http.ResponseWriter, req *http.Request) {
+	if a.store != nil {
+		a.retrySQLGraphNode(w, req)
+		return
+	}
 	var body struct {
 		ActivationID string `json:"activationId"`
 		OperationID  string `json:"operationId"`

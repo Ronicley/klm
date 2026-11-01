@@ -88,6 +88,7 @@ func (a *app) releasePendingWebhooks() {
 				emitted := maxWebhookTimestamp(e.ReceivedAt, at)
 				d.WebhookReleaseSequence++
 				d.WebhookReleases[p.EventID] = WebhookRelease{EventID: p.EventID, ReleaseSequence: d.WebhookReleaseSequence, EmittedAt: emitted}
+				automationWebhook(d, e)
 				delete(d.WebhookPending, p.EventID)
 			}
 			return nil
@@ -101,6 +102,10 @@ func (a *app) releasePendingWebhooks() {
 }
 
 func (a *app) webhookWorker() {
+	if a.store != nil {
+		a.sqliteWebhookWorker()
+		return
+	}
 	poll := time.NewTicker(time.Second)
 	cleanup := time.NewTicker(time.Minute)
 	defer poll.Stop()

@@ -115,7 +115,8 @@ func (a *app) selectConversationAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) chatAgentPrompt(s Session) (string, error) {
-	if s.SelectedAgent == nil {
+	// SQL turns use the prepared binding, never the retained legacy snapshot.
+	if a.store != nil || s.SelectedAgent == nil {
 		return "", nil
 	}
 	a.mu.Lock()

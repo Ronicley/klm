@@ -1,10 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const linkedConfig = /*KLM_LINKED_CONFIG*/{} as {
-  url: string; token: string; graphNode?: boolean; toolTimeoutMs: number;
-  libraryUrl?: string; libraryToken?: string;
+  url: string; token: string; graphNode?: boolean; nativeSubagents?: boolean; nativeSubagentPath?: string; toolTimeoutMs: number;
+  libraryUrl?: string; libraryToken?: string; delegation?: boolean;
   tools?: { name: string; description: string; inputSchema: TSchema; external?: boolean }[];
 };
 
@@ -104,7 +105,7 @@ export default function (pi: ExtensionAPI) {
       if (linkedConfig.graphNode) await linkedRPC("klm/graph/gate", {}, ctx.signal);
       // External tools use engine policy in their dispatch path, not this
       // privileged internal-tool bypass. The gateway validates the allowlist.
-      if (event.toolName === "ask_user" || tools.some(tool => tool.name === event.toolName && !tool.external)) return;
+      if (event.toolName === "ask_user" || linkedConfig.delegation && event.toolName === "subagent_run" || linkedConfig.nativeSubagents && event.toolName === "subagent" || tools.some(tool => tool.name === event.toolName && !tool.external)) return;
       if (tools.some(tool => tool.name === event.toolName && tool.external)) return;
       const signal = ctx.signal;
       if (ctx.mode !== "rpc" || !ctx.hasUI || !signal || signal.aborted) {
@@ -133,7 +134,11 @@ export default function (pi: ExtensionAPI) {
   // At turn_end every tool result in this batch has entered native history.
   // Abort here, never from inside graph_submit_choice with a pending tool result.
   pi.on("turn_end", async (_event, ctx) => {
-    if (sealed) { ctx.abort(); return; }
+    if (sealed) {
+      ctx.ui.notify("klm.graph.abort.v1", "info");
+      ctx.abort();
+      return;
+    }
     if (linkedConfig.graphNode || ctx.signal?.aborted) return;
     // Pull one combined input at the native boundary, without mutating Pi's
     // global steeringMode setting or racing an idle RPC steer command.
@@ -158,8 +163,15 @@ export default function (pi: ExtensionAPI) {
       if (!tools.every(tool => (tool.external ? libraryInventory : inventory).tools?.some(item => item.name === tool.name))) {
         throw new Error("Linked-agent tools are not ready.");
       }
-      const allowed = new Set(["read", "write", "edit", "bash", "powershell", "grep", "find", "ls", "ask_user", ...tools.map(tool => tool.name)]);
-      if (pi.getAllTools().some(tool => !allowed.has(tool.name))) throw new Error("Pi loaded unselected tools.");
+      const allowed = new Set(["read", "write", "edit", "bash", "powershell", "grep", "find", "ls", "ask_user", ...(linkedConfig.delegation ? ["subagent_run"] : []), ...(linkedConfig.nativeSubagents ? ["subagent"] : []), ...tools.map(tool => tool.name)]);
+      const inventoryTools = pi.getAllTools();
+      if (inventoryTools.some(tool => !allowed.has(tool.name))) throw new Error("Pi loaded unselected tools.");
+      if (linkedConfig.nativeSubagents) {
+        const native = inventoryTools.find(tool => tool.name === "subagent");
+        const path = native?.sourceInfo?.path;
+        const canonical = (value: string) => process.platform === "win32" ? resolve(value).toLowerCase() : resolve(value);
+        if (!path || !linkedConfig.nativeSubagentPath || canonical(path) !== canonical(linkedConfig.nativeSubagentPath)) throw new Error("Pi native delegation has an unexpected source.");
+      }
       if (linkedConfig.graphNode) await linkedRPC("klm/graph/gate", {});
       ctx.ui.notify("klm.permissions.ready.v1", "info");
     }

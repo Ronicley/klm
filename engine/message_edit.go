@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"os"
 	"sort"
 	"strings"
 	"unicode/utf16"
@@ -68,7 +72,24 @@ func (a *app) prepareEditedMessage(ctx context.Context, sessionID, folder, harne
 		if err != nil {
 			return payload, errors.New("An original attachment is unavailable. Restore it before editing this message.")
 		}
+		if err = verifyEditedAttachment(files[i].Path, files[i].Size, files[i].SHA256); err != nil {
+			return payload, err
+		}
 	}
 	err = prepareChatFiles(&payload, files)
 	return payload, err
+}
+
+func verifyEditedAttachment(path string, size int64, digest string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return errors.New("An original attachment is unavailable. Restore it before editing this message.")
+	}
+	defer f.Close()
+	hash := sha256.New()
+	n, err := io.Copy(hash, io.LimitReader(f, maxChatFileBytes+1))
+	if err != nil || n != size || n > maxChatFileBytes || digest == "" || hex.EncodeToString(hash.Sum(nil)) != digest {
+		return errors.New("An original attachment changed. Restore it before editing this message.")
+	}
+	return nil
 }

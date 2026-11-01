@@ -8,13 +8,15 @@ import './design-system/tokens.css';
 import './design-system/styles.css';
 import './styles.css';
 import { App } from './App';
+import { ClientConnection } from './features/settings/ClientConnection';
 import { IS_DESKTOP, IS_MOBILE_HOST } from './platform';
 import './features/workspace/mobile-workspace.css';
 import './web-compat';
+import { EngineProvider } from './features/engines/EngineProvider';
 
 document.documentElement.classList.toggle('desktop-client', IS_DESKTOP);
 document.documentElement.classList.toggle('mobile-client', IS_MOBILE_HOST);
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode><App /></React.StrictMode>,
+  <React.StrictMode><EngineProvider><ClientConnection><App /></ClientConnection></EngineProvider></React.StrictMode>,
 );

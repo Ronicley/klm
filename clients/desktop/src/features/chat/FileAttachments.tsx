@@ -1,7 +1,7 @@
 import { FileText, X } from 'lucide-react';
 import { IconButton } from '../../design-system/Button';
 import { useEffect, useState } from 'react';
-import { ENGINE_URL } from '../../engine';
+import { clientFetch } from '../../clientAuth';
 
 export type FileInfo = { name: string; size: number; truncated?: boolean; type?: string; url?: string };
 
@@ -21,7 +21,7 @@ function AttachmentPreview({ file }: { file: FileInfo }) {
       setLocalURL(url);
     } else if (remotePath) {
       // Desktop CSP allows blob images, not direct engine-origin image URLs.
-      void fetch(`${ENGINE_URL}${remotePath}`, { credentials: 'omit', signal: controller.signal }).then(async response => {
+      void clientFetch(remotePath, { signal: controller.signal }).then(async response => {
         if (!response.ok) throw new Error('Image unavailable');
         const blob = await response.blob();
         if (controller.signal.aborted) return;

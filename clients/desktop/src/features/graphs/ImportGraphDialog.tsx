@@ -7,7 +7,7 @@ import { Textarea } from '../../design-system/Textarea';
 import { request } from '../../engine';
 import { IS_MOBILE_HOST } from '../../platform';
 import { openMobileGraphFile } from './transfer-files';
-import { agentSlug, type Agent } from '../agents/demo';
+import { agentSlug, type Agent } from '../agents/types';
 import { authoringPath, type GraphFile } from './files';
 import { GRAPH_TRANSFER_LIMIT, parseTransfer, remapTransfer, type GraphTransfer } from './transfer';
 

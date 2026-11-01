@@ -1,4 +1,5 @@
 import { ENGINE_URL } from '../../engine';
+import { engineStorageKey } from '../../engineIdentity';
 
 // Main-window coordinates are offsets from the centered browser shell.
 export type FocusMainGeometry = { left: number; top: number; width: number; height: number };
@@ -26,7 +27,7 @@ export function reachableMainGeometry(value: FocusMainGeometry): FocusMainGeomet
 export function readFocusLayout(): FocusLayout {
   const fallback: FocusLayout = { maximized: false, minimized: false, front: 'main', sessionIds: [] };
   try {
-    const value = JSON.parse(localStorage.getItem(storageKey) ?? 'null') as Partial<FocusLayout> | null;
+    const value = JSON.parse(localStorage.getItem(engineStorageKey(storageKey)) ?? 'null') as Partial<FocusLayout> | null;
     if (!value || typeof value !== 'object' || Array.isArray(value)) return fallback;
     const geometry = value.mainGeometry;
     return {
@@ -43,6 +44,6 @@ export function readFocusLayout(): FocusLayout {
 }
 
 export function saveFocusLayout(layout: FocusLayout) {
-  try { localStorage.setItem(storageKey, JSON.stringify(layout)); }
+  try { localStorage.setItem(engineStorageKey(storageKey), JSON.stringify(layout)); }
   catch { /* The current layout remains usable without browser storage. */ }
 }

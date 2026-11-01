@@ -73,6 +73,10 @@ type GraphRunResult struct {
 	Error  string            `json:"error,omitempty"`
 }
 type GraphRun struct {
+	StopRequested      bool                   `json:"stopRequested,omitempty"`
+	RetrySourceRunID   string                 `json:"retrySourceRunId,omitempty"`
+	RetryActivationID  string                 `json:"retryActivationId,omitempty"`
+	RetryOperationID   string                 `json:"retryOperationId,omitempty"`
 	PauseRequested     bool                   `json:"pauseRequested,omitempty"`
 	Paused             bool                   `json:"paused,omitempty"`
 	FinalityError      string                 `json:"finalityError,omitempty"`
@@ -102,41 +106,42 @@ type GraphChoiceSubmission struct {
 	AcceptedAt  string            `json:"acceptedAt,omitempty"` // only after confirmed settlement
 }
 type GraphActivation struct {
-	CurrentTurnID     string                 `json:"currentTurnId,omitempty"`
-	FinishedTurnID    string                 `json:"finishedTurnId,omitempty"`
-	NativeEventStart  int                    `json:"nativeEventStart,omitempty"`
-	NativeEventEnd    int                    `json:"nativeEventEnd,omitempty"`
-	OriginWorkspaceID string                 `json:"originWorkspaceId,omitempty"`
-	SessionPolicy     string                 `json:"sessionPolicy,omitempty"`
-	Correction        string                 `json:"correction,omitempty"`
-	AdapterState      string                 `json:"adapterState,omitempty"`
-	Continuable       bool                   `json:"continuable,omitempty"`
-	IncomingCommit    string                 `json:"incomingCommit,omitempty"`
-	ViolationFeedback map[string]string      `json:"violationFeedback,omitempty"`
-	ID                string                 `json:"id"`
-	RunID             string                 `json:"runId"`
-	NodeID            string                 `json:"nodeId"`
-	Occurrence        uint64                 `json:"occurrence"`
-	Status            string                 `json:"status"` // reserved | running | waiting_user | sealing | completed | failed | interrupted
-	Input             map[string]string      `json:"input"`
-	WorkspaceID       string                 `json:"workspaceId,omitempty"`
-	SessionID         string                 `json:"sessionId,omitempty"`
-	CausalID          string                 `json:"causalId"`
-	ForkActivationID  string                 `json:"forkActivationId,omitempty"`
-	BranchID          string                 `json:"branchId,omitempty"`
-	JoinRoundID       string                 `json:"joinRoundId,omitempty"`
-	Violations        int                    `json:"violations"`
-	ViolationIDs      []string               `json:"violationIds,omitempty"` // call:<id> and omission:<turnID>
-	Submission        *GraphChoiceSubmission `json:"submission,omitempty"`
-	Output            map[string]string      `json:"output"`
-	CommandExitCode   *int                   `json:"commandExitCode,omitempty"`
-	CommandResult     string                 `json:"commandResult,omitempty"`
-	CommandTruncated  bool                   `json:"commandTruncated,omitempty"`
-	Events            []Event                `json:"events,omitempty"` // bounded normalized node/Terminal events, not chat turns
-	Error             string                 `json:"error,omitempty"`
-	CreatedAt         string                 `json:"createdAt"`
-	UpdatedAt         string                 `json:"updatedAt"`
-	EndedAt           string                 `json:"endedAt,omitempty"`
+	ReusedFromActivationID string                 `json:"reusedFromActivationId,omitempty"`
+	CurrentTurnID          string                 `json:"currentTurnId,omitempty"`
+	FinishedTurnID         string                 `json:"finishedTurnId,omitempty"`
+	NativeEventStart       int                    `json:"nativeEventStart,omitempty"`
+	NativeEventEnd         int                    `json:"nativeEventEnd,omitempty"`
+	OriginWorkspaceID      string                 `json:"originWorkspaceId,omitempty"`
+	SessionPolicy          string                 `json:"sessionPolicy,omitempty"`
+	Correction             string                 `json:"correction,omitempty"`
+	AdapterState           string                 `json:"adapterState,omitempty"`
+	Continuable            bool                   `json:"continuable,omitempty"`
+	IncomingCommit         string                 `json:"incomingCommit,omitempty"`
+	ViolationFeedback      map[string]string      `json:"violationFeedback,omitempty"`
+	ID                     string                 `json:"id"`
+	RunID                  string                 `json:"runId"`
+	NodeID                 string                 `json:"nodeId"`
+	Occurrence             uint64                 `json:"occurrence"`
+	Status                 string                 `json:"status"` // reserved | running | waiting_user | sealing | completed | failed | interrupted
+	Input                  map[string]string      `json:"input"`
+	WorkspaceID            string                 `json:"workspaceId,omitempty"`
+	SessionID              string                 `json:"sessionId,omitempty"`
+	CausalID               string                 `json:"causalId"`
+	ForkActivationID       string                 `json:"forkActivationId,omitempty"`
+	BranchID               string                 `json:"branchId,omitempty"`
+	JoinRoundID            string                 `json:"joinRoundId,omitempty"`
+	Violations             int                    `json:"violations"`
+	ViolationIDs           []string               `json:"violationIds,omitempty"` // call:<id> and omission:<turnID>
+	Submission             *GraphChoiceSubmission `json:"submission,omitempty"`
+	Output                 map[string]string      `json:"output"`
+	CommandExitCode        *int                   `json:"commandExitCode,omitempty"`
+	CommandResult          string                 `json:"commandResult,omitempty"`
+	CommandTruncated       bool                   `json:"commandTruncated,omitempty"`
+	Events                 []Event                `json:"events,omitempty"` // bounded normalized node/Terminal events, not chat turns
+	Error                  string                 `json:"error,omitempty"`
+	CreatedAt              string                 `json:"createdAt"`
+	UpdatedAt              string                 `json:"updatedAt"`
+	EndedAt                string                 `json:"endedAt,omitempty"`
 }
 type GraphDelivery struct {
 	ID                   string            `json:"id"`
@@ -241,6 +246,7 @@ type GraphRequestProjection struct {
 	Question     *QuestionRequest `json:"question,omitempty"`
 }
 type ConversationGraphState struct {
+	LastRun         *GraphRunProjection      `json:"lastRun,omitempty"`
 	SessionID       string                   `json:"sessionId"`
 	SelectedGraphID string                   `json:"selectedGraphId"` // "" means None
 	Revision        uint64                   `json:"revision"`
@@ -303,6 +309,16 @@ func (d *diskState) activeGraphRun(conversationID string) *GraphRun {
 	return nil
 }
 
+func graphRunStatus(r GraphRun) string {
+	if r.PauseRequested && (r.Status == "starting" || r.Status == "running") {
+		if r.Paused {
+			return "paused"
+		}
+		return "pausing"
+	}
+	return r.Status
+}
+
 func (d *diskState) graphProjection(conversationID string) ConversationGraphState {
 	p := ConversationGraphState{SessionID: conversationID, Revision: d.GraphViewRevision, Requests: []GraphRequestProjection{}}
 	if s := d.session(conversationID); s != nil {
@@ -313,12 +329,7 @@ func (d *diskState) graphProjection(conversationID string) ConversationGraphStat
 		return p
 	}
 	view := &GraphRunProjection{ID: r.ID, GraphID: r.GraphID, Active: true, Status: r.Status, Revision: d.GraphViewRevision, Snapshot: r.Snapshot.Graph, ActiveNodeIDs: []string{}, CompletedNodeIDs: []string{}, CompletedChoiceIDs: []string{}, CollectingJoinIDs: []string{}}
-	if r.PauseRequested && r.Status != "ending" {
-		view.Status = "pausing"
-		if r.Paused {
-			view.Status = "paused"
-		}
-	}
+	view.Status = graphRunStatus(*r)
 	if r.CatalogGraphID != nil {
 		view.GraphID = *r.CatalogGraphID
 	}

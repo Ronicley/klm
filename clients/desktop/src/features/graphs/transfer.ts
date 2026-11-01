@@ -1,4 +1,4 @@
-import type { Agent } from '../agents/demo';
+import type { Agent } from '../agents/types';
 import type { GraphDefinition, GraphLayout } from './files';
 
 export const GRAPH_TRANSFER_LIMIT = 512 * 1024;

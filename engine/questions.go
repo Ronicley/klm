@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
@@ -27,14 +28,15 @@ type QuestionItem struct {
 }
 
 type QuestionRequest struct {
-	Context     string          `json:"context,omitempty"`
-	Elicitation *MCPElicitation `json:"elicitation,omitempty"`
-	ID          string          `json:"id"`
-	Harness     string          `json:"harness"`
-	Items       []QuestionItem  `json:"items"`
-	CreatedAt   string          `json:"createdAt"`
-	Resolving   bool            `json:"resolving,omitempty"`
-	SourceID    string          `json:"-"`
+	Context         string `json:"context,omitempty"`
+	analyticsOrigin string
+	Elicitation     *MCPElicitation `json:"elicitation,omitempty"`
+	ID              string          `json:"id"`
+	Harness         string          `json:"harness"`
+	Items           []QuestionItem  `json:"items"`
+	CreatedAt       string          `json:"createdAt"`
+	Resolving       bool            `json:"resolving,omitempty"`
+	SourceID        string          `json:"-"`
 }
 
 type pendingQuestion struct {
@@ -81,7 +83,7 @@ func (p *adapter) requestQuestion(req QuestionRequest, reply func([][]string, bo
 		}
 	}
 	req.ID, req.Harness, req.CreatedAt = newID(), p.harness, now()
-	if p.graphNode() {
+	if p.graphNode() && a.store == nil {
 		// Keep the node's visible explanation beside its projected question, before Choice exists.
 		s := a.state.session(p.id)
 		start := 0
@@ -105,7 +107,43 @@ func (p *adapter) requestQuestion(req QuestionRequest, reply func([][]string, bo
 		slices.Reverse(parts)
 		req.Context = strings.Join(parts, "\n\n---\n\n")
 	}
+	if a.store != nil {
+		if err := a.writeSQLLocked(p.turn.ctx, func(st *sqliteSessionTx) error {
+			if p.graphNode() {
+				var err error
+				req.Context, err = st.graphQuestionContext(p.id)
+				if err != nil {
+					return err
+				}
+			}
+			if err := st.analyticsWait(p.turn, req.ID, true, p.analyticsOwnRequest(req.analyticsOrigin), p.harness == "pi"); err != nil {
+				return err
+			}
+			if err := st.putRecord("pending_questions", sqliteOwnedKey(p.id, req.ID), p.id, req.ID, -1, req); err != nil {
+				return err
+			}
+			s, err := st.sessionMeta(p.id)
+			if err != nil {
+				return err
+			}
+			s.UpdatedAt = now()
+			return st.putSessionMeta(s)
+		}); err != nil {
+			return err
+		}
+		if p.turn.questions == nil {
+			p.turn.questions = map[string]*pendingQuestion{}
+		}
+		p.turn.questions[req.ID] = &pendingQuestion{request: req, reply: func(answers [][]string, cancelled bool) error {
+			if err := reply(answers, cancelled); err != nil {
+				return err
+			}
+			return p.analyticsWaitEnd(req.ID)
+		}}
+		return nil
+	}
 	if err := a.commitLocked(func(d *diskState) {
+		p.analyticsWaitStart(d, req.ID, req.analyticsOrigin)
 		s := d.session(p.id)
 		s.Questions = append(s.Questions, req)
 		s.UpdatedAt = now()
@@ -115,7 +153,13 @@ func (p *adapter) requestQuestion(req QuestionRequest, reply func([][]string, bo
 	if p.turn.questions == nil {
 		p.turn.questions = map[string]*pendingQuestion{}
 	}
-	p.turn.questions[req.ID] = &pendingQuestion{request: req, reply: reply}
+	accountedReply := func(answers [][]string, cancelled bool) error {
+		if err := reply(answers, cancelled); err != nil {
+			return err
+		}
+		return p.analyticsWaitEnd(req.ID)
+	}
+	p.turn.questions[req.ID] = &pendingQuestion{request: req, reply: accountedReply}
 	return nil
 }
 
@@ -123,12 +167,38 @@ func (p *adapter) dismissQuestion(sourceID string) error {
 	a := p.app
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.store != nil {
+		for id, pending := range p.turn.questions {
+			if pending.request.SourceID != sourceID {
+				continue
+			}
+			err := p.sqlAnalyticsWrite(func(st *sqliteSessionTx) error {
+				if err := st.analyticsWait(p.turn, id, false, true, true); err != nil {
+					return err
+				}
+				key, err := st.requestKey("pending_questions", p.id, id)
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				return st.deleteRecord("pending_questions", key)
+			})
+			if err == nil {
+				delete(p.turn.questions, id)
+			}
+			return err
+		}
+		return nil
+	}
 	for id, pending := range p.turn.questions {
 		if pending.request.SourceID != sourceID {
 			continue
 		}
 		delete(p.turn.questions, id)
 		return a.commitLocked(func(d *diskState) {
+			analyticsWait(d, p.turn, id, false, true)
 			s := d.session(p.id)
 			s.Questions = slices.DeleteFunc(s.Questions, func(q QuestionRequest) bool { return q.ID == id })
 			s.UpdatedAt = now()
@@ -151,6 +221,10 @@ func (a *app) answerQuestion(w http.ResponseWriter, r *http.Request) {
 		failSessionControl(w, err)
 		return
 	}
+	if a.store != nil {
+		a.respondSQLSession(w, r, id, 200)
+		return
+	}
 	a.mu.Lock()
 	response := a.currentSessionUpdateLocked(id)
 	a.mu.Unlock()
@@ -160,6 +234,9 @@ func (a *app) answerQuestion(w http.ResponseWriter, r *http.Request) {
 // HTTP and the general agent use the same native pending request, including
 // requests projected from child/graph execution onto the owning chat.
 func (a *app) replyConversationQuestion(id, questionID string, answers [][]string, cancelled bool, origin *SpawnOrigin) error {
+	if a.store != nil {
+		return a.replySQLQuestion(id, questionID, answers, cancelled, origin)
+	}
 	a.mu.Lock()
 	if origin != nil {
 		// The general tool addresses the owning chat, never an arbitrary node.

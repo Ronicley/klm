@@ -5,6 +5,9 @@ import { Input } from '../../design-system/Input';
 import { Menu, MenuItem } from '../../design-system/Menu';
 import type { Project } from '../../engine';
 import { prepareProjectIcon } from './projectIcon';
+import { flushDrafts, useEngineDraft } from '../drafts/draftStore';
+import { IS_DESKTOP } from '../../platform';
+import { beginLocalActivity, useFilePickerActivity } from '../engines/localActivities';
 
 export function ProjectGeneralSettings({ project, onSave, onRemove, onClose, onBusyChange }: {
   project: Project;
@@ -13,8 +16,10 @@ export function ProjectGeneralSettings({ project, onSave, onRemove, onClose, onB
   onClose: () => void;
   onBusyChange: (busy: boolean) => void;
 }) {
-  const [name, setName] = useState(project.name);
-  const [icon, setIcon] = useState(project.icon);
+  const [name, setName, clearName] = useEngineDraft(`form.projectGeneral:${project.id}.name`, project.name);
+  const iconPicker = useFilePickerActivity();
+  const [icon, setIcon, clearIcon] = useEngineDraft(`form.projectGeneral:${project.id}.icon`, project.icon);
+  const [base, setBase] = useEngineDraft(`form.projectGeneral:${project.id}.base`, { name: project.name, icon: project.icon }, true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
@@ -27,11 +32,13 @@ export function ProjectGeneralSettings({ project, onSave, onRemove, onClose, onB
 
   async function run(action: () => Promise<void>) {
     if (pending.current) return;
+    const finished = beginLocalActivity('Updating project');
     pending.current = true; setBusy(true); onBusyChange(true); setError(''); setSaved(false);
     try { await action(); }
     catch (error) { if (active.current) setError(error instanceof Error ? error.message : 'Could not update the project.'); }
     finally {
       pending.current = false;
+      finished();
       if (active.current) { setBusy(false); onBusyChange(false); }
     }
   }
@@ -40,9 +47,11 @@ export function ProjectGeneralSettings({ project, onSave, onRemove, onClose, onB
     event.preventDefault();
     if (!name.trim()) return;
     void run(async () => {
+      await flushDrafts();
+      if (IS_DESKTOP && (base.name !== project.name || base.icon !== project.icon)) throw new Error('Project changed. Discard this edit to review the saved values.');
       const failure = await onSave(project.id, { name: name.trim(), icon });
       if (!active.current) return;
-      if (failure) setError(failure); else setSaved(true);
+      if (failure) setError(failure); else { setBase({ name: name.trim(), icon }); clearName(name); clearIcon(icon); setSaved(true); }
     });
   }
 
@@ -53,7 +62,8 @@ export function ProjectGeneralSettings({ project, onSave, onRemove, onClose, onB
         <div className="project-picture-picker project-icon-trigger">
           <div className="project-picture-preview">{icon ? <img src={icon} alt="" /> : <ImagePlus aria-hidden="true" />}</div>
           <span className="button button--outline button--md">{icon ? 'Change icon' : 'Choose icon'}</span>
-          <input id="project-settings-icon" type="file" className="native-picker-overlay" aria-label={icon ? 'Change project icon' : 'Choose project icon'} accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={event => {
+          <input id="project-settings-icon" type="file" className="native-picker-overlay" aria-label={icon ? 'Change project icon' : 'Choose project icon'} accept="image/png,image/jpeg,image/webp" disabled={busy} onClick={iconPicker.open} onChange={event => {
+            iconPicker.close();
             const file = event.target.files?.[0]; event.target.value = '';
             if (file) void run(async () => { const next = await prepareProjectIcon(file); if (active.current) setIcon(next); });
           }} />
@@ -70,7 +80,7 @@ export function ProjectGeneralSettings({ project, onSave, onRemove, onClose, onB
       <div className="settings-field"><label htmlFor="project-settings-directory">Project directory</label><Input id="project-settings-directory" value={project.folder} readOnly title={project.folder} /></div>
       {error && <p role="alert" className="form-error">{error}</p>}
       {saved && <p role="status" className="settings-saved">Saved</p>}
-      <div className="dialog-actions"><Button type="submit" variant="primary" disabled={busy || !name.trim()}>{busy ? 'Please wait...' : 'Save changes'}</Button></div>
+      <div className="dialog-actions">{IS_DESKTOP && <Button disabled={busy} onClick={() => { clearName(project.name); clearIcon(project.icon); setBase({ name: project.name, icon: project.icon }); setError(''); }}>Discard changes</Button>}<Button type="submit" variant="primary" disabled={busy || !name.trim()}>{busy ? 'Please wait...' : 'Save changes'}</Button></div>
     </form>
     {confirming && <div className="project-settings-removal" role="group" aria-labelledby="project-remove-title">
         <h4 id="project-remove-title">Remove project?</h4><p>Remove {project.name} from the workspace?</p>

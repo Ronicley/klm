@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -13,11 +15,13 @@ import (
 )
 
 // Speech is separate from transcription; an existing OpenAI key can be reused.
-func (a *app) getSpeechSettings(w http.ResponseWriter, _ *http.Request) {
-	a.mu.Lock()
-	configured := a.state.SpeechAPIKey != "" || a.state.Transcription.APIKey != ""
-	a.mu.Unlock()
-	respond(w, 200, map[string]any{"apiKeyConfigured": configured})
+func (a *app) getSpeechSettings(w http.ResponseWriter, r *http.Request) {
+	key, err := a.speechKey(r.Context())
+	if err != nil {
+		sqlHTTPError(w, err)
+		return
+	}
+	respond(w, 200, map[string]any{"apiKeyConfigured": key != ""})
 }
 
 func (a *app) updateSpeechSettings(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +41,14 @@ func (a *app) updateSpeechSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	err := a.commitLocked(func(d *diskState) { d.SpeechAPIKey = key })
+	var err error
+	if a.store != nil {
+		err = a.writeSQLLocked(r.Context(), func(st *sqliteSessionTx) error {
+			return st.putRoot("speech_settings", "settings", key)
+		})
+	} else {
+		err = a.commitLocked(func(d *diskState) { d.SpeechAPIKey = key })
+	}
 	a.mu.Unlock()
 	if err != nil {
 		fail(w, 503, "Could not save speech settings.")
@@ -47,6 +58,35 @@ func (a *app) updateSpeechSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 var speechHTTPClient = &http.Client{Timeout: 2 * time.Minute}
+
+func (a *app) speechKey(ctx context.Context) (string, error) {
+	if a.store != nil {
+		var key string
+		err := a.store.readSnapshot(ctx, func(tx *sql.Tx) error {
+			err := decodeSQLiteRecord(ctx, tx, "speech_settings", "settings", 64<<10, &key)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if key == "" {
+				st := &sqliteSessionTx{ctx: ctx, tx: tx}
+				settings, err := st.transcription()
+				if err != nil {
+					return err
+				}
+				key = settings.APIKey
+			}
+			return nil
+		})
+		return key, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	key := a.state.SpeechAPIKey
+	if key == "" {
+		key = a.state.Transcription.APIKey
+	}
+	return key, nil
+}
 
 func (a *app) synthesizeSpeech(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -66,12 +106,11 @@ func (a *app) synthesizeSpeech(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Choose a supported voice.")
 		return
 	}
-	a.mu.Lock()
-	key := a.state.SpeechAPIKey
-	if key == "" {
-		key = a.state.Transcription.APIKey
+	key, err := a.speechKey(r.Context())
+	if err != nil {
+		sqlHTTPError(w, err)
+		return
 	}
-	a.mu.Unlock()
 	if key == "" {
 		fail(w, 409, "Configure an OpenAI API key in the reader.")
 		return

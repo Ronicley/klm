@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Background, MarkerType, Panel, ReactFlow, type NodeChange } from '@xyflow/react';
-import type { Agent } from '../agents/demo';
+import type { Agent } from '../agents/types';
 import type { GraphRequestProjection, GraphRunProjection } from '../../engine';
 import { resolveAgentNode } from './agent-node';
 import { CanvasControls, graphViewNodeTypes, type CanvasNode } from './GraphCanvas';
@@ -8,6 +8,7 @@ import { graphDrawing, graphViewport, type GraphFile } from './files';
 import { NodeConfigurationPanel } from './NodeConfigurationPanel';
 import { GraphRunActivity } from './GraphRunActivity';
 import { GraphRunControl } from './GraphRunControl';
+import { nodeLegacyHandles } from './DynamicHandles';
 
 export function GraphView({ sessionId, graph, agents, visible, run, requests, windowFocused, parentFocused, onRequestTarget, controlPending, controlError, onControl }: {
   sessionId: string; graph: GraphFile; agents: Agent[]; visible: boolean; run?: GraphRunProjection | null;
@@ -63,7 +64,7 @@ export function GraphView({ sessionId, graph, agents, visible, run, requests, wi
       // Controlled-node updates must retain ResizeObserver measurements. Otherwise
       // ReactFlow resets dimensions and hides unchanged nodes until another resize.
       return { ...node, measured: measurements[node.id], draggable: false, selectable: false, connectable: false, deletable: false, focusable: false,
-        data: { ...node.data, readOnly: true, agent, settings: agent ? resolveAgentNode(agent, node.data.overrides ?? {}) : undefined,
+        data: { ...node.data, legacyHandles: nodeLegacyHandles(node, drawing.edges), readOnly: true, agent, settings: agent ? resolveAgentNode(agent, node.data.overrides ?? {}) : undefined,
           running: status === 'running', activityStatus: running ? status : undefined,
           attention: status === 'waiting' && !requestsVisible,
           inspectionMode: running ? 'activity' : 'configuration', configuring: !running && node.id === inspectingId,

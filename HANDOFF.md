@@ -1,5 +1,9 @@
 # Handoff — upstream feature integration
 
+> Historical handoff for the previous integration. For the active upstream 0.6.7
+> worktree, read `HANDOFF_UPSTREAM_0_6_7.md` and `UPSTREAM_0_6_7_INTEGRATION.md`.
+> The commit/push authorization described below does not apply to that new merge.
+
 ## Current delivery
 
 `upstream/main` at `5921442` has been combined with the fork's `develop`

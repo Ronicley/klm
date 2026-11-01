@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { IconButton } from '../../design-system/Button';
 import { ENGINE_URL } from '../../engine';
+import { engineStorageKey } from '../../engineIdentity';
 import { FocusWindowResizeHandles } from './FocusWindowResizeHandles';
 
 type Geometry = { left: number; top: number; width: number; height: number };
@@ -15,7 +16,7 @@ export function FocusFloatingWindow({ id, title, initial, minimumWidth = 280, mi
   id: string; title: string; initial: Geometry; minimumWidth?: number; minimumHeight?: number;
   front: boolean; onActivate: () => void; onClose: () => void; onRename?: () => void; leading?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string;
 }) {
-  const key = `klm.focus.geometry.v1:${ENGINE_URL}:${id}`;
+  const key = engineStorageKey(`klm.focus.geometry.v1:${ENGINE_URL}:${id}`);
   const panel = useRef<HTMLElement>(null);
   const header = useRef<HTMLElement>(null);
   const drag = useRef<{ pointerId: number; x: number; y: number; left: number; top: number; capture: HTMLElement; moved: boolean } | null>(null);

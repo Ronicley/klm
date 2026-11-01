@@ -6,12 +6,15 @@ import { HistoryLoader } from './HistoryLoader';
 import { ConversationEvents } from './ConversationEvents';
 import { HarnessIcon } from './HarnessIcon';
 import { MessageQueue } from './MessageQueue';
-import { MessageComposer, type ComposerDraft, type SendMode } from './MessageComposer';
+import { type ComposerDraft, type SendMode } from './MessageComposer';
+import { AgentMessageComposer as MessageComposer } from '../agents/AgentMessageComposer';
 import { ModelPicker } from './ModelPicker';
 import { PermissionCard } from './PermissionCard';
 import { QuestionCard } from './QuestionCard';
+import { DelegationRequests } from './DelegationRequests';
 import { SessionStatusBar } from './SessionStatusBar';
 import { PendingSubmission, type LocalSubmission } from './PendingSubmission';
+import { IS_DESKTOP } from '../../platform';
 
 const minimumSideWidth = 304;
 const minimumMainWidth = 400;
@@ -102,12 +105,13 @@ export function SideChatPanel({ session, project, harnesses, draft, sources, sub
       </div>
       {error && <div role="alert" className="storage-error">{error}{!session && <Button size="sm" onClick={onRetry}>Retry</Button>}</div>}
       {session && <div className="composer-area">
+        <DelegationRequests session={session} projectName={project.name} onSnapshot={onSnapshot} />
         {(permissions || questions) && <div className="permission-queue">
           {session.permissions?.map(permission => <PermissionCard key={permission.id} permission={permission} sessionId={session.id} projectName={project.name} onResolved={onSnapshot} />)}
           {session.questions?.map(question => <QuestionCard key={question.id} question={question} sessionId={session.id} onResolved={onSnapshot} />)}
         </div>}
         {!!sources.length && <div className="selection-context" aria-label="Selected context">{sources.map((source, index) => <div key={`${source.messageId}/${index}`}><blockquote>{source.passage}</blockquote><IconButton label={`Remove passage ${index + 1}`} disabled={pending} onClick={() => onRemoveSource(index)}><X /></IconButton></div>)}</div>}
-        {session.history?.total === 0 && <fieldset className="harness-picker side-harness-picker" aria-label="Side agent harness" disabled={disabled}>
+        {session.history?.total === 0 && !session.agentConfig && <fieldset className="harness-picker side-harness-picker" aria-label="Side agent harness" disabled={disabled}>
           {harnesses.map(harness => <label key={harness.id} className={`harness-option ${harness.id === session.harness ? 'is-active' : ''}`}>
             <input type="radio" name={`side-harness-${session.id}`} value={harness.id} checked={harness.id === session.harness} disabled={!harness.available} onChange={() => onHarness(harness.id)} />
             <span className="side-harness-icon" aria-hidden="true"><HarnessIcon harness={harness.id} /></span><span>{harness.name}</span>
@@ -116,7 +120,7 @@ export function SideChatPanel({ session, project, harnesses, draft, sources, sub
         </fieldset>}
         <PendingSubmission items={submissions} onRestore={onRestoreSubmission} onRetry={onRetrySubmission} />
         <MessageQueue key={`queue/${session.id}`} session={session} disabled={disconnected || pending} onSnapshot={onSnapshot} onInterrupt={onInterrupt} />
-        <MessageComposer key={session.id} projectId={session.projectId} placeholder="Message the side agent" draft={draft} onDraftChange={onDraftChange} onSend={onSend} onStop={onStop} disabled={disconnected || pending} running={running}
+        <MessageComposer key={session.id} clearOnSend={!IS_DESKTOP} session={session} onSnapshot={onSnapshot} projectId={session.projectId} placeholder="Message the side agent" draft={draft} onDraftChange={onDraftChange} onSend={onSend} onStop={onStop} disabled={disconnected || pending} running={running}
           modelControl={<ModelPicker key={`${session.id}/${session.harness}`} session={session} disabled={disabled} optionsDisabled={disconnected || pending} onSave={onModel} onSnapshot={onSnapshot} />} />
         <SessionStatusBar session={session} side />
       </div>}

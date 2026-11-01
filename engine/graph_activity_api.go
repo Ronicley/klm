@@ -7,6 +7,10 @@ import (
 )
 
 func (a *app) controlGraphRun(w http.ResponseWriter, req *http.Request) {
+	if a.store != nil {
+		a.controlSQLGraphRun(w, req)
+		return
+	}
 	control := req.PathValue("control")
 	if control != "pause" && control != "resume" && control != "stop" {
 		fail(w, 404, "Unknown graph control.")
@@ -90,6 +94,10 @@ type graphActivityDetail struct {
 
 // Activity is fetched on demand, scoped to the owning conversation and captured run.
 func (a *app) getGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.getSQLGraphNodeActivity(w, r)
+		return
+	}
 	a.mu.Lock()
 	s := a.state.session(r.PathValue("id"))
 	run := a.state.graphRun(r.PathValue("runId"))

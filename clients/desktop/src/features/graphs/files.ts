@@ -1,9 +1,10 @@
 import type { Edge, Viewport, XYPosition } from '@xyflow/react';
-import type { Agent } from '../agents/demo';
-import { agentSlug } from '../agents/demo';
+import type { Agent } from '../agents/types';
+import { agentSlug } from '../agents/types';
 import type { CanvasNode } from './GraphCanvas';
 import type { AgentNodeOverrides } from './agent-node';
 import { choiceOutputFields } from './choice';
+import { connectionKey, isFixedHandle, sourcePort, type EdgeBinding, type FixedHandle } from './connections';
 
 export type AgentFile = Agent & { revision: string };
 export type FileBranch = { name: string; git_branch: string; separate_worktree?: boolean; output: Record<string, string>; to: string };
@@ -13,6 +14,7 @@ export type FileNode = {
   branches?: Record<string, FileBranch>; prompt?: string; output_branch?: string; output?: Record<string, string>;
 };
 export type FileChoice = {
+	max_traversals?: number;
   name: string; description?: string; input: Record<string, { type: 'string'; required: boolean }>;
   output: Record<string, string>; to?: string; session?: 'new' | 'continue_target'; terminal?: boolean;
 };
@@ -20,7 +22,11 @@ export type GraphDefinition = {
   name: string; description: string; enabled: boolean; initial_node: string;
   nodes: Record<string, FileNode>; choices: Record<string, FileChoice>;
 };
-export type GraphLayout = { positions: Record<string, XYPosition>; viewport?: Viewport };
+export type GraphLayout = {
+  positions: Record<string, XYPosition>; viewport?: Viewport;
+  handles?: Record<string, FixedHandle[]>;
+  connections?: Record<string, EdgeBinding>;
+};
 export type GraphFile = { id: string; revision: string; definition: GraphDefinition; layout: GraphLayout };
 export type GraphRecord = GraphFile;
 export type AuthoringCatalog = { agents: AgentFile[]; graphs: GraphFile[]; errors: string[] };
@@ -39,7 +45,13 @@ export function graphDrawing(graph: GraphFile): { nodes: CanvasNode[]; edges: Ed
     return saved && Number.isFinite(saved.x) && Number.isFinite(saved.y) ? saved : { x: (nodes.length % 4) * 360, y: Math.floor(nodes.length / 4) * 300 };
   };
   const edge = (source: string, target: string, sourceHandle: string, targetHandle: string) => {
-    edges.push({ id: `${source}:${sourceHandle}:${target}`, source, target, sourceHandle, targetHandle });
+    const key = connectionKey(source, sourceHandle, target);
+    const binding = graph.layout?.connections?.[key];
+    const boundHandle = (nodeId: string, id: string | undefined, type: 'source' | 'target', fallback: string) =>
+      graph.layout?.handles?.[nodeId]?.some(h => isFixedHandle(h) && h.id === id && h.type === type) ? id! : fallback;
+    edges.push({ id: key, source, target, data: { sourcePort: sourceHandle },
+      sourceHandle: boundHandle(source, binding?.sourceHandle, 'source', sourceHandle),
+      targetHandle: boundHandle(target, binding?.targetHandle, 'target', targetHandle) });
   };
   const inputHandle = (target: string) => graph.definition.nodes[target]?.type === 'join' ? 'branches' : 'input';
   for (const [id, n] of Object.entries(graph.definition.nodes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
@@ -62,16 +74,37 @@ export function graphDrawing(graph: GraphFile): { nodes: CanvasNode[]; edges: Ed
     } } });
     if (!c.terminal && c.to) edge(canvasID, c.to, 'destination', inputHandle(c.to));
   }
+  for (const node of nodes) {
+    const used = new Set(edges.flatMap(e => [e.source === node.id ? e.sourceHandle : null, e.target === node.id ? e.targetHandle : null]));
+    node.data.fixedHandles = graph.layout?.handles?.[node.id]?.filter(h => isFixedHandle(h) && used.has(h.id)) ?? [];
+  }
   return { nodes, edges };
 }
 
-export function canvasLayout(nodes: CanvasNode[], viewport?: Viewport): GraphLayout {
-  return { positions: Object.fromEntries(nodes.filter(n => n.type !== 'initialPlaceholder').map(n => [n.data.choice?.id ? `choice:${n.data.choice.id}` : n.id, n.position])), viewport };
+export function canvasLayout(nodes: CanvasNode[], viewport?: Viewport, edges: Edge[] = []): GraphLayout {
+  const canonical = (id: string) => {
+    const choice = nodes.find(n => n.id === id)?.data.choice;
+    return choice?.id ? `choice:${choice.id}` : id;
+  };
+  const handles: Record<string, FixedHandle[]> = {};
+  for (const node of nodes) {
+    const used = new Set(edges.flatMap(e => [e.source === node.id ? e.sourceHandle : null, e.target === node.id ? e.targetHandle : null]));
+    const fixed = node.data.fixedHandles?.filter(h => used.has(h.id)) ?? [];
+    if (fixed.length) handles[canonical(node.id)] = fixed;
+  }
+  const connections: Record<string, EdgeBinding> = {};
+  for (const edge of edges) {
+    if (edge.sourceHandle && edge.targetHandle && (handles[canonical(edge.source)]?.some(h => h.id === edge.sourceHandle)
+      || handles[canonical(edge.target)]?.some(h => h.id === edge.targetHandle))) {
+      connections[connectionKey(canonical(edge.source), sourcePort(edge, nodes), canonical(edge.target))] = { sourceHandle: edge.sourceHandle, targetHandle: edge.targetHandle };
+    }
+  }
+  return { positions: Object.fromEntries(nodes.filter(n => n.type !== 'initialPlaceholder').map(n => [canonical(n.id), n.position])), viewport, handles, connections };
 }
 
 export function canvasDefinition(meta: GraphDefinition, nodes: CanvasNode[], edges: Edge[]): GraphDefinition {
   const result: GraphDefinition = { ...meta, nodes: {}, choices: {}, initial_node: nodes.find(n => n.data.initial)?.id ?? '' };
-  const destination = (id: string, handle?: string) => edges.find(e => e.source === id && (!handle || e.sourceHandle === handle))?.target ?? '';
+  const destination = (id: string, handle?: string) => edges.find(e => e.source === id && (!handle || sourcePort(e, nodes) === handle))?.target ?? '';
   for (const n of nodes) {
     if (n.type === 'initialPlaceholder') continue;
     const d = n.data;

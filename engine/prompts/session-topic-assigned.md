@@ -1,0 +1,1 @@
+This conversation already has a persistent topic (ID: {{topicId}}). Keep its association. Only the user can rename or recolor it through UI; repeated session_topic_set calls return the current topic unchanged.

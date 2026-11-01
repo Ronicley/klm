@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,21 +63,56 @@ func graphConversationFactory(a *app, t *turn, s Session) (*GraphAdapterHooks, e
 			graphTool("graph_assess", "Assess whether a completed run met its authorized objective; normal completion is not semantic success.", map[string]any{"activityId": textField, "runId": textField, "operationId": textField, "expectedVersion": integer, "satisfied": map[string]any{"type": "boolean"}, "reason": textField}, "activityId", "runId", "operationId", "expectedVersion", "satisfied", "reason"),
 			graphTool("graph_update_activity", "Versioned activity update. Retry retains the activity authorization and needs concrete correction, a self-contained task and an explicit fresh/reuse decision after a prior run.", map[string]any{"activityId": textField, "operationId": textField, "expectedVersion": integer, "action": map[string]any{"type": "string", "enum": []string{"retry", "await_user", "abandon", "reprioritize", "change_dependencies"}}, "task": textField, "correction": textField, "workspace": graphWorkspaceSchema(), "userEventId": map[string]any{"type": "string", "description": "Real user event required for abandon, reprioritize or change_dependencies; not a workspace default justification or replacement activity authorization."}, "priority": integer, "dependencies": map[string]any{"type": "array", "items": textField}}, "activityId", "operationId", "expectedVersion", "action"))
 	}
+	if a.store != nil {
+		for _, tool := range tools {
+			properties := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+			switch str(tool, "name") {
+			case "graph_activities", "graph_get_run":
+				properties["offset"], properties["limit"] = integer, integer
+				properties["collection"] = textField
+				if str(tool, "name") == "graph_activities" {
+					properties["activityId"] = textField
+				}
+				if str(tool, "name") == "graph_get_run" {
+					properties["roundId"] = textField
+				}
+				tool["description"] = str(tool, "description") + " SQL pages accept offset and limit (maximum 50). graph_activities accepts activityId plus collection authorization/dependencies/assessments/operations; graph_get_run accepts collection activations/deliveries/joinRounds/workspaces/workspaceUses, or joinExpected/joinArrivals with roundId. Read oversized records using their content descriptor."
+			case "graph_assess", "graph_update_activity":
+				properties["expectedVersion"] = textField
+			case "graph_recent_events":
+				properties["offset"] = integer
+			}
+		}
+		tools = append(tools, graphTool("graph_record_content", "Read a bounded, digest-bound content continuation returned by a graph page. The content is base64-encoded UTF-8 JSON; continue with nextOffset while hasMore is true.", map[string]any{"domain": textField, "key": textField, "digest": textField, "offset": textField}, "domain", "key", "digest", "offset"))
+	}
 	a.mu.Lock()
-	parent := a.state.session(owner)
+	var parent *Session
+	var projection ConversationGraphState
+	events := []map[string]string{}
+	if a.store != nil {
+		var err error
+		parent, projection, events, err = a.sqlGraphConversationContext(t.ctx, owner)
+		if err != nil {
+			a.mu.Unlock()
+			return nil, err
+		}
+	} else {
+		parent = a.state.session(owner)
+	}
 	if parent == nil {
 		a.mu.Unlock()
 		return nil, errors.New("Graph conversation owner is unavailable.")
 	}
-	projection := a.state.graphProjection(owner)
-	events := []map[string]string{}
-	for _, e := range parent.Events {
-		if e.Type == "user" {
-			events = append(events, map[string]string{"eventId": e.ID, "text": boundedText(e.Text, 4096)})
+	if a.store == nil {
+		projection = a.state.graphProjection(owner)
+		for _, e := range parent.Events {
+			if e.Type == "user" {
+				events = append(events, map[string]string{"eventId": e.ID, "text": boundedText(e.Text, 4096)})
+			}
 		}
-	}
-	if len(events) > 12 {
-		events = events[len(events)-12:]
+		if len(events) > 12 {
+			events = events[len(events)-12:]
+		}
 	}
 	a.mu.Unlock()
 	catalog, err := a.graphCatalog(owner)
@@ -99,15 +135,51 @@ func graphConversationFactory(a *app, t *turn, s Session) (*GraphAdapterHooks, e
 
 func (a *app) graphCatalog(conversationID string) (any, error) {
 	a.mu.Lock()
-	s := a.state.session(conversationID)
+	var s *Session
+	var p Project
+	var allowed []string
+	limited := false
+	if a.store != nil {
+		err := a.store.readSnapshot(a.ctx, func(tx *sql.Tx) error {
+			st := &sqliteSessionTx{ctx: a.ctx, tx: tx}
+			meta, err := st.sessionMeta(conversationID)
+			if err != nil {
+				return err
+			}
+			s = &meta
+			p, err = st.project(meta.ProjectID)
+			if err != nil {
+				return err
+			}
+			if run, err := st.activeAutomation(conversationID); err != nil {
+				return err
+			} else if run != nil {
+				allowed = append([]string{}, run.Snapshot.Graphs...)
+				limited = true
+			}
+			return nil
+		})
+		if err != nil {
+			a.mu.Unlock()
+			return nil, err
+		}
+	} else {
+		s = a.state.session(conversationID)
+	}
 	if s == nil {
 		a.mu.Unlock()
 		return nil, errors.New("Conversation is unavailable.")
 	}
-	p := *a.state.project(s.ProjectID)
+	if a.store == nil {
+		p = *a.state.project(s.ProjectID)
+		if run := a.state.activeAutomation(conversationID); run != nil {
+			allowed = append([]string{}, run.Snapshot.Graphs...)
+			limited = true
+		}
+	}
 	a.mu.Unlock()
 	a.authoringMu.Lock()
-	catalog, err := loadAuthoring(p)
+	catalog, err := a.graphAuthoringLocked(a.ctx, p)
 	a.authoringMu.Unlock()
 	if err != nil {
 		return nil, err
@@ -118,6 +190,9 @@ func (a *app) graphCatalog(conversationID string) (any, error) {
 	}
 	graphs := []map[string]any{}
 	for _, g := range catalog.Graphs {
+		if limited && !slicesContainsString(allowed, g.ID) {
+			continue
+		}
 		entry := map[string]any{"id": g.ID, "name": g.Definition.Name, "description": g.Definition.Description, "enabled": g.Definition.Enabled, "revision": g.Revision}
 		if node, ok := g.Definition.Nodes[g.Definition.InitialNode]; ok {
 			initial := map[string]any{"id": g.Definition.InitialNode, "type": node.Type, "name": node.Name, "description": ""}
@@ -182,6 +257,9 @@ func (a *app) graphInspectRunLocked(owner, runID string) (any, error) {
 }
 
 func (a *app) graphConversationCall(ctx context.Context, owner string, mutable bool, name string, raw json.RawMessage) (any, error) {
+	if a.store != nil {
+		return a.sqlGraphConversationCall(ctx, owner, mutable, name, raw)
+	}
 	switch name {
 	case "graph_catalog":
 		var args struct{}
@@ -347,6 +425,10 @@ func (a *app) invokeGraphActivity(ctx context.Context, owner string, raw json.Ra
 		a.mu.Unlock()
 		return nil, err
 	}
+	if !a.state.automationGraphAllowed(owner, args.GraphID) {
+		a.mu.Unlock()
+		return nil, errors.New("Graph is not enabled for this automation run.")
+	}
 	if err := validateGraphWorkspaceDecision(&a.state, owner, args.Workspace, false); err != nil {
 		a.mu.Unlock()
 		return nil, err
@@ -487,6 +569,9 @@ func (a *app) updateGraphActivity(owner string, raw json.RawMessage) (any, error
 		}
 		switch args.Action {
 		case "retry":
+			if !d.automationGraphAllowed(owner, activity.GraphID) {
+				return errors.New("Graph is not enabled for this automation run.")
+			}
 			if !validLinkedText(args.Correction, 16<<10) || !validLinkedText(args.Task, 128<<10) {
 				return errors.New("Retry requires correction (concrete corrective action) and task (self-contained instructions).")
 			}

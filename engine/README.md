@@ -1,5 +1,361 @@
 # KLM Engine
 
+> Integration worktree: see [`UPSTREAM_0_6_7_INTEGRATION.md`](../UPSTREAM_0_6_7_INTEGRATION.md).
+> Fork deletion, edit/revert and graph control/retry routes are temporarily gated
+> under SQLite. The legacy descriptions below are not acceptance of those SQL ports.
+
+## 0.6.0 storage and client contract
+
+Normal `klm start` now uses **`<data-dir>/engine.sqlite3` as the sole runtime
+authority**. Windows release data stays in `%APPDATA%/klm/engine`; dev-tag builds
+use the separate `engine-dev` directory or an explicit absolute `KLM_DEV_DATA_DIR`.
+The executable, installer and user data remain separate. Do not point a validation
+build at a real release/dev data directory without explicitly choosing to upgrade it.
+
+### First upgrade and immutable originals
+
+After acquiring the data-directory lock and reserving the fixed API port, the
+engine copies the exact pre-upgrade source bytes to:
+
+```text
+<data-dir>/legacy-backups/<migration-id>/state.json
+<data-dir>/legacy-backups/<migration-id>/stream.sealed
+<data-dir>/legacy-backups/<migration-id>/stream.journal
+<data-dir>/legacy-backups/<migration-id>/client-auth.json
+<data-dir>/legacy-backups/<migration-id>/engine-access.json
+<data-dir>/legacy-backups/<migration-id>/manifest.json
+```
+
+Only source files that existed are copied; the manifest also records absence,
+lengths and hashes. These originals—including whitespace and journal tails—are
+retained indefinitely throughout **0.6.0**. No cleanup/retention job deletes them.
+For a new/empty data directory, the manifest records absent sources; no original
+checkpoint is manufactured. The fence still names the canonical backup filename,
+so consult the manifest rather than assuming every named source file exists.
+The importer reads the copies, replays sealed then active journal records without
+truncating the originals, normalizes supported legacy semantics, and independently
+verifies imported records/chunks/indexes/counts before committing authority.
+Complete corruption, unsupported fields/formats and unsafe ownership do not turn
+into an empty database. An incomplete final journal frame is reported/ignored by
+the read-only importer; the original tail remains in the backup.
+
+The root `state.json` is then a **version-600 rejecting downgrade fence**, not a
+checkpoint or the preserved original. It names `klm-sqlite`, the database identity
+and the original-backup path. `storage-cutover.json` and SQL metadata record the
+publication state. SQLite schema version, product version 0.6.0, this fence version
+and HTTP contract 3 are independent version namespaces.
+
+**Committed SQL authority is irreversible in the normal startup path.** Later
+starts never fall back to checkpoint/journal JSON, even if SQL is missing or fails
+to open. Removing a marker/database does not request a supported downgrade. Older
+binaries must not run against this fenced directory. A deliberate pre-upgrade
+point-in-time recovery requires separate copies and compatible referenced native/
+filesystem artifacts; it loses later SQL changes and is not automated rollback.
+The five preserved source files are not a replacement for a complete stopped-engine
+backup of native transcripts, workspaces and other referenced artifacts.
+
+`klm start` waits for its owned worker to finish preparation/recovery or exit and
+prints periodic progress instead of killing a valid import after 45 seconds.
+Readiness is published only after initialization. Failures are recorded in
+`engine.log`; resolve them before retrying. Pairing and revocation require readiness;
+local control can stop preparation. No interrupted model turn, missed automation
+occurrence or uncertain provider write is automatically replayed.
+
+### Runtime and API compatibility
+
+- One serialized SQL writer commits related records before publication, with WAL,
+  FULL synchronization, bounded readers and explicit shutdown checkpoint/close.
+  Growing histories are separate ordered records/chunks, not a global JSON state
+  object. Filesystem outboxes preserve durable intent before external effects.
+- Application requests negotiate `X-KLM-Read-Contract: 3` (SSE may use `contract=3`).
+  Old inventory clients receive 426. Pairing/auth bootstrap, health/version, signed
+  webhook ingress and OAuth callback retain their documented independent handling.
+  `X-KLM-Engine-ID` pins a known database identity; a stale identity receives 409
+  on application operations, while `/api/state` can discover the replacement.
+- `/api/state` returns compact projects, harnesses, database identity/revision and
+  general-conversation metadata, **not all sessions or histories**. Selected project
+  session/topic pages, exact conversation detail and live activity have their own
+  scopes. Revisions/sequences cross the client boundary as decimal strings.
+- History pages contain at most 50 records / 2 MiB, with exclusive ordinal cursors.
+  Oversized events use digest-bound base64 byte-content continuation. Exports stream
+  normalized records without parsing/re-encoding them in the browser. Scoped SSE
+  sends bounded invalidation/reset notices, not transcript or global-inventory copies.
+- The shared client multiplexes its watched global/project/conversation scopes over
+  one physical update connection, leaving HTTP/1.1 connections available for reads,
+  Send and Stop even with multiple floating chats. `/api/updates?contract=3` accepts
+  repeated `watch=global/`, `watch=project/<id>` and `watch=conversation/<id>` values
+  (up to 64 scopes); notices name the affected watched scopes. Ready/reset without
+  a scope list applies to all scopes on that connection. Single-scope requests
+  remain supported. Scope changes reconnect and resynchronize bounded windows.
+- Topic/session searches apply before pagination. Exact session metadata includes
+  its topic, order and archive state independently of the loaded topic page.
+  Library search covers the whole configured skill/connection scope before paging.
+  Pending requests, graph activity, automation lists and Library references expose
+  explicit continuation controls; clients must not infer absence from a partial page.
+- UI history caches retain bounded windows; hidden/minimized general chats and
+  unopened native children do not acquire histories. Navigation, Focus and pending
+  delivery state are bound to the database identity, with one-time adoption of
+  pre-contract preferences. UI subscriptions never control background execution.
+
+Current bounds include the existing 256 MiB maximum event record and transport
+limits below. Text append checkpoints optimize new/canonical events; imported events
+without checkpoints and very large non-text metadata may require an exact-record
+fallback. This is not a claim of constant-time arbitrary JSON rewrites. Live provider,
+installer/LAN and platform-specific harness acceptance is recorded separately from
+compilation and isolated browser fixtures in
+`../SQLITE_0_6_0_IMPLEMENTATION_PROGRESS.md`.
+
+Release version sources are aligned at **0.6.0**: desktop npm/package lock,
+Tauri configuration/Cargo package lock, mobile `0.6.0+3`, and Windows engine
+build/installer defaults. Release builds inject the engine version; unversioned
+local builds report `development`.
+
+### Implementation/release acceptance status
+
+Implementation and **exactly two independent review rounds** are complete. Round 1's
+three ordinary-use regressions were fixed; final round 2 requested no changes and
+reported no material findings. Scoped Go checks, TypeScript/dev builds and actual
+isolated CLI/Playwright evidence are recorded in
+`../SQLITE_0_6_0_IMPLEMENTATION_PROGRESS.md` and both `SQLITE_0_6_0_REVIEW_*.md` reports.
+
+The actual 1.04 GiB checkpoint was subsequently copied consistently, migrated and
+inspected in the browser. Import took 874.60 seconds and produced a 2.58 GiB database.
+On that migrated copy, normal CLI stop/start measured 53.5/189.5 ms with warm OS
+caches; first normal startup after migration took 478.4 ms. These are local dev
+measurements, not cold-boot or controlled old-versus-new benchmarks. The retained
+original checkpoint hash matched capture and migration manifests.
+
+This is not packaged-release acceptance. The installed source was not upgraded
+and no installer was applied. Live native/provider execution, Flutter/WebView,
+installer/login/LAN behavior and the original plan's full 10× memory/p95-latency
+measurements remain pending. Existing bounded-page/write-set/network evidence is
+narrower than that complete performance acceptance. Do not infer a performance
+pass or universal migration/runtime guarantee from the reviews.
+
+## Secure client pairing
+
+### Debug-only open client access
+
+The VS Code **Engine: Debug (Go)** launch configuration sets
+`KLM_DEV_DISABLE_CLIENT_AUTH=1` together with `-tags=dev`. With both enabled, the
+public application API accepts clients without pairing, including remote HTTP/LAN
+requests and browser origins outside the normal allowlist. The existing connection
+screen opens the workspace through its session check without registering a client.
+Credentialed browser preflight remains supported; client auth, Origin restrictions,
+cookie CSRF and remote-HTTPS checks are skipped only for this explicit dev mode.
+
+Set the flag to `0` or remove it, then restart the debug process to test normal
+pairing/security. A dev build without the flag remains protected. Release builds
+ignore the flag even when it is present in their environment. The setting is not
+saved by the UI or credential store. Private harness/Library capabilities, signed
+webhook validation and OAuth callback state validation keep their own boundaries.
+The engine logs when open dev access is enabled.
+
+### Protected mode (default)
+
+Every new browser, native desktop and mobile WebView must pair once. The 0.6.0
+import preserves existing paired identities, credential hashes and timestamps;
+an already paired installation is not deliberately re-paired by the storage upgrade.
+On the **engine computer**, run `klm pair`, then enter the code and a client name in
+the client's **Connect to engine** screen. Codes contain 256 random bits, expire in
+five minutes, are single-use, and are replaced by the next `klm pair`. They are held
+only as an in-memory hash; restarting invalidates outstanding codes. The command
+uses the same local per-user Windows named pipe as start/stop, never public HTTP.
+Development builds use their separate data/control channel as before.
+
+For browser development, use the same hostname for page and engine: the VS Code
+task uses `http://127.0.0.1:5173` with `http://127.0.0.1:17331`. Do not mix
+`localhost` and `127.0.0.1` with Strict cookies. A mismatched attempt may consume
+the code before cookie confirmation fails; correct the URLs before pairing again.
+
+To select an already-paired engine while disconnected, edit **Engine URL** and use
+**Connect**; changing engines reloads the client and selects that engine's existing
+credential. **Pair client** redeems a new code. A fixed `VITE_ENGINE_URL` must be
+updated in development configuration before selecting a different engine; the UI
+rejects that mismatch before redeeming a code or saving a selection.
+Resolution and selection use one canonical URL (hostname case/default ports,
+preserving base paths and explicit dev ports), including native credential keys.
+Bare IP input defaults to 7331; explicit HTTP(S) URLs honor standard default ports.
+Invalid legacy saved URLs fall back to the normal derived engine so the connection
+screen remains available for recovery.
+
+For initial production bootstrap, before saving Engine access settings in the UI,
+configure the environment of the engine process:
+
+```text
+KLM_ALLOWED_ORIGINS=https://klm.codemob.com.br
+KLM_TRUSTED_TLS_PROXIES=127.0.0.1/32
+```
+
+The second value is an **example for a proxy connecting over IPv4 loopback**.
+Configure only the actual immediate TLS proxy IP/CIDRs (`::1/128` if appropriate).
+The proxy must preserve the external Host and overwrite `X-Forwarded-Proto` with
+one `https` value from its own verified TLS connection. Never forward a client-set
+value unchanged. Unconfigured peers and multi-valued headers are not trusted.
+Serve the frontend and proxy over HTTPS with valid certificates; the engine's own
+HTTP listener is the private upstream hop behind that proxy. Remote plaintext LAN
+credentials are rejected, including pairing codes. LAN browser/mobile use now
+requires an HTTPS frontend and engine, with a same-site cookie-compatible domain.
+Do not use an unrelated frontend site with Strict cookies.
+
+`KLM_ALLOWED_ORIGINS` accepts comma-separated exact origins (scheme, host, optional
+port; no paths/wildcards/`null`). Fixed native Tauri origins and local development/
+Focus origins on localhost/127.0.0.1 ports 5173, 7332 and 17332 are also allowed.
+Changing the engine's public host requires pairing to that host and changing the
+client URL. Changing the frontend host also requires updating the allowed origin.
+Use the supplied same-site pair `https://klm.codemob.com.br` and
+`https://klmengine.codemob.com.br` for production. The supplied frontend host resolves
+to that engine by default; `VITE_ENGINE_URL` remains a development override.
+
+All application APIs, including health/version, downloads, multipart transcription
+uploads and SSE, require a credential. Only `POST /api/auth/pair`, signed
+`POST /api/webhooks/github/{webhookId}`, and transaction/state-validated
+`GET /api/library/mcp/oauth/callback` are exempt; preflight does not execute an
+operation. Cookie mutations require an allowed exact Origin and `X-KLM-CSRF: 1`.
+Native/API callers use `Authorization: Bearer <credential>`; credentials never
+belong in URLs. Browser/native transports add the required headers centrally.
+
+Browsers and the HTTPS Flutter WebView use a host-only Secure HttpOnly
+`__Host-klm-client-7331` cookie, Path=/, SameSite=Strict (`17331` suffix in dev).
+Direct loopback HTTP uses a distinct HttpOnly Strict `klm-loopback-client-7331`
+cookie (also `17331` in dev), admitted only for a loopback
+peer and Host without forwarding headers; it still requires pairing. Native Tauri
+stores its bearer in Windows Credential Manager, separately per engine URL and
+dev/release application identifier. JavaScript holds that credential only in memory;
+the credential is not written to localStorage. Fetch-based SSE supplies native
+Authorization headers; browser fetch/SSE includes cookies. Engine switching reloads
+the application, so displayed state and credentials are not reused across engines.
+
+Expiration is **7 consecutive days without authenticated client requests only**,
+with no absolute lifetime. Each admitted request commits last use to SQL before
+serving protected data. Pairing records contain SHA-256 credential hashes and device
+metadata, at most 128 active devices; no transcript rewrite is involved. The legacy
+`client-auth.json` is import input, not a live credential store after cutover.
+Browser cookies renew on the same admitted requests; an open client sends
+an authenticated renewal every minute. Server stream output never renews use.
+Activity survives restart; failed persistence denies the request or pairing.
+Redemption is limited to 20 attempts per engine per minute and a 2 KiB JSON body.
+
+**Settings → Connected devices** lists names, last use and the current client;
+revoke one or all devices there. Revocation is durable and cancels existing streams
+without stopping engine work. A 401 returns the client to pairing and clears its
+mounted protected workspace. For local recovery independent of any client, run
+`klm revoke-clients` on the engine computer, then `klm pair`. Recovery also clears
+outstanding pairing codes. No public HTTP issuance or recovery route exists.
+
+Authentication endpoints: `POST /api/auth/pair` takes `{code,name}` and sets the
+cookie (native callers explicitly request credential return with `X-KLM-Native: 1`);
+`GET /api/auth/session` authenticates/renews; `GET /api/auth/devices` returns safe
+metadata; `DELETE /api/auth/devices/{clientId}` and `DELETE /api/auth/devices` revoke
+one/all. DELETE requests use JSON `{}` and the same mutation protections.
+See `../CLIENT_AUTH_IMPLEMENTATION_PROGRESS.md` for actual checks and manual
+browser/desktop/mobile acceptance still required.
+
+## Engine access settings and restart
+
+**Settings → Engine** edits **Allowed frontend origins** and **Trusted TLS proxies
+(CIDR)**, one entry per line. It uses authenticated `GET/PATCH /api/settings/access`
+and the normal mutation Origin/CSRF checks. Validation is the same at save and
+startup: exact HTTPS origins (HTTP only for loopback), no wildcard/path, explicit
+IP CIDRs, at most 32 entries of each kind and a 16 KiB JSON request body.
+
+Save commits SQL access-policy records in the engine data directory. The existing
+process keeps its active policy; **Restart required** appears only when saved values
+differ. Saved SQL policy takes precedence over `KLM_ALLOWED_ORIGINS` and
+`KLM_TRUSTED_TLS_PROXIES`, including intentionally empty lists. Until policy has
+been saved, environment variables remain the bootstrap source. A pre-upgrade
+`engine-access.json` is imported with that distinction intact. Built-in local
+app/dev/Focus origins remain available.
+For first setup while the public origin is blocked, use an already paired local
+browser or native client. Edit policy through the authenticated settings API/UI;
+removing the legacy JSON file does not reset an authoritative SQL policy.
+
+**Restart engine** requires a confirmation explicitly warning that all agents and
+graph runs in progress will be interrupted. Saving alone never restarts the engine;
+save changes before using Restart. `POST /api/engine/restart` requires an
+authenticated client, JSON `{confirmInterrupt:true}`, and normal cookie mutation
+protection. Duplicate restart requests and settings writes during handoff are
+rejected. This is not a public unauthenticated shutdown/control endpoint.
+
+The worker starts its own executable with the internal `__restart` mode. That
+detached helper uses the existing per-user local stop/start CLI path, waits for the
+old process/data lock to settle, then starts the replacement. Output goes to the
+existing engine log. The public CLI remains start/stop/pair/revoke-clients. The
+client waits for a non-restarting response for up to two minutes; an uncertain
+request/timeout asks the user to reload or reconnect instead of silently retrying
+the restart mutation. Normal shutdown/recovery semantics apply: interrupted work
+is not automatically replayed, and persisted pairing credentials survive.
+
+The operation restarts the current executable; a debugger does not automatically
+reattach to the detached replacement worker. Real installed/dev restart and
+browser/native/mobile reconnection still require manual validation. No live
+engine restart was performed as an implementation check.
+
+## Project automations
+
+**Project settings → Automations** creates project-owned PR-opened webhook or alarm
+tasks. The editor captures harness/model/effort, YOLO, enabled graphs, Library and
+an existing or newly saved topic. Every admitted trigger starts a new ordinary
+run in the project's registered directory. `sessionMode` supports `new_per_run`
+(default for legacy records), `reuse_created` (links the first created session), or
+`existing` with a normal same-project `sessionId`. Reusable modes serialize and
+preserve session identity/history/native continuation. The worker waits for the
+target's turns, message queue and graph/consultation work; it does not clear them.
+Once linked, a reusable destination is fixed. History exposes `{runId, sessionId,
+title}`, keeping one session-link entry per run even when destinations repeat.
+
+`prompt` is initial input only for runs that create sessions. `followUpPrompt` is
+required in reusable modes and is the only task input for runs in an existing
+session. A normal reused run captures the target's current harness/model/effort,
+YOLO/Library/topic; creation settings from the editor are not destination overrides.
+The run freezes effective settings and Library capabilities, without rewriting and
+restoring durable session preferences. The graph allowlist stays automation-owned.
+
+The CRUD collection is `/api/projects/{id}/automations`; item PATCH/DELETE require
+the expected revision. Creation includes a stable `automation.operationId`, and
+`POST /{automationId}/run-now` includes `revision` and `operationId`. Run now is
+schedule-only, works while paused, and never moves the saved next occurrence.
+`schedule.recurrence="once"` uses `date` (`YYYY-MM-DD`) and `time` (`HH:mm`) in the
+engine time zone. Admission clears its next occurrence and durably records the
+one-time receipt. Pause/reactivate or changing the time zone cannot rearm a consumed
+one-time schedule; changing the schedule explicitly clears that receipt.
+`GET /{automationId}/runs?offset=0` returns session links in pages of 50. Schedule
+preview uses `POST /api/projects/{id}/automations/preview` with the schedule object.
+`GET/PATCH /api/settings/engine` exposes revisioned `timeZone` (IANA, initially America/Sao_Paulo).
+The same zone drives scheduling and Analytics; persisted instants remain UTC.
+
+Only newly released project-local `github/pull_request/opened` events after the
+automation's creation/reactivation receipt boundary can enqueue it. References are
+`{{pr.number}}`, `{{organization.name}}` and `{{repository.name}}`; no repository
+binding or raw payload is supplied. A durable FIFO is independent of chat messages.
+Parallel runs are webhook-only; schedules always serialize. Pausing rejects new
+automatic triggers while accepted triggers proceed; deletion cancels pending
+triggers and preserves sessions and active snapshots.
+
+During a run, chat input is steering-only. Stop requires the exact `automationRunId`
+after the UI's confirmation. Outcome tools exist only for that run's main turn and
+are finalized after settlement. Normal completion without classification gets one
+reminder, then an execution failure. Questions, permissions, graph authorization
+and managed profile gates retain their existing contracts.
+
+Interrupted runs and missed downtime intervals generate durable KLM Agent recovery
+entries. The singleton consults the user when its harness is configured and it is
+free. General-only `automation_recovery_read` and `automation_recovery_resolve`
+require a real human decision after the notice; recover admits one new run per
+selected interrupted run or individual missed scheduled occurrence. Recovery reads
+list groups (`offset`/`limit`), then enumerate a group's occurrence IDs and saved
+times (`recoveryId`, `after`/`nextAfter`, up to 50 per page). Resolution takes an
+explicit `occurrenceIds` set (1–50), action, real later human message reference and
+stable operation ID; each recovered occurrence enters the normal durable queue.
+Recovery respects the saved session mode and uses follow-up input for an existing
+destination; it never replaces a reusable session or rewrites its preferences.
+Intervals store the original calendar and time zone rather than collapsing multiple
+missed times into one catch-up. Internal notices do not count as first harness use.
+History API rows expose only `sessionId` and current session `title`. Scheduled
+prompts cannot contain webhook placeholders. No automatic backfill or uncertain
+notification retry occurs. See `../AUTOMATIONS_IMPLEMENTATION_PROGRESS.md` for
+implementation assumptions and the pending manual acceptance route.
+
 ## Tasks
 
 The global board uses `/api/activity-board/*`, independent of webhook ingress and
@@ -41,8 +397,8 @@ enumerated. Restart/Refresh loads missing iteration metadata in older caches;
 incomplete caches show a refresh notice but may still include a confirmed current
 sprint. No provider request is made per card.
 Enter tokens only in the client; they are write-only and protected at rest with
-Windows user-bound DPAPI. Existing public API networking/CORS is unchanged, so use
-a trusted local/network connection or appropriate HTTPS for credential setup.
+Windows user-bound DPAPI. Client pairing and HTTPS are required for remote
+credential setup; see Secure client pairing above.
 
 Providers own tasks. The engine stores global phases, complete ordered mappings,
 technical item snapshots and durable update receipts under `activityBoard*` fields.
@@ -78,7 +434,9 @@ go build -o klm.exe .
 .\klm.exe stop
 ```
 
-The public CLI has only `klm start` and `klm stop`. Start launches a detached worker,
+The public CLI includes `klm start`, `klm stop`, `klm pair` and `klm revoke-clients`.
+Pairing and recovery use the protected local channel described above.
+Start launches a detached worker,
 waits for readiness and returns; repeated start keeps the same engine. Closing the
 terminal does not stop it. Stop uses a per-user Windows named pipe, waits for the
 live pipe server's Windows process handle and data lock to be released after shutdown,
@@ -109,7 +467,9 @@ steering delivery. Native runtime behavior still requires manual validation.
 **Settings > OpenCode** saves an engine-wide protocol choice, **V1** or **V2**,
 and separate optional executable paths. Paths refer to the engine computer,
 including when configuring from a browser or mobile client. Existing installs
-default to V2; KLM does not install or download either version.
+default to V2. Settings > Harnesses can install the pinned V1 package only when
+V1 is active; V2 installation remains manual. Selecting V1 requires an engine
+restart before its installation plan becomes available.
 
 Apply saved changes by restarting the engine (`klm stop`, then `klm start`;
 use the dev executable for a development instance). Running turns are not changed
@@ -118,17 +478,18 @@ by Save. A normal engine shutdown still interrupts active work.
 Executable resolution uses the selected version's saved path first, then
 `KLM_OPENCODE_V1_BIN` / `KLM_OPENCODE_V2_BIN`, then the existing
 `KLM_OPENCODE_BIN`, then automatic discovery. Explicit paths must point to
-executables, not shell commands or Windows npm shims. V1 discovery prefers the
-`opencode-ai` Windows package; V2 retains the existing `@opencode/cli` discovery.
-Use explicit paths when both are installed. Startup/catalog checks reject a
-binary with the wrong major version without falling back.
+executables, not shell commands or Windows npm shims. Automatic discovery selects
+`opencode-ai` for V1 or `@opencode/cli` for V2 from the engine user's npm roots,
+then tries PATH. Both packages may coexist. Startup and inventory refresh probe
+the selected executable and reject the wrong major version without falling back
+from an explicit override. Catalog/runtime protocol checks remain in place.
 
 - `GET /api/opencode/settings` returns
   `{settings:{version,v1Path,v2Path},activeVersion,restartRequired}`.
 - `PATCH /api/opencode/settings` accepts
   `{version:"v1"|"v2",v1Path:string,v2Path:string}` and returns the same view.
   Empty paths enable discovery; invalid versions/paths return 400.
-- Settings are persisted with `commitLocked`; application requires restart,
+- Settings are persisted in SQLite (or `commitLocked` in legacy mode); application requires restart,
   keeping in-flight turns, model caches and warm native servers consistent.
 - Native session metadata records `openCodeVersion`. Existing unmarked sessions
   are interpreted as V2, matching the fork before this change. A version mismatch
@@ -157,10 +518,18 @@ Question content itself offers **Open reader**. No plan-file discovery is implie
 
 ### Graph controls and node retries
 
+SQL Pause/Resume/Stop and node retry are adapted; real harness/runtime/UI acceptance
+remains pending. Publication schema 6 adds the indexed retry-operation projection
+and preserves original imported run identities. It is not a data downgrade path;
+keep a verified compatible binary/data backup before upgrading a real instance.
+
 - `POST /api/sessions/{id}/graph/runs/{runId}/stop` durably marks user Stop,
   cancels owned workers and prevents further dispatch. Settlement preserves files,
   history and uncertain-effect diagnostics; the activity becomes `awaiting_user`.
-  Pause/Resume retain their existing graceful scheduling semantics.
+  Pause/Resume retain their existing graceful scheduling semantics: already-reserved
+  workers finish, new reservations and delivery consumption wait, and Paused is
+  acknowledged after drainage. Resume consumes retained deliveries once. Controls
+  are scoped to their owning project conversation and do not stop its main chat.
 - `POST /api/sessions/{id}/graph/runs/{runId}/nodes/{nodeId}/retry` accepts
   `{activationId, operationId}`. A stable operation ID deduplicates repeat requests.
   Only the latest run of an open activity is eligible; prior work must settle and
@@ -190,6 +559,24 @@ failure. Saving retains the existing revert/queue semantics, with explicit copy
 about replacing later conversation and removing pending messages. The endpoint
 reprepares retained mentions, attachments and source context before durable changes;
 missing attachments or concurrent conversation changes fail without reverting history.
+
+SQL edit/revert keeps original events and ordinals, marks the selected suffix as
+reverted atomically, and retires retained native execution before continuation.
+Agent-authored instructions retain attribution and never become human authorization.
+Instrumented native identity is archived in a hidden completed-status record during
+explicit reset; delegation receipts remain immutable. Pending/uncertain child work
+blocks reset, and uncertain message receipts stay deduplicated. A late publication
+failure can leave an idle runtime retired while durable history rolls back.
+
+Permanent SQL deletion is owner-scoped and blocks active/paused graphs, processes,
+pending delegations/consultations and outside workspace references. Tombstones and
+operation receipts prevent delayed retries from recreating content. Managed-file
+cleanup is retried by Delete/startup, including imported tombstones; project files,
+worktrees and backups stay on disk. Reusable automation destinations remain linked
+to the deleted identity and are disabled rather than creating replacement sessions.
+Client reconciliation removes deleted conversations after scoped invalidation or
+authenticated 404/reconnect recovery. These paths have temporary-fixture evidence,
+not live deletion/migration or native-client acceptance.
 
 In a graph node's activity panel, Input and Output string fields provide **Open
 reader**. The reader opens a snapshot of that field with Markdown/Plain text,
@@ -240,12 +627,20 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | Method | Path | Body / response |
 | --- | --- | --- |
 | GET | `/api/health` | `{status:"ok",version:2,runningSessions:number,activeGraphRuns:number}`; 503 on persistence failure |
-| GET | `/api/state` | `{projects:Project[],sessions:Session[],harnesses:Harness[]}` |
+| GET | `/api/version` | `{version:string}`; running engine release version, or `development` for unversioned local builds |
+| GET | `/api/state` | `{contract:"3",engineId,revision,projects:CompactProject[],harnesses:Harness[],general?:CompactSession}`; no session inventory/history |
+| GET | `/api/projects/{id}/sessions` | Bounded `{items,hasMore,nextCursor,revision}`; `search`, `topicId`, `archived` and returned `cursor` scope the page |
+| GET | `/api/projects/{id}/topics` | Bounded `{items,hasMore,nextCursor,revision}`; `search`, `active=true` and returned `cursor` scope the page |
+| GET | `/api/projects/{id}/topics/{topicId}` | Exact same-project Topic, independent of loaded pages |
+| GET | `/api/sessions/{id}` | Session detail envelope `{session,revision,eventCount,more}`; bounded queue/requests, embedded topic, no history |
+| GET | `/api/sessions/{id}/history` | Bounded event page; `before`/`after` exclusive ordinal cursors, `limit` at most 50; oversized records reference content |
+| GET | `/api/sessions/{id}/content` | Digest-bound base64 byte fragments using returned content references/offsets |
+| GET | `/api/updates` | Scoped SSE invalidations; `scope=global`, `scope=project&id=...` or `scope=conversation&id=...`, with contract 3 |
 | POST | `/api/projects` | `{name,folder,icon}` -> 201 Project |
 | PATCH | `/api/projects/{id}` | `{name?,icon?}` -> 200 Project |
 | DELETE | `/api/projects/{id}` | `{removed:true}`; hides the project, preserving its files and saved history; 409 while a session is running |
-| PATCH | `/api/projects/{id}/topics/{topicId}` | `{name?,color?,archived?,position?:{beforeId:string}}` -> 200 canonical Project; empty beforeId places an active topic last |
-| POST | `/api/projects/{id}/topics` | `{name,color?}` -> 201 canonical Project; creates an empty topic first in the saved order, color defaults to neutral |
+| PATCH | `/api/projects/{id}/topics/{topicId}` | `{name?,color?,archived?,position?:{beforeId:string}}` -> compact topic mutation envelope; empty beforeId places an active topic last |
+| POST | `/api/projects/{id}/topics` | `{name,color?,sessionId?}` -> 201 compact topic mutation envelope; creates a topic first in saved order. Optional same-project active normal `sessionId` assigns the chat atomically. |
 | POST / PATCH | `/api/projects/{id}/folders` | 410; visual folders were replaced by persistent topics |
 | GET | `/api/projects/{id}/paths?q=...` | `{paths:[{path,kind:"file"\|"directory"}],partial:boolean}`; project-relative paths |
 | POST | `/api/sessions` | `{projectId,title,harness,model?,topicId?}` -> 201 SessionUpdate; omitted topicId starts unassigned, explicit topicId must be an active topic in that project; legacy workspace accepts only empty/Ungrouped |
@@ -258,8 +653,8 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | GET | `/api/sessions/{id}/models` | Harness model catalog; `?refresh=true` bypasses the two-minute cache |
 | PATCH | `/api/sessions/{id}/settings` | `{model:string,effort:string}` -> Session; empty strings select harness defaults |
 | GET | `/api/sessions/{id}/quota` | `{quota:QuotaSnapshot\|null}`; null for unsupported/unverified connections |
-| POST | `/api/sessions/{id}/messages` | JSON `{clientId?,text,mode?,mentions?,sources?}` or multipart files (below) -> 202 SessionUpdate after durable acceptance; input may be queued |
-| GET | `/api/sessions/{id}/events` | SSE, initial and subsequent full Session JSON snapshots |
+| POST | `/api/sessions/{id}/messages` | JSON `{clientId?,text,mode?,mentions?,sources?}` or multipart files (below) -> 202 contract-3 detail envelope after durable acceptance; input may be queued |
+| GET | `/api/sessions/{id}/events` | Compatibility route to conversation-scoped SSE invalidations; no Session/history snapshots |
 | PATCH | `/api/sessions/{id}/events/{eventID}` | `{favorite}` -> 200 Event; completed assistant messages only |
 | GET | `/api/sessions/{id}/graph` | Conversation selection, active-run projection and node requests |
 | PATCH | `/api/sessions/{id}/graph` | `{selectedGraphId:string}`; empty string selects None |
@@ -267,7 +662,12 @@ Errors are non-2xx JSON objects: `{"error":"message"}`.
 | POST | `/api/sessions/{id}/stop` | 200 Session after cancellation completes; idle sessions are unchanged |
 | POST | `/api/sessions/{id}/permissions/{permissionID}` | `{decision:"once"\|"session"\|"always"\|"reject"}` -> Session |
 | POST | `/api/sessions/{id}/questions/{questionID}/reply` | `{answers:string[][]}` or `{cancelled:true}` -> Session |
-| POST | `/api/dialogs/directory` | `{path:string\|null}` |
+| POST | `/api/dialogs/directory` | `{path:string\|null}`; explicit native picker on the engine, when advertised |
+| GET | `/api/filesystem/roots` | `{roots:[{name,path}],home:string\|null,nativePicker:boolean}` |
+| GET | `/api/filesystem/directories?path=...` | `{path,parent:string\|null,directories:[{name,path}],incomplete:boolean,skipped:number}`; URL-encoded absolute engine path |
+| POST | `/api/filesystem/directories` | `{parent,name}` -> 201 `{name,path}`; creates one new child directory under an existing absolute parent |
+| PATCH | `/api/filesystem/directories` | `{parent,name,newName}` -> 200 `{name,path}`; renames one child without replacing an existing entry |
+| DELETE | `/api/filesystem/directories` | `{parent,name,confirmation:name}` -> 200 `{path}`; removes one empty child directory only |
 
 Session deletion includes KLM history/attachments, linked side chats, native subagent
 records and owned graph records/private sessions. Independent spawned sessions,
@@ -308,6 +708,104 @@ content hashes, excluding generated storage paths. An identical retry returns th
 existing acceptance and removes its redundant upload; reuse with different files
 returns 409. Client reload recovery retains file metadata only and requires file
 reselection before submitting an unaccepted message again.
+Session-returning mutations in this table use the contract-3 detail envelope
+`{session,revision,eventCount,more}`, including creation, message admission,
+settings, Stop and pending-request replies. Historical `SessionUpdate` names do
+not imply an embedded transcript. Follow the appropriate page/content endpoint.
+
+### Engine directory browser
+
+Add project → **Browse directories** opens the in-app engine filesystem browser on
+all clients. Manual absolute-path registration remains available; edit mode never
+changes the registered directory. Single click selects a directory; double click
+or Enter opens it. When available, `...` is always the first row and opens the
+engine-reported parent; it is not filtered or sorted with children. **Select
+directory** fills the registration form without registering a project or starting
+work. No separate selected-folder text is shown.
+
+These authenticated, no-store read APIs use the existing paired-client, origin/TLS
+and SQLite storage-contract gates. Roots lists Windows logical drives without
+probing them, or Unix `/`, plus the engine user's existing home shortcut when
+available. UNC share paths can be entered manually; shares are not discovered.
+`nativePicker` advertises the engine's Windows implementation, not the presence of
+an interactive desktop. Only **Native picker on engine** invokes it; failure or
+cancellation does not prevent in-app/manual navigation.
+
+Listings follow the engine user's permissions and lexical directory aliases
+(including symlinks/junctions), not a sandbox or the client filesystem. Paths must
+be absolute UTF-8, NUL-free and at most 16 KiB; no tilde/environment expansion.
+Responses retain cleaned lexical paths and engine-computed parents; drive, Unix
+and UNC share roots have no parent. Only immediate directory names/paths are
+returned, including hidden directories; no file contents, cloning or uploads are
+provided. Invalid/non-directory paths return 400, missing paths 404,
+permission failures 403 and other I/O failures a recoverable 500.
+
+A listing inspects at most 10,000 raw entries in batches of 128, returns at most
+1,000 directories and stays within 256 KiB encoded JSON. The retained subset is
+sorted by name, not necessarily the globally first alphabetical entries. Caps and
+skipped broken/inaccessible/unrepresentable entries mark `incomplete`; `skipped`
+counts inspected omitted entries, not unscanned entries. A partial read error is
+an error rather than an empty success. Handles close and cancellation is checked
+between batches/metadata calls, but a blocking OS filesystem call (for example an
+offline mount) cannot be forcibly interrupted. UI generations discard stale
+listing/native results after navigation, edits, cancellation and close/reopen.
+Build/static evidence and pending runtime acceptance are recorded in
+`REMOTE_DIRECTORY_BROWSER_IMPLEMENTATION_PROGRESS.md`.
+
+Right-clicking the current directory's contents, Shift+F10, or **Directory actions**
+opens a menu with **New folder**. The inline name editor requires explicit Create;
+Cancel/Escape before submission makes no filesystem change. The authenticated,
+CSRF/storage-contract-protected POST creates exactly one leaf via `os.Mkdir`,
+never missing parents, and never replaces files/directories. Names must be one
+nonblank UTF-8 component, not `.`/`..`, without either path separator or control
+characters, at most 255 bytes. Windows device names/invalid characters/trailing
+periods or spaces are also refused. Combined path is limited to 16 KiB; bounded
+JSON body is 128 KiB. Aliases retain normal OS resolution, without elevated rights.
+Permissions are 0755 subject to the engine process's umask and filesystem ACLs.
+
+Duplicate entries return 409; write permission failures 403; missing parent 404;
+invalid input/non-directory parent 400; other creation errors 500. Success returns
+the created lexical name/path and the picker opens it without registering a project.
+During submission, conflicting actions are disabled. A transport/timeout failure
+is uncertain, not proof nothing was created: Create stays disabled until the user
+refreshes or abandons that editor. No automatic mutation retry or cleanup occurs.
+
+Right-click a child folder for **Rename** and **Delete**; keyboard Context Menu /
+Shift+F10 targets the focused row, while **Directory actions** targets the selected
+child. Blank space and the `...` parent row offer only New folder. The name editor
+requires explicit Rename. Delete opens an inline confirmation naming the exact
+folder and path, initially focusing Cancel; opening or cancelling it never sends
+a deletion request. Successful rename refreshes the parent and selects the new
+name; successful delete refreshes the parent and clears the selection. Confirmed
+changes are announced in the status summary.
+
+PATCH and DELETE use the same authentication, CSRF, storage-contract and bounded
+parent/name validation as creation. Source must be a real directory, not a final
+symlink/junction. Rename stays in the same parent and uses atomic no-replace
+operations (Linux `renameat2(RENAME_NOREPLACE)`, Windows `MoveFile`); unsupported
+filesystems/other engine OSs fail explicitly rather than falling back to Unix
+`os.Rename` replacement. An unchanged name is a validated no-op; case-only rename
+support remains filesystem-dependent. Delete requires `confirmation` matching the
+source name and uses directory-only nonrecursive removal (`rmdir`/`RemoveDirectory`),
+never `RemoveAll` or a file-removal fallback. Nonempty folders return 409 and retain
+all contents. There is no recycle bin, recursive deletion or undo.
+
+Integrity checks protect filesystem roots, home and its ancestors, the complete
+engine-data tree and its ancestors, and all registered project roots/ancestors
+(including removed projects). Destination paths are checked too; project paths
+are never silently rewritten. Existing aliases and missing leaves' existing
+ancestors are resolved during protection checks; unresolvable protected paths fail
+closed. App mutations/registration share the app lock during these single OS
+operations. These guards do not sandbox the filesystem or prevent races with
+external programs/mount changes. Project child folders remain ordinary filesystem
+content under the engine user's OS permissions.
+
+Existing-target/nonempty/protected conflicts return 409; permission failures 403;
+missing paths 404; invalid input/file/link paths 400; other I/O failures 500. An
+unconfirmed transport or server-5xx outcome disables submission until explicit
+refresh or abandonment. Conflicting navigation/selection is disabled in flight;
+there is no automatic retry. Windows, permission/conflict and protected-path edge
+cases require their own runtime acceptance, beyond build or happy-path evidence.
 
 ### Project GitHub webhooks
 
@@ -377,7 +875,7 @@ Use 17331 as the upstream port for development. Preserve the original body and
 `X-Hub-Signature-256`, `X-GitHub-Delivery`, `X-GitHub-Event` and Content-Type headers;
 do not parse/reserialize or compress the JSON. This mapping exposes no project,
 session or other administration route. HMAC protects ingress only, not the engine's
-existing unauthenticated personal-use administrative API. The private harness
+paired-client administrative API. The private harness
 bridge stays authenticated and loopback-only.
 
 #### Reception, storage and release
@@ -398,7 +896,7 @@ not the event/delivery headers; no signature, cookies or arbitrary header dump i
 stored. Payload is untrusted data, not an instruction to execute.
 
 Event, pending entry, receipt sequence and connection timestamps commit together
-through the existing journal's durable Sync before a new delivery returns
+in a durable SQL transaction before a new delivery returns
 `202 {"accepted":true,"duplicate":false,"eventId":"..."}`. A retained, unexpired
 duplicate of `(webhookId,deliveryId)` returns
 `200 {"accepted":true,"duplicate":true,"eventId":"..."}` without changing TTL,
@@ -420,9 +918,9 @@ redelivery when appropriate.
 
 Secrets and payloads live in the engine data directory, not the project repository
 or client localStorage. Secrets are needed for HMAC and stored with the engine's
-private records; encryption at rest is not promised. Existing data without webhook
-fields loads as empty; validation runs at load, after journal replay and before
-save/checkpoint. Downgrading to a binary that rejects these fields is not supported.
+private records; encryption at rest is not promised. Legacy records are validated
+during verified import; runtime writes preserve the same ownership/retention rules
+in SQL transactions. Downgrading the authoritative directory is unsupported.
 
 #### Retention and lifecycle
 
@@ -466,10 +964,9 @@ before HTTP, then every minute in batches of 100, including removed projects.
   again restores the ProjectID, connection IDs, URLs, secrets and enabled flags;
   the worker resumes only still-valid pending entries.
 
-Deletion is logical and immediately removes API access. Physical space is reclaimed
-by the existing healthy checkpoint/rotation cycle (five minutes); older journal or
-checkpoint bytes may persist until then. Secure erasure of bytes/backups is not
-promised.
+Deletion immediately removes API access and retires SQL records/chunks. SQLite may
+reuse freed pages; checkpointing WAL does not promise to shrink the database file.
+Old bytes and immutable pre-upgrade backups may remain. Secure erasure is not promised.
 
 #### Webhook API and cursors
 
@@ -632,7 +1129,7 @@ still bounded by quotas. No unexpired event is silently evicted. A retained
 duplicate passes the event/byte quota check without allocating space, but still
 requires an available/enabled connection, a valid signature and an ingress slot.
 Capacity/ingress-slot responses include `Retry-After: 5`; this does not schedule a
-GitHub retry. The engine holds state in memory and checkpoints it completely.
+GitHub retry. Retained payloads remain in SQL; reads do not hydrate the entire feed.
 
 Ingress errors use `{"error":"English message"}`: 400 invalid headers/JSON/UTF-8,
 401 signature, 404 absent/removed connection or project, 409 disabled/racing secret
@@ -689,9 +1186,9 @@ The primary manual route is:
 transaction gate as ordinary sessions. It persists a session with role
 `general_agent`, an empty `projectId`, and an absolute `executionCwd` pointing to
 `workspaces/general-agent` under the engine data directory. No synthetic user
-project is created. The general conversation and its native child sessions are
-excluded from `/api/state` project inventory; observing their IDs through
-`/api/updates` uses normal summaries and bounded history deltas.
+project is created. `/api/state` includes only compact general metadata; native
+children and histories are acquired explicitly. Conversation-scoped `/api/updates`
+invalidates the observed windows, which clients reload through bounded reads.
 
 `harnessLocked` is durable metadata, set atomically with message acceptance and
 projected independently of paginated history. Removing queued input does not
@@ -740,12 +1237,14 @@ Graph nodes and native subagents are not independent control/command destination
 Global reads/controls are exclusive to the general role; an argument cannot grant
 it. Replies to general consultations use its own execution directory and prompt.
 Only the general agent can initiate cross-project consultations, including after
-checkpoint/journal replay; ordinary conversations still require the same project.
+legacy import/restart; ordinary conversations still require the same project.
 
 List pages contain up to 50 items; message/event pages up to 20. Serialized tool
-content is capped at 64 KiB. Oversized records return UTF-8 JSON fragments with
-`encoding`, `fragment`, rune `offset` and `nextCursor`; concatenate fragments for
-that record before decoding. Use only returned cursors with unchanged filters.
+content is capped at 64 KiB. SQL history tools return oversized records as
+`encoding:"base64-json"` byte fragments; decode and concatenate the bytes before
+JSON decoding. Other tool envelopes may return UTF-8 fragments with rune offsets.
+Honor each envelope's `encoding`, `offset` and `nextCursor` rather than treating
+byte and rune positions interchangeably. Use returned cursors with unchanged filters.
 Changed inventories/snapshots require restarting pagination. Activity in unrelated
 chats does not invalidate normal history pages, which bind to the destination's
 event version. Event delta cursors
@@ -899,9 +1398,9 @@ prompts. `agent_prompt` is not a human `user` authorization event. Sending does 
 wait, yield, subscribe or resume the sender. `linked_ask`/`session_ask` are for
 information/clarification; use `session_send` for implementation/execution.
 
-Storage adds optional `sessionCommands` and optional origin `kind` fields through
-the ordinary transaction/journal/checkpoint path. Older data remains loadable;
-downgrade to binaries rejecting new fields is not promised. Strict decoding and
+Storage retains sender-scoped command receipts and origin `kind` in SQL records.
+Supported older data is imported; runtime never falls back after SQL authority.
+Downgrade of the fenced directory is unsupported. Strict decoding and
 receipt/consultation identity/scope validation remain enabled.
 
 `session_discover` accepts `{query?,cursor?,limit?,includeArchived?}` and returns
@@ -918,10 +1417,19 @@ OpenCode and Codex through its managed extension.
 
 Agent behavior is editable in `engine/prompts/session-collaboration.md` during
 development, or `prompts/session-collaboration.md` next to the installed engine.
-`KLM_PROMPTS_DIR` overrides both. The Windows engine packaging copies all
-`engine/prompts/*.md` into the installer's prompts directory. Changes take effect
-on the next turn; missing or empty prompt files surface an error instead of
-silently reverting to hardcoded guidance. Consultations from other agents are
+Topic guidance is also file-based: `session-topic-pending.md` for initial
+assignment, `session-topic-assigned.md` for an existing topic, and
+`session-topic-side.md` for side chats. The assigned-topic prompt substitutes
+`{{topicId}}` with the current session's topic ID. These files use the same loader
+and are appended to collaboration guidance according to the conversation role/state.
+`KLM_PROMPTS_DIR` is authoritative: missing, unreadable or empty files there fail
+explicitly. The Windows engine packaging still copies all `engine/prompts/*.md`
+into the installer's prompts directory. Without that override, lookup uses sibling
+`prompts/`, then an absolute development source path, then the same Markdown files
+embedded at build time. `-trimpath` module-relative source paths are never resolved
+against the working directory. Missing optional disk files use the packaged copy;
+unreadable or empty disk files and missing/empty packaged prompts fail explicitly.
+Disk edits take effect on the next turn; updating embedded defaults requires a rebuild. Consultations from other agents are
 attributed context, not new user messages or permission grants. Creation and
 consultation still use the private authenticated loopback bridge.
 
@@ -933,7 +1441,7 @@ type Project = {
   icon: string
   folders: string[]
   archivedFolders: string[]
-  topics: { id: string; name: string; color: 'neutral' | 'blue' | 'purple' | 'green' | 'amber' | 'rose'; createdAt: string; archived?: boolean }[]
+  topics: { id: string; name: string; color: 'neutral' | 'blue' | 'purple' | 'green' | 'amber' | 'rose' | 'cyan' | 'teal' | 'orange' | 'red'; createdAt: string; archived?: boolean }[]
   topicOrder?: string[] // persisted manual order; new unpositioned topics appear first
 }
 
@@ -981,6 +1489,13 @@ type Harness = {
   name: string
   available: boolean
   error?: string
+  installedVersion?: string
+  requiredVersion?: string
+  path?: string
+  source?: string
+  compatible: boolean
+  executionSupported: boolean
+  executionReason?: string
 }
 ```
 
@@ -1319,14 +1834,15 @@ tokenizer, hardcoded model capacity, or usage inferred from visible text is used
 
 IDs are opaque strings, and timestamps
 are UTC RFC3339 with fractional seconds. Native harness identifiers and Pi's
-session path live in a separate private section of `state.json`.
+session path live in private SQL native-session records, separate from UI history.
 
 Validation and semantics:
 
 - Project and topic names are trimmed, 1-60 Unicode characters, with no control
   characters. Topics have stable project-scoped IDs; equal names never merge.
   New projects start with no topics or default folders. Topic colors are predefined
-  keys, initially neutral; they are not free RGB values or filesystem directories.
+  keys (neutral, blue, cyan, teal, green, purple, rose, red, orange, amber), initially
+  neutral; they are not free RGB values or filesystem directories.
 - Project `folder` must be an existing absolute directory, checked again before
   every execution. Processes always use that directory as their working directory.
 - `icon` may be empty. Otherwise it must be a `data:image/png;base64,` URL, at most
@@ -1343,8 +1859,16 @@ Validation and semantics:
   assigning the new session before any turn. Creating a topic starts no session or
   agent turn. These UI actions add no private agent creation/assignment capability.
   The private main-only
-  `session_topic_set({name})` tool assigns it once during a normal active turn;
-  later calls return the canonical current topic without changing its name/color.
+  `session_topic_set` tool assigns it once during a normal active turn. Unassigned
+  main conversations receive engine-owned `activeTopics` (same-project nonarchived
+  IDs, names and colors), the ten palette keys and active-only `colorUsage` counts.
+  Topic names are reference data, never instructions or authorization. A very strong
+  objective match can use `{topicId}` alone; otherwise `{name,color}` creates a new
+  topic and assigns the session atomically. The agent should prefer an unused color,
+  then a least-used one; repetitions are allowed. Older `{name}` calls choose a
+  least-used active color in the engine. Mixed reuse/create arguments, foreign or
+  archived topic IDs and invalid colors are rejected before mutation. Later calls
+  return the canonical current topic without changing membership, name or color.
   Side chats resolve their main's topic; general/graph/subagent roles cannot assign.
   Topic edits use the public UI API under the existing personal-use network contract,
   not a new authentication claim or an agent rename tool.
@@ -1355,15 +1879,15 @@ Validation and semantics:
 - `topicSchema:1` records a durable migration after both journal segments replay.
   Each legacy folder gets a distinct project topic, retaining archive state; empty
   labels/Ungrouped remain no topic. Historical folder fields and spawn requests are
-  retained for compatibility. Generic transaction cloning/patches carry topics and
-  topicId through rollback, replay, checkpoint and HTTP/SSE summaries. Graph
+  retained for compatibility by the importer. Runtime SQL transactions carry topic
+  identity through mutations and scoped reads/notifications. Graph
   execution workspaces/directories are unrelated and unchanged.
 - The shared sidebar orders members newest-created first, with ID ties. Topics
   initially use newest-created persisted members (including archived ones), with
   topic-ID ties. Dragging topic headers saves `Project.topicOrder`; positioned
   topics stay in that order and new unpositioned topics precede it. Reorder validates
   active same-project source/target under the state lock and commits through the
-  normal journal/checkpoint path. Archived positions survive restore and removed
+  normal SQL transaction path. Archived positions survive restore and removed
   project re-registration.
 - Dragging a normal active session to another active same-project topic updates
   only its `topicId` and metadata timestamp. History, runtime, Library/settings,
@@ -1427,6 +1951,17 @@ select them per conversation or agent. Installation does not activate a skill.
   Links/junctions, path collisions and nonregular files are rejected. All file bytes
   contribute to the revision. Captures use a bounded repeated read and atomic
   publication below `<data-dir>/capabilities/skills/<revision>/<slug>`.
+- Pi/Codex process startup and the OpenCode server set
+  `PYTHONDONTWRITEBYTECODE=1`, inherited by native tools/children, so ordinary
+  Python imports do not add bytecode to captured skill directories. Previously
+  affected snapshots recover during validation only when removing `.pyc`/`.pyo`
+  files reproduces the exact original revision. Those cache files are deleted,
+  not merely excluded from validation (Python can still load existing bytecode).
+  The snapshot is then reread and revalidated. Source changes, missing files,
+  unrelated additions and ambiguous packages with originally captured bytecode
+  still fail closed; recovery never substitutes the current Library source or
+  changes a frozen graph/automation revision. Explicit script writes or overriding
+  the inherited Python setting remain subject to the normal integrity checks.
 - Captured copies are retained conservatively; there is no automatic snapshot
   directory pruning in this delivery. Confirmed skill removals move the source to
   `<library-parent>/skill-library-trash/<operation-id>` after reference validation.
@@ -1467,9 +2002,22 @@ Native subagent tools are disabled in this Codex profile until capability-safe
 native inheritance is validated; engine sessions/graph nodes remain independent.
 
 OpenCode/Codex rebuild their managed process at complete engine-turn boundaries,
-resuming the same native ID and directory. Codex requests EOF and waits for native
-shutdown before retiring a successful turn, preserving transcript flush. Steering
-never refreshes the profile. No global settings or CODEX_HOME are rewritten and no
+resuming the same native ID and directory. Successful ordinary OpenCode and Codex
+turns keep their session runtime active until the existing 40-minute idle timeout
+(while no workload remains). Before the next turn captures its selection, only
+the old harness/profile and gateways are closed; the session process container and
+its workload survive. The old managed profile and gateway credentials are never
+reused. Existing workload is recorded before marking the new harness infrastructure,
+so a carried browser/server still prevents idle expiry. This preserves the active
+LED and Happening now entry between turns. Stop during an active turn shuts down its runtime; Stop while already
+idle only pauses queued input. Failed/cancelled turns and graph nodes retain their
+shutdown paths. OpenCode retains its idle server. Codex requests EOF and waits for
+native shutdown to persist the transcript, then releases that app-server transport
+while retaining the owned process container and unbound role gateway (and any owned
+background workload). Runtime activity therefore does not imply a live Codex
+app-server; the next turn always starts a fresh managed process and resumes the
+persisted native history. Steering never refreshes the profile. No global settings
+or CODEX_HOME are rewritten and no
 additive path/CODEX_HOME-only isolation claim is made. Model catalog discovery uses
 the controlled OpenCode projection and the corresponding Codex discovery flags.
 
@@ -1586,18 +2134,101 @@ Compilation/probe evidence and the human acceptance route are in
 
 ## Harness Adapters
 
-Discovery runs at engine startup without sending any prompts or reading auth
-files. Executable overrides are optional: `KLM_PI_BIN`, `KLM_OPENCODE_BIN`, and
+Discovery runs at engine startup, on explicit Harnesses refresh and after a global
+installation, without sending prompts or reading provider auth files. Executable overrides are optional: `KLM_PI_BIN`, `KLM_OPENCODE_BIN`, and
 `KLM_CODEX_BIN`. Each is a single executable path/name, not a shell command or
 argument string. A Pi override can instead point to `cli.js`, requiring Node.js
-on PATH. Invalid overrides make that adapter unavailable; they do not fall back.
+available through PATH or a conventional Node installation. Invalid overrides make that adapter unavailable; they do not fall back.
 
-On Windows, discovery checks `%APPDATA%\npm\node_modules`, npm package locations
-adjacent to discovered PATH shims, native `.exe` files on PATH, and Codex's
+Discovery resolves npm's actual global prefix, canonical package symlinks and
+native platform packages on Windows/Linux. On Windows it also checks
+`%APPDATA%\npm\node_modules`, npm package locations adjacent to discovered PATH
+shims, native `.exe` files on PATH, and Codex's
 `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`. Pi's installed package is
 `@earendil-works/pi-coding-agent/dist/cli.js`; OpenCode's is
 `opencode-ai/bin/opencode.exe`. No user-specific absolute installation paths are
 hardcoded. `.cmd`, `.bat`, and `.ps1` shims are never executed or parsed.
+
+### Global installation from Settings
+
+Settings → Harnesses installs one selected package on the **engine computer**:
+
+| Harness | Global package/version |
+| --- | --- |
+| Pi | `@earendil-works/pi-coding-agent@0.85.1` |
+| OpenCode | `opencode-ai@1.18.35` |
+| Codex | `@openai/codex@0.153.4` |
+
+The paired-client API uses the existing authentication/origin/CSRF contract:
+
+| Method | Endpoint | Result |
+| --- | --- | --- |
+| GET | `/api/harnesses` | Probed inventory, server-bound plans, retained jobs, host/platform and active job ID. `?cached=true` avoids repeated subprocess probes when a snapshot exists. |
+| POST | `/api/harnesses/{harnessId}/install` | Strict `{operationId,planToken,confirmGlobal,confirmReplacement,confirmPrerequisites}`; 202 with a stable job receipt, including duplicate accepted requests. |
+| GET | `/api/harness-installations/{jobId}` | Exact receipt/status lookup, or 404; never another job as fallback. |
+| GET | `/api/harness-installations?operationId=...` | Reconcile an uncertain POST using its exact operation ID. No automatic POST replay. |
+
+All package names, exact versions, registry and argv come from engine code. Normal
+user npm configuration (including its global prefix/proxy settings) remains in
+place; installation uses a neutral cwd, absolute Node/npm CLI paths and fixed flags
+enabling required lifecycle scripts and optional platform packages. No private npm
+prefix, alternate provider HOME, skill or optional `pi-subagents` install is created.
+An effective override/standalone copy masking the destination must be resolved
+explicitly before installation. Different global versions require replacement
+consent; correct versions require no mutation.
+
+Bootstrap supports Windows amd64 and glibc >=2.28 Linux amd64 using the official
+**Node.js 22.22.0** distribution with **npm 10.9.4** and embedded SHA-256 hashes.
+Windows publishes the official zip under `%ProgramFiles%\nodejs` and adds that
+directory to the engine user's persisted PATH. Without a custom prefix, npm's
+ordinary official-zip default is that Node directory. Linux publishes only the
+absent Node/npm-owned paths in `/usr/local/bin` and `/usr/local/lib/node_modules/npm`;
+its default npm global prefix is `/usr/local`. Missing npm beside a compatible
+Node can be supplied separately without replacing Node. Existing compatible
+prerequisites are reused; broken/incompatible prerequisites are blocked for repair
+using their original installer/version manager.
+
+The installer uses existing OS permissions and performs an exclusive temporary
+write-access check after confirmation, before downloads/global changes. It does
+not request UAC, invoke sudo, capture passwords or change sudoers. Denied access
+produces **Needs permission** with directory-specific recovery. Do not run the whole
+engine as root as a substitute for choosing appropriate directory permissions.
+No real provisioning or provider execution has been validated by compilation.
+
+One mutation is allowed per engine, with a shared engine-user lock across dev and
+release installers. Admission conservatively blocks while **any** harness consumer,
+active/idle retained runtime or graph worker is in use; new consumers share that
+gate. Other engines' active runtimes and unrelated terminal processes are not
+controlled by this lock: stop those before replacing shared packages. Interrupted
+jobs are retained and never replayed automatically. SQLite retains at most 128
+receipts (further requests fail before mutation), each with at most 24 curated log
+entries; raw npm output is captured with bounds but withheld from clients/storage
+because scripts/network configuration may print credentials.
+
+Installation temporarily suspends execution admission, not durable pending work.
+Scheduled occurrences continue to enter their normal trigger queue; messages,
+consultations/results, automation continuations and recovery notices retain their
+pending state. Their existing eligibility arbiters resume after release. Successful
+verification, terminal receipt publication and admission release share one boundary;
+there is no deferred successful re-probe after the client sees completion.
+
+The engine's latched storage-read-only state blocks new reservations, preflight
+probes and further phase/terminal receipt writes even when SQLite itself remains
+writable. It cancels owned installer work and retains unfinished/uncertain jobs
+for explicit restart recovery; it never clears the latch to continue installation.
+Exact receipt reads remain available.
+
+After verification, executable/environment snapshots, catalog flights/caches,
+version gates and global update notices are refreshed. The shared frontend's
+selectors update without engine restart or page reload. Installation/selection
+does not imply provider authentication or runtime validation. Linux amd64 ordinary
+managed chats use the nonroot subreaper/pidfd supervisor; profile/version checks
+remain mandatory and failed/lost supervision cannot be reported as confirmed Stop.
+Graph execution and protected MCP credential storage remain unavailable on Linux.
+The integrated path awaits Linux native/runtime and real UI messaging acceptance;
+see `../LINUX_ORDINARY_TURN_SUPPORT_HANDOFF.md` for the exact candidate and checks.
+See `../HARNESS_INSTALLATION_IMPLEMENTATION_PROGRESS.md` for checks, unresolved
+limitations and the pending human acceptance/review route.
 
 All prompts are supplied verbatim through stdin and EOF, never shell-interpolated
 or placed in command arguments. Model and native session identifiers are separate
@@ -1716,7 +2347,7 @@ requests disable remembered choices. Grant persistence succeeds before a request
 is released; delivery failures roll back the new grant. Pending requests are not
 replayed after restart. A permission audit entry is included in session events.
 
-Grants are stored in `state.json`'s permissionGrants field. They do not modify
+Grants are stored as SQL permission-grant records. They do not modify
 global harness settings. There is no grants-management UI in this first slice;
 session grants end when that logical session is no longer used, not at every turn.
 
@@ -1756,8 +2387,9 @@ or model output may retain/echo values; this is not end-to-end secret redaction.
 
 `Session.parentId` attaches exactly one side conversation to a main session in the
 same project. Creation is idempotent under the engine mutex, including concurrent
-clients. `/api/state` includes both; the client filters children out of its top-level
-list. Main and side have independent native IDs/files and harness/model settings.
+clients. Project pages list top-level chats; side conversations resolve through
+explicit creation/detail reads, without global history loading. Main and side have
+independent native IDs/files and harness/model settings.
 Switching a side harness is allowed only before any events or active execution.
 
 Side messages accept up to eight source references from the parent conversation,
@@ -1800,7 +2432,7 @@ The installed versions inspected for this feature were OpenCode 1.18.30 and Code
 0.153.4; Codex's generated local app-server schema confirms the status-list contract.
 Runtime readiness checks fail explicitly if an installed harness cannot expose the tools.
 
-Requests persist in `state.json.consultations`, with question, answer, topic, endpoint
+Requests persist as SQL consultation records, with question, answer, topic, endpoint
 IDs, timestamps, status (`queued`, `answering`, `completed`, `failed`, `cancelled`,
 `interrupted`), and delivery state. Both sessions receive atomically updated activity
 events. Background output and permission/question answer audits carry `consultationId`
@@ -1834,45 +2466,28 @@ execution, a full suite, or an adversarial review.
 
 ## Persistence And Recovery
 
-- `state.json` is the full checkpoint (v2, `journalFormat: 1`). Commands and stream
-  updates share one ordered `stream.journal`: each frame is a little-endian uint32
-  JSON length, uint32 CRC32, then JSON, capped at 256 MiB. Stream records retain
-  `{revision,session,updated,updates,usage?}`; command records use
-  `{format:1,revision,transaction:[{path,value?|length?|delete?}]}`. Paths are arrays
-  of field names (JSON tag, or Go name when untagged, including embedded containers),
-  slice indexes and map keys. Each command frame includes all
-  affected queue payloads, receipts, consultations, graph records and event edits.
-  A frame is synced before publishing state, SSE notifications or HTTP success.
-  Identical commands/stream updates need no new revision or write.
-- Command callbacks clone mutable metadata in memory, sharing immutable strings
-  and append-only event histories. Existing session events must be replaced through
-  `diskState.setEvent`, which stages indexed changes until persistence succeeds;
-  never mutate existing event payload maps in place. Activation event logs are
-  append-only. SSE changes are ordered by index. No per-command full JSON state
-  clone, global history diff or full-session event copy is performed. Metadata
-  traversal/validation still scales with the number of records; this is not an
-  O(1) database. Captured graph validation/compilation and event identity indexes
-  are reused rather than rereading source text or unrelated event histories.
-- Every five minutes the checkpoint worker serializes with other checkpoints,
-  rotates the active journal to `stream.sealed` under `app.mu`, then releases it.
-  It reconstructs an independent state from the previous checkpoint and sealed
-  segment, writes/syncs/replaces `state.json`, and removes only that sealed segment.
-  Commands and streaming continue into a new active journal during the expensive
-  replay/validation/serialization/write. Shutdown joins this worker before releasing
-  the data-directory lock. Small journal fsyncs remain serialized under `app.mu`.
-- Recovery reads checkpoint, sealed segment, then active segment, ignoring revisions
-  already in the checkpoint and requiring contiguous newer revisions. It truncates
-  and syncs an incomplete last frame; a complete corrupt frame, unsupported format
-  or revision gap is an error. Session reordering preserves histories by identity.
-  Versions 1/2 and the older stream-only journal remain readable. Before serving,
-  startup persists the `journalFormat` marker so older binaries refuse the data
-  instead of ignoring a journal. Downgrade is unsupported; a backup includes all
-  three storage files, not just `state.json`.
+- `engine.sqlite3` is authoritative after the verified cutover described above.
+  Commands, streamed events, usage, receipts and related domain changes commit in
+  explicit SQL write sets. There is no live global `diskState` hydration, JSON
+  checkpoint generation, JSON dual-write or journal fallback.
+- Legacy v1/v2 checkpoints and stream/transaction journals remain **import formats**.
+  Frames have a little-endian uint32 JSON length and CRC32, capped at 256 MiB.
+  Positional transaction replay occurs only in unpublished import staging, preserving
+  histories by session ID when sessions reorder. The importer validates contiguous
+  revisions and complete-frame integrity, retains incomplete source tails unchanged,
+  and drops positional staging before granting SQL authority.
+- Runtime uses SQLite WAL, passive checkpoints and a final truncate checkpoint
+  after HTTP handlers and owned writers/workers drain. It does not reconstruct or
+  serialize the entire retained state on a timer. Reader/export lifetimes can delay
+  WAL checkpoint progress; failures are reported, not described as successful sync.
+- Startup rolls forward durable filesystem outboxes, recovers unfinished SQL rows,
+  and leaves native identities/captured artifacts intact. Cold graph snapshots and
+  all historical session event indexes are not eagerly loaded at startup.
 - Windows replacement uses `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`.
   Unix uses rename plus parent-directory sync. Use a local filesystem with normal
   atomic rename/sync semantics, not a network share or cloud-synced data directory.
-- In-memory state changes and SSE notifications happen only after persistence
-  succeeds. A write failure preserves the last published snapshot, cancels active
+- Client invalidations happen only after persistence succeeds. A write failure
+  preserves committed data, cancels active
   executions, blocks further mutations, and makes health return 503. Fix the
   underlying storage problem and restart; no automatic overwrite/retry is done.
 - `engine.lock` is held exclusively by an OS file lock/handle for the engine's
@@ -1882,7 +2497,7 @@ execution, a full suite, or an adversarial review.
 - Startup refuses malformed/unsupported state instead of resetting it. Sessions
   left running become `error` with a durable interruption event. Native harness
   transcripts remain owned/formatted by the harness itself; they are not part of
-  the engine JSON transaction, and a stopped turn may have partial native history.
+  the engine SQL transaction, and a stopped turn may have partial native history.
 - Stop cancels the turn before persistence and independently terminates the whole
   conversation runtime: Windows closes its owned Job Object, including native
   subagents and local tool descendants; Unix signals its owned process groups.
@@ -1903,29 +2518,31 @@ execution, a full suite, or an adversarial review.
   OpenCode retains its separate SSE-frame and HTTP-response bounds. Stderr is
   capped at 16 KiB and is never persisted, exposed, or logged. Exit failures
   report a bounded diagnostic instead. These are transport bounds, not history quotas.
-- Session history is durable and unbounded across turns. Full checkpoint/recovery
-  cost still grows with retained history, but is outside the live application mutex.
-  There is no history retention/deletion API yet. Back up the data directory with
-  the engine stopped. Measurements and recovery checks: [R4 result](../LATENCY_R4_RESULT.md).
+- Session history is durable across turns. One-time legacy import and explicit
+  export still scale with source size, while runtime reads/mutations target scoped
+  records/windows. There is no general chat-history retention/deletion API. Back up
+  the complete data directory with the engine stopped, retaining immutable originals
+  and referenced artifacts. [R4 results](../LATENCY_R4_RESULT.md) describe the older
+  pre-SQL implementation, not a performance claim for 0.6.0.
 
 ## Network and Private Control Boundaries
 
 The public API binds `0.0.0.0:7331`, including LAN clients. It does not restrict
 HTTP Host: domains, IP addresses and reverse-proxy authorities are accepted.
-CORS sends `Access-Control-Allow-Origin: *`, including for opaque/null origins,
-and allows wildcard request headers without credentials. Requests without Origin
-are also accepted. CORS does not grant credentials and is not network authentication.
-JSON mutation limits remain intact. Tunnel subdomains can change without engine
-configuration; enter the new public engine URL in the frontend Settings.
+CORS permits exact configured origins with credentials, rejects opaque/null and
+unconfigured origins, and uses explicit methods/headers. Every application request
+requires client authentication even without Origin; cookie mutations additionally
+require Origin and CSRF validation. Remote clients require HTTPS through explicitly
+trusted TLS proxies. See Secure client pairing above for configuration and recovery.
+The existing `loopbackHost` helper, private authenticated MCP bridge and owned
+harness endpoints retain their local boundary. Engine shutdown, pairing-code
+issuance and local recovery use a named pipe whose ACL allows this Windows user
+and denies network logons. Grants, permissions and sandbox behavior remain unchanged.
 
-Network authentication and TLS are explicitly deferred in the approved personal-use
-delivery. The existing `loopbackHost` helper, private authenticated MCP bridge and
-owned harness endpoints retain their local boundary. Engine shutdown is available
-only through a named pipe whose ACL allows this Windows user and denies network
-logons. Grants, permissions and sandbox behavior remain unchanged.
-
-The engine never reads auth stores, prints environment values, or exposes binary
-paths/command lines through discovery. Harness-generated tool/message content
+Public discovery does not expose credentials, environment values or binary
+paths/command lines. Native provider configuration stays in its preparation channel;
+upstream MCP credentials stay engine-owned rather than being projected to harnesses.
+Harness-generated tool/message content
 can still contain sensitive project information and is shown/stored as content;
 this is not a general-purpose content redaction system. Protect the data directory
 with user-only OS permissions. State is plaintext, not encrypted.
@@ -2104,9 +2721,14 @@ terminal events decide the outcome; final reconciliation does not let earlier
 failed steps poison a later successful response. KLM does not replay prompts or
 tools, switch transport, or treat WebSocket close code 1000 as proof of success.
 
-Internal instructions live in `engine/prompts/` and are reread for every send.
-Development uses that source directory. Packaged engines can include a sibling
-`prompts/` directory or set `KLM_PROMPTS_DIR`. Missing/empty prompts fail explicitly.
+Internal instructions live in `engine/prompts/` and are resolved for every send.
+Development uses that source directory when its compiled path is absolute. Release
+binaries embed all `prompts/*.md`, including collaboration and role guidance, so a
+binary-only Linux distribution works with `-trimpath` and no source checkout.
+Editable sibling `prompts/` files take precedence; `KLM_PROMPTS_DIR` is an
+authoritative override. Missing optional disk copies use embedded defaults, but
+missing override files, empty/unreadable disk files and absent/empty embedded
+prompts fail explicitly; mandatory guidance is never omitted.
 With `go -C engine build`, the resulting `engine/engine.exe` also has the existing
 `engine/prompts/` as its sibling resource directory. Neither default lookup relies
 on the server's working directory. For an explicit development override, from the
@@ -2118,21 +2740,21 @@ repository root for integration contracts and actual verification evidence.
 
 ## Retired Tasks storage
 
-The abandoned Tasks prototype is not part of the current engine. At startup,
-while holding the data-directory lock, the engine removes its known checkpoint
+The abandoned Tasks prototype is not part of the current engine. During legacy
+import, after preserving originals, the engine excludes its known checkpoint
 fields (`taskSchema`, `tasks`, `taskRuns`, `githubBindings`, `githubReceipts`,
 `engineTime`) and task ownership metadata on sessions and graph records. Ordinary
 chat histories, native session identities, projects and authorized graph records
 remain intact; graph input `task` is unrelated and is preserved.
 
-Cleanup first replays both journal segments into an isolated copy, excluding only
+Import replays both journal segments into unpublished SQL staging, excluding only
 retired Tasks fields, and validates the result with the current storage rules.
 Unknown fields, corrupt journals and graph records without valid user authorization
-still fail rather than being silently discarded or reauthorized. Before replacing
-the checkpoint, original files are synced to `backup-before-tasks-removal-*` under
-the data directory. Journal segments are retired only after the clean checkpoint
-covers their revisions. Existing `state.pre-tasks-*` backups are never restored or
-deleted. No harness work is started by the cleanup.
+still fail rather than being silently discarded or reauthorized. Exact original
+files remain under `legacy-backups/<migration-id>/`; neither this transform nor
+normal startup rewrites those originals. Existing `state.pre-tasks-*` and
+`backup-before-tasks-removal-*` artifacts are not automatically restored or deleted.
+No harness work is started by the import transform.
 
 ## Queued messages and steering (issue #4)
 

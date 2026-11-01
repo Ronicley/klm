@@ -7,6 +7,7 @@ import { HarnessIcon } from '../chat/HarnessIcon';
 import { effortLabel, harnessNames } from './agent-node';
 import { choiceOutputFields, type ChoiceOutputField } from './choice';
 import type { CanvasNode } from './GraphCanvas';
+import { sourcePort } from './connections';
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return <div className="graph-config-field"><dt>{label}</dt><dd>{children || '—'}</dd></div>;
@@ -64,7 +65,7 @@ export function NodeConfigurationPanel({ node, nodes, edges, onClose }: {
     {fork && <>
       <dl className="graph-config-fields"><Field label="Name">{fork.name}</Field></dl>
       <section className="graph-config-section"><h3>Branches</h3>{fork.branches.map((branch, index) => {
-        const target = nodes.find(item => item.id === edges.find(edge => edge.source === node.id && edge.sourceHandle === branch.id)?.target);
+        const target = nodes.find(item => item.id === edges.find(edge => edge.source === node.id && sourcePort(edge, nodes) === branch.id)?.target);
         return <details className="graph-config-branch" key={branch.id} open={index === 0}><summary>{branch.name}</summary><div>
           <dl className="graph-config-fields"><Field label="Destination">{nodeName(target)}</Field><Field label="Workspace">{branch.separateWorktree === false ? 'Shared workspace' : 'Separate worktree'}</Field><Field label="Git branch name"><code>{branch.gitBranch || '—'}</code></Field>{branch.separateWorktree !== false && <Field label="Base revision">Incoming revision</Field>}</dl>
           <OutputFields fields={branch.outputFields} />

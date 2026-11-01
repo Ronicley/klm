@@ -9,11 +9,12 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-
-	"github.com/pelletier/go-toml/v2"
 )
 
 func (a *app) libraryRoutes(mux *http.ServeMux) {
+	if a.store != nil {
+		mux.HandleFunc("GET /api/library/mcp/{connectionID}", a.getSQLMCPConnection)
+	}
 	mux.HandleFunc("GET /api/library", a.getLibrary)
 	mux.HandleFunc("POST /api/library/recover", a.recoverLibrary)
 	mux.HandleFunc("POST /api/library/mcp", a.saveMCPConnection)
@@ -30,6 +31,10 @@ func (a *app) libraryRoutes(mux *http.ServeMux) {
 }
 
 func (a *app) getLibrary(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.getSQLLibrary(w, r)
+		return
+	}
 	a.libraryMu.Lock()
 	defer a.libraryMu.Unlock()
 	root, skills, err := scanSkillLibrary()
@@ -130,6 +135,16 @@ func (a *app) libraryDeletionPreview(kind, id string) (libraryDeletionPreview, e
 	a.mu.Lock()
 	result.stateRevision = libraryReferenceState(&a.state, kind, id)
 	projects := append([]Project{}, a.state.Projects...)
+	for _, v := range a.state.Automations {
+		if !v.Deleted && selectionReferences(v.Selection, kind, id) {
+			result.References = append(result.References, LibraryReference{Kind: "automation", ID: v.ID, Title: v.Name, ProjectID: v.ProjectID, Revision: fmt.Sprint(v.Revision)})
+		}
+	}
+	for _, run := range a.state.AutomationRuns {
+		if run.Capabilities != nil && selectionReferences(run.Capabilities.Selection, kind, id) {
+			result.References = append(result.References, LibraryReference{Kind: "captured_automation_run", ID: run.ID, Title: run.Snapshot.Name, ProjectID: run.ProjectID})
+		}
+	}
 	for _, s := range a.state.Sessions {
 		if selectionReferences(s.Capabilities.Desired, kind, id) {
 			result.References = append(result.References, LibraryReference{Kind: "session", ID: s.ID, Title: s.Title, ProjectID: s.ProjectID, Revision: fmt.Sprint(s.Capabilities.Revision)})
@@ -159,7 +174,7 @@ func (a *app) libraryDeletionPreview(kind, id string) (libraryDeletionPreview, e
 			selection = removeLibraryReference(selection, kind, id)
 			definition := agent.AgentDefinition
 			definition.Skills, definition.MCPConnections = selection.Skills, selection.MCPConnections
-			data, err := toml.Marshal(definition)
+			data, err := marshalExistingAgentDocument(p, agent.ID, definition)
 			if err != nil {
 				return result, err
 			}
@@ -181,6 +196,10 @@ func (a *app) libraryDeletionPreview(kind, id string) (libraryDeletionPreview, e
 }
 
 func (a *app) previewLibraryDeletion(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.previewSQLLibraryDeletion(w, r)
+		return
+	}
 	a.authoringMu.Lock()
 	defer a.authoringMu.Unlock()
 	a.libraryMu.Lock()
@@ -194,6 +213,10 @@ func (a *app) previewLibraryDeletion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) deleteLibraryItem(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.deleteSQLLibraryItem(w, r)
+		return
+	}
 	var body struct {
 		Revision string `json:"revision"`
 	}
@@ -282,6 +305,13 @@ func applyLibraryDeletionFiles(change LibraryDeletion) error {
 }
 
 func finishLibraryDeletion(d *diskState, change LibraryDeletion) {
+	for i := range d.Automations {
+		v := &d.Automations[i]
+		if selectionReferences(v.Selection, change.Kind, change.ItemID) {
+			v.Selection = removeLibraryReference(v.Selection, change.Kind, change.ItemID)
+			v.Revision++
+		}
+	}
 	for i := range d.Sessions {
 		s := &d.Sessions[i]
 		if selectionReferences(s.Capabilities.Desired, change.Kind, change.ItemID) {
@@ -299,6 +329,13 @@ func finishLibraryDeletion(d *diskState, change LibraryDeletion) {
 
 func pruneMCPCredentials(d *diskState) {
 	keep := map[string]bool{}
+	for _, run := range d.AutomationRuns {
+		if run.Status == "running" && run.Capabilities != nil {
+			for _, c := range run.Capabilities.Connections {
+				keep[c.CredentialID] = true
+			}
+		}
+	}
 	for _, c := range d.MCPConnections {
 		keep[c.CredentialID] = true
 	}
@@ -334,6 +371,16 @@ func pruneMCPCredentials(d *diskState) {
 
 func libraryReferenceState(d *diskState, kind, id string) string {
 	values := map[string]any{}
+	for _, v := range d.Automations {
+		if !v.Deleted && selectionReferences(v.Selection, kind, id) {
+			values["automation/"+v.ID] = map[string]any{"revision": v.Revision, "selection": v.Selection}
+		}
+	}
+	for _, run := range d.AutomationRuns {
+		if run.Capabilities != nil && selectionReferences(run.Capabilities.Selection, kind, id) {
+			values["automation_run/"+run.ID] = run.Capabilities.Revision
+		}
+	}
 	for _, s := range d.Sessions {
 		if selectionReferences(s.Capabilities.Desired, kind, id) {
 			values["session/"+s.ID] = map[string]any{"revision": s.Capabilities.Revision, "selection": s.Capabilities.Desired}
@@ -356,6 +403,18 @@ func (a *app) recoverLibrary(w http.ResponseWriter, r *http.Request) {
 	defer a.authoringMu.Unlock()
 	a.libraryMu.Lock()
 	defer a.libraryMu.Unlock()
+	if a.store != nil {
+		if err := a.store.recoverSQLLibrary(r.Context(), func(changes sqliteSessionChanges) {
+			if a.sqlChanges != nil {
+				a.sqlChanges.publish(changes)
+			}
+		}); err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		respond(w, 200, map[string]bool{"recovered": true})
+		return
+	}
 	for {
 		a.mu.Lock()
 		if len(a.state.LibraryDeletions) == 0 {

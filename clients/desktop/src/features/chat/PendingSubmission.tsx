@@ -1,14 +1,17 @@
 import { Button } from '../../design-system/Button';
 import { ENGINE_URL, legacyImageFiles, type SourceReference } from '../../engine';
 import type { ComposerDraft, SendMode } from './MessageComposer';
+import { engineStorageKey } from '../../engineIdentity';
+import { IS_DESKTOP } from '../../platform';
 import { FileAttachments } from './FileAttachments';
 
-export type LocalSubmission = { id: string; draft: ComposerDraft; sources: SourceReference[]; mode: SendMode; status: 'sending' | 'accepted' | 'uncertain' | 'failed' };
+export type LocalSubmission = { id: string; draft: ComposerDraft; sources: SourceReference[]; mode: SendMode; status: 'sending' | 'accepted' | 'uncertain' | 'failed'; composerKey?: string };
 
-const storageKey = `klm.pending-submissions.v1:${ENGINE_URL}`;
+export const pendingSubmissionStorageKey = `klm.pending-submissions.v1:${ENGINE_URL}`;
 export function readPendingSubmissions(): Record<string, LocalSubmission[]> {
+  if (IS_DESKTOP) throw new Error('Desktop delivery records require protected draft storage.');
   try {
-    const saved: unknown = JSON.parse(sessionStorage.getItem(storageKey) ?? '{}');
+    const saved: unknown = JSON.parse(sessionStorage.getItem(engineStorageKey(pendingSubmissionStorageKey)) ?? '{}');
     if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
     const result: Record<string, LocalSubmission[]> = {};
     for (const [session, items] of Object.entries(saved)) {
@@ -22,10 +25,11 @@ export function readPendingSubmissions(): Record<string, LocalSubmission[]> {
 }
 
 export function savePendingSubmissions(items: Record<string, LocalSubmission[]>) {
+  if (IS_DESKTOP) throw new Error('Desktop delivery records require protected draft storage.');
   const saved = Object.fromEntries(Object.entries(items).map(([session, messages]) => [session, messages.map(item => ({ ...item, draft: {
     ...item.draft, files: undefined, missingFiles: [...(item.draft.missingFiles ?? []), ...(item.draft.files ?? []).map(file => ({ name: file.name, size: file.size }))],
   } }))]));
-  try { sessionStorage.setItem(storageKey, JSON.stringify(saved)); } catch { /* Still recoverable in memory if browser storage is full. */ }
+  try { sessionStorage.setItem(engineStorageKey(pendingSubmissionStorageKey), JSON.stringify(saved)); } catch { /* Still recoverable in memory if browser storage is full. */ }
 }
 
 export function PendingSubmission({ items, onRestore, onRetry }: { items: LocalSubmission[]; onRestore: (item: LocalSubmission) => void; onRetry: (item: LocalSubmission) => void }) {

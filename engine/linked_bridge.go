@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -16,7 +17,9 @@ import (
 // Native clients must outlive the bridge deadline to receive that result.
 const (
 	linkedToolServerTimeout = modelCatalogTimeout + 10*time.Second
-	linkedToolClientTimeout = linkedToolServerTimeout + 5*time.Second
+	// A graph preflight may discover each of the three harness catalogs in turn.
+	graphToolServerTimeout  = 3*modelCatalogTimeout + 10*time.Second
+	linkedToolClientTimeout = graphToolServerTimeout + 5*time.Second
 )
 
 // A private Streamable HTTP MCP server. Ordinary conversations retain it with
@@ -106,13 +109,15 @@ func linkedTools() []map[string]any {
 	}
 	for _, t := range tools {
 		if str(t, "name") == "session_spawn" {
+			t["description"] = str(t, "description") + " With agent, saved specialist defaults and Library replace parent defaults; explicit settings override them. Without agent, existing inheritance is unchanged. Use agents_list/agent_get for saved definitions."
+			addAgentSpawnProperties(t["inputSchema"].(map[string]any)["properties"].(map[string]any))
 			delete(t["inputSchema"].(map[string]any)["properties"].(map[string]any), "workspace")
 		}
 		if str(t, "name") == "session_spawn_options" {
 			t["description"] = "Read available installed harnesses, exact model IDs/efforts and recent real user message IDs. Topic identity is inherited by the engine; there is no folder/workspace override. Use before changing settings or recovering a rejected spawn. Does not create sessions or authorize creation."
 		}
 	}
-	return tools
+	return append(tools, agentDiscoveryTools(false)...)
 }
 
 // Do not expose the internal delivery handshake as if it were model guidance.
@@ -190,7 +195,10 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 		Method  string          `json:"method"`
 		Params  json.RawMessage `json:"params"`
 	}
-	if !decode(w, r, &message) {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, delegationRequestLimit+8192))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&message) != nil || decoder.Decode(new(any)) != io.EOF {
+		fail(w, 400, "Invalid private JSON-RPC request.")
 		return
 	}
 	if message.JSONRPC != "2.0" {
@@ -208,6 +216,17 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch message.Method {
+	case "klm/delegation/ready", "klm/delegation/gate", "klm/delegation/admit", "klm/delegation/prepared", "klm/delegation/wait", "klm/delegation/cancel":
+		if p == nil || (p.harness != "pi" && p.harness != "opencode") {
+			fail(w, 409, "Owned delegation turn is not active.")
+			return
+		}
+		value, err := p.delegationRPC(r.Context(), message.Method, message.Params)
+		if err != nil {
+			respond(w, 200, map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32000, "message": err.Error(), "data": delegationRPCErrorData(message.Method, message.Params, err)}})
+			return
+		}
+		result = value
 	case "initialize":
 		var params struct {
 			ProtocolVersion string `json:"protocolVersion"`
@@ -320,6 +339,9 @@ func (b *linkedBridge) serve(w http.ResponseWriter, r *http.Request) {
 		if params.Name == "session_models_list" || params.Name == "session_settings_update" || params.Name == "session_question_answer" || params.Name == "session_spawn" || params.Name == "session_spawn_options" || params.Name == "session_create" || params.Name == "session_create_options" || params.Name == "session_stop" || params.Name == "session_permission_reply" {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(linkedToolServerTimeout))
 		}
+		if params.Name == "graph_invoke" || params.Name == "graph_update_activity" {
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(graphToolServerTimeout))
+		}
 		value, err := b.call(r.Context(), params.Name, params.Arguments, string(message.ID))
 		text := ""
 		if err != nil {
@@ -352,6 +374,18 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 	}
 	if name == "session_topic_set" {
 		return p.setSessionTopic(raw)
+	}
+	if name == "subagent_output_read" {
+		return p.callDelegationOutput(ctx, raw)
+	}
+	if name == "agents_list" || name == "agent_get" {
+		return p.callAgentDiscovery(ctx, name, raw)
+	}
+	if name == "automation_succeed" || name == "automation_fail" {
+		return p.callAutomationTool(name, raw)
+	}
+	if name == "automation_recovery_read" || name == "automation_recovery_resolve" {
+		return p.callAutomationRecovery(name, raw)
 	}
 	if name == "session_spawn_options" {
 		var args struct {
@@ -417,6 +451,12 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 	generalAsk := name == "session_ask" && p.role == sessionRoleGeneralAgent
 	if generalAsk {
 		name = "linked_ask"
+	}
+	if p.app.store != nil && name == "session_spawn" {
+		return p.spawnSession(ctx, args.spawnArgs)
+	}
+	if p.app.store != nil && name != "session_spawn" {
+		return p.callSQLLinked(ctx, name, sqlLinkedArgs{SessionID: args.SessionID, Query: args.Query, Topic: args.Topic, Question: args.Question, RequestID: args.RequestID, Answer: args.Answer, MessageID: args.MessageID, IncludeArchived: args.IncludeArchived, Cursor: args.Cursor, Limit: args.Limit, Offset: args.Offset}, generalAsk)
 	}
 	a := p.app
 	a.mu.Lock()
@@ -611,6 +651,9 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 		err := a.commitLocked(func(d *diskState) {
 			d.Consultations = append(d.Consultations, c)
 			syncConsultation(d, d.consultation(c.ID))
+			if !reciprocal {
+				p.analyticsWaitStart(d, c.ID, p.analyticsNative)
+			}
 		})
 		if err != nil {
 			a.mu.Unlock()
@@ -645,13 +688,19 @@ func (b *linkedBridge) call(ctx context.Context, name string, raw json.RawMessag
 			// deadline branch could return completed without its answer and tell
 			// the requester to wait again.
 			if consultationTerminal(current.Status) && ctx.Err() == nil && p.turn.ctx.Err() == nil {
-				err := a.commitLocked(func(d *diskState) { c := d.consultation(c.ID); c.Delivery = "delivered"; syncConsultation(d, c) })
+				err := a.commitLocked(func(d *diskState) {
+					analyticsWait(d, p.turn, c.ID, false, true)
+					c := d.consultation(c.ID)
+					c.Delivery = "delivered"
+					syncConsultation(d, c)
+				})
 				result := linkedAskResult(*a.state.consultation(c.ID), reciprocal)
 				a.mu.Unlock()
 				return result, err
 			}
 			if yield {
 				err := a.commitLocked(func(d *diskState) {
+					analyticsWait(d, p.turn, c.ID, false, true)
 					c := d.consultation(c.ID)
 					if c.Delivery == "waiting" {
 						c.Delivery = "pending"

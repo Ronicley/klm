@@ -70,7 +70,16 @@ func transcriptionView(settings TranscriptionSettings) transcriptionSettingsView
 	}
 }
 
-func (a *app) getTranscriptionSettings(w http.ResponseWriter, _ *http.Request) {
+func (a *app) getTranscriptionSettings(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		settings, err := a.readSQLTranscription(r.Context())
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		respond(w, 200, transcriptionView(settings))
+		return
+	}
 	a.mu.Lock()
 	settings := transcriptionView(a.state.Transcription)
 	a.mu.Unlock()
@@ -179,6 +188,26 @@ func (a *app) updateTranscriptionSettings(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	if a.store != nil {
+		var modelValue, languageValue *string
+		var vocabularyValue *[]TranscriptionVocabularyEntry
+		if body.Model != nil {
+			modelValue = &model
+		}
+		if body.Language != nil {
+			languageValue = &language
+		}
+		if body.Vocabulary != nil {
+			vocabularyValue = &vocabulary
+		}
+		settings, err := a.updateSQLTranscription(r.Context(), apiKey, modelValue, languageValue, vocabularyValue, body.Provider, body.CredentialsProvider)
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		respond(w, 200, transcriptionView(settings))
+		return
+	}
 	a.mu.Lock()
 	if body.Provider != nil && body.APIKey == nil {
 		selected := a.state.Transcription
@@ -261,6 +290,13 @@ func (a *app) transcribe(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	settings := a.state.Transcription
 	a.mu.Unlock()
+	if a.store != nil {
+		settings, err = a.readSQLTranscription(r.Context())
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+	}
 	normalizeTranscriptionSettings(&settings)
 	apiKey, model, providerName := transcriptionCredentials(settings)
 	if apiKey == "" {

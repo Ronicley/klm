@@ -15,7 +15,7 @@ func TestOpenCodeLibraryProbe(t *testing.T) {
 	if os.Getenv("KLM_RUN_LIBRARY_NATIVE_PROBES") != "1" {
 		t.Skip("set KLM_RUN_LIBRARY_NATIVE_PROBES=1 for disposable native probes")
 	}
-	_, binaries := discoverHarnesses()
+	_, binaries := discoverHarnesses(OpenCodeSettings{Version: "v1"})
 	b, ok := binaries["opencode"]
 	if !ok {
 		t.Skip("OpenCode not installed")

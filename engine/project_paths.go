@@ -25,15 +25,29 @@ func (a *app) projectPaths(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Path query is too long.")
 		return
 	}
-	a.mu.Lock()
-	p := a.state.project(r.PathValue("id"))
-	if p == nil || p.Removed {
+	var root string
+	if a.store != nil {
+		p, err := a.store.readProjectMeta(r.Context(), r.PathValue("id"))
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		if p.Removed {
+			fail(w, 404, "Project not found.")
+			return
+		}
+		root = p.Folder
+	} else {
+		a.mu.Lock()
+		p := a.state.project(r.PathValue("id"))
+		if p == nil || p.Removed {
+			a.mu.Unlock()
+			fail(w, 404, "Project not found.")
+			return
+		}
+		root = p.Folder
 		a.mu.Unlock()
-		fail(w, 404, "Project not found.")
-		return
 	}
-	root := p.Folder
-	a.mu.Unlock()
 	fs, err := os.OpenRoot(root)
 	if err != nil {
 		fail(w, 400, "Project directory cannot be opened.")

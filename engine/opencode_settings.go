@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,6 +29,14 @@ func (a *app) getOpenCodeSettings(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	saved, active := a.state.OpenCode.normalized(), a.openCodeSettings.normalized()
 	a.mu.Unlock()
+	if a.store != nil {
+		var err error
+		saved, err = a.readSQLOpenCodeSettings(r.Context())
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+	}
 	respond(w, 200, map[string]any{"settings": saved, "activeVersion": active.Version, "restartRequired": saved != active})
 }
 
@@ -54,7 +65,14 @@ func (a *app) updateOpenCodeSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.mu.Lock()
-	err := a.commitLocked(func(d *diskState) { d.OpenCode = body })
+	var err error
+	if a.store != nil {
+		err = a.writeSQLLocked(r.Context(), func(st *sqliteSessionTx) error {
+			return st.putRoot("opencode_settings", "settings", body)
+		})
+	} else {
+		err = a.commitLocked(func(d *diskState) { d.OpenCode = body })
+	}
 	a.mu.Unlock()
 	if err != nil {
 		fail(w, 503, err.Error())
@@ -63,7 +81,19 @@ func (a *app) updateOpenCodeSettings(w http.ResponseWriter, r *http.Request) {
 	a.getOpenCodeSettings(w, r)
 }
 
-func configureOpenCodeHarness(settings OpenCodeSettings, harnesses []Harness, binaries map[string]binary) {
+func (a *app) readSQLOpenCodeSettings(ctx context.Context) (OpenCodeSettings, error) {
+	var settings OpenCodeSettings
+	err := a.store.readSnapshot(ctx, func(tx *sql.Tx) error {
+		err := decodeSQLiteRecord(ctx, tx, "opencode_settings", "settings", 64<<10, &settings)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	})
+	return settings.normalized(), err
+}
+
+func resolveOpenCodeBinary(settings OpenCodeSettings, n nodeInstallation) (binary, string) {
 	settings = settings.normalized()
 	path := settings.V2Path
 	if settings.Version == "v1" {
@@ -75,39 +105,30 @@ func configureOpenCodeHarness(settings OpenCodeSettings, harnesses []Harness, bi
 	if path == "" {
 		path = os.Getenv("KLM_OPENCODE_BIN")
 	}
-	b, available := binaries["opencode"]
 	if path != "" {
-		resolved, ok := executable(path)
-		b, available = binary{path: resolved}, ok
-	} else if settings.Version == "v1" {
-		// Prefer the V1 npm package over the separately installed @opencode/cli V2.
-		candidates := []string{}
-		if root := os.Getenv("APPDATA"); root != "" {
-			candidates = append(candidates, filepath.Join(root, "npm", "node_modules", "opencode-ai", "node_modules", "opencode-windows-x64", "bin", "opencode.exe"))
-		}
-		candidates = append(candidates, "opencode")
-		available = false
-		for _, candidate := range candidates {
-			if resolved, ok := executable(candidate); ok {
-				b, available = binary{path: resolved}, true
-				break
-			}
+		resolved, _ := executable(path)
+		return binary{path: resolved, node: n.Node, openCodeV1: settings.Version == "v1"}, "override"
+	}
+	recipe, _ := harnessRecipeFor("opencode")
+	if settings.Version == "v2" {
+		recipe.Package = "@opencode/cli"
+	}
+	for _, root := range globalRoots(n) {
+		if b, ok := packageBinary(recipe, root, n); ok {
+			b.openCodeV1 = settings.Version == "v1"
+			return b, "global npm"
 		}
 	}
-	delete(binaries, "opencode")
-	if available {
-		b.openCodeV1 = settings.Version == "v1"
-		binaries["opencode"] = b
+	resolved, _ := executable("opencode")
+	return binary{path: resolved, node: n.Node, openCodeV1: settings.Version == "v1"}, "PATH"
+}
+
+func validateOpenCodeDiscoveryVersion(version string, v1 bool) bool {
+	major := "2."
+	if v1 {
+		major = "1."
 	}
-	for i := range harnesses {
-		if harnesses[i].ID != "opencode" {
-			continue
-		}
-		harnesses[i].Available, harnesses[i].Error = available, ""
-		if !available {
-			harnesses[i].Error = "OpenCode executable not found. Configure its path in Settings > OpenCode and restart the engine."
-		}
-	}
+	return strings.HasPrefix(version, major)
 }
 
 func openCodeServerPrefix(v1 bool) string {

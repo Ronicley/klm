@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { canvasDefinition, canvasLayout, graphDrawing, type GraphDefinition } from './files';
 import { graphTransfer, parseTransfer, remapTransfer, transferJSON } from './transfer';
 import { graphSVG } from './transfer-svg';
-import type { Agent } from '../agents/demo';
+import type { Agent } from '../agents/types';
 
 const worker: Agent = { id: 'worker', name: 'Worker', description: '', enabled: true, defaultHarness: 'codex', model: 'real-model-id', effort: 'high', prompt: 'Implement <task> & verify.' };
 const definition: GraphDefinition = {
