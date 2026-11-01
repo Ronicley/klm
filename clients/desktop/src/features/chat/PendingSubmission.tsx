@@ -1,13 +1,16 @@
 import { Button } from '../../design-system/Button';
 import { ENGINE_URL, type SourceReference } from '../../engine';
 import type { ComposerDraft, SendMode } from './MessageComposer';
+import { engineStorageKey } from '../../engineIdentity';
+import { IS_DESKTOP } from '../../platform';
 
-export type LocalSubmission = { id: string; draft: ComposerDraft; sources: SourceReference[]; mode: SendMode; status: 'sending' | 'accepted' | 'uncertain' | 'failed' };
+export type LocalSubmission = { id: string; draft: ComposerDraft; sources: SourceReference[]; mode: SendMode; status: 'sending' | 'accepted' | 'uncertain' | 'failed'; composerKey?: string };
 
-const storageKey = `klm.pending-submissions.v1:${ENGINE_URL}`;
+export const pendingSubmissionStorageKey = `klm.pending-submissions.v1:${ENGINE_URL}`;
 export function readPendingSubmissions(): Record<string, LocalSubmission[]> {
+  if (IS_DESKTOP) throw new Error('Desktop delivery records require protected draft storage.');
   try {
-    const saved: unknown = JSON.parse(sessionStorage.getItem(storageKey) ?? '{}');
+    const saved: unknown = JSON.parse(sessionStorage.getItem(engineStorageKey(pendingSubmissionStorageKey)) ?? '{}');
     if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
     const result: Record<string, LocalSubmission[]> = {};
     for (const [session, items] of Object.entries(saved)) {
@@ -21,7 +24,8 @@ export function readPendingSubmissions(): Record<string, LocalSubmission[]> {
 }
 
 export function savePendingSubmissions(items: Record<string, LocalSubmission[]>) {
-  try { sessionStorage.setItem(storageKey, JSON.stringify(items)); } catch { /* Still recoverable in memory if browser storage is full. */ }
+  if (IS_DESKTOP) throw new Error('Desktop delivery records require protected draft storage.');
+  try { sessionStorage.setItem(engineStorageKey(pendingSubmissionStorageKey), JSON.stringify(items)); } catch { /* Still recoverable in memory if browser storage is full. */ }
 }
 
 export function PendingSubmission({ items, onRestore, onRetry }: { items: LocalSubmission[]; onRestore: (item: LocalSubmission) => void; onRetry: (item: LocalSubmission) => void }) {

@@ -1,15 +1,22 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
-import { getAuthoringCatalog } from '../../engine';
+import { ENGINE_URL, getAuthoringCatalog } from '../../engine';
+import { currentEngineIdentity, engineIdentityGeneration } from '../../engineIdentity';
+import { subscribeScope } from '../chat/scopedConnection';
 import type { AuthoringCatalog } from './files';
 
 type CatalogState = { catalog: AuthoringCatalog | null; error: string; loading: boolean };
 type Entry = { state: CatalogState; listeners: Set<() => void>; pending?: Promise<void> };
 const entries = new Map<string, Entry>();
+let cacheIdentity = '';
+function catalogIdentity() { return `${ENGINE_URL}/${currentEngineIdentity()}/${engineIdentityGeneration()}`; }
 function entryFor(projectId: string): Entry {
-  let entry = entries.get(projectId);
+  const identity = catalogIdentity();
+  if (cacheIdentity !== identity) { entries.clear(); cacheIdentity = identity; }
+  const key = JSON.stringify([identity, projectId]);
+  let entry = entries.get(key);
   if (!entry) {
     entry = { state: { catalog: null, error: '', loading: false }, listeners: new Set() };
-    entries.set(projectId, entry);
+    entries.set(key, entry);
   }
   return entry;
 }
@@ -32,6 +39,7 @@ export function reloadAuthoringCatalog(projectId: string): Promise<void> {
   return entry.pending;
 }
 export function useAuthoringCatalog(projectId: string) {
+  const identity = catalogIdentity();
   const entry = entryFor(projectId);
   const subscribe = useCallback((listener: () => void) => {
     entry.listeners.add(listener);
@@ -39,12 +47,19 @@ export function useAuthoringCatalog(projectId: string) {
   }, [entry]);
   const getSnapshot = useCallback(() => entry.state, [entry]);
   const state = useSyncExternalStore(subscribe, getSnapshot);
-  const reload = useCallback(() => reloadAuthoringCatalog(projectId), [projectId]);
+  const reload = useCallback(() => reloadAuthoringCatalog(projectId), [projectId, identity]);
   const invalidate = useCallback(async () => {
     // A pre-mutation request must not satisfy post-CRUD invalidation.
     await entry.pending?.catch(() => {});
     await reloadAuthoringCatalog(projectId);
   }, [entry, projectId]);
   useEffect(() => { void reload().catch(() => {}); }, [reload]);
+  useEffect(() => {
+    if (!projectId) return;
+    const refresh = () => { void invalidate().catch(() => {}); };
+    const global = subscribeScope('global', '', refresh);
+    const project = subscribeScope('project', projectId, refresh);
+    return () => { global(); project(); };
+  }, [projectId, invalidate]);
   return { ...state, reload, invalidate };
 }

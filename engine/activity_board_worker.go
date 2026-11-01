@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 )
@@ -20,6 +21,9 @@ func (a *app) startActivityBoard() error {
 	a.activityBoardSlots = make(chan struct{}, 2)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.store != nil {
+		return a.startSQLActivityBoardLocked()
+	}
 	if len(a.state.ActivityBoardConnections) == 0 {
 		return nil
 	}
@@ -62,6 +66,10 @@ func (a *app) startActivityBoard() error {
 	return nil
 }
 func (a *app) boardScheduleRefreshLocked(id string) {
+	if a.store != nil {
+		a.scheduleSQLBoardRefreshLocked(id)
+		return
+	}
 	c := a.state.ActivityBoardConnections[id]
 	c.Mappings = cloneTransactionValueOfMappings(c.Mappings)
 	if a.closing || a.storageErr != nil || a.activityBoardBusy[id] || !a.boardAvailableProject(c.ProjectID) {
@@ -162,6 +170,13 @@ func (a *app) boardScheduleRefreshLocked(id string) {
 func (a *app) boardPhasesSnapshot(revision uint64) []activityBoardPhase {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.store != nil {
+		config, err := a.readSQLBoardConfig(a.ctx)
+		if err != nil || config.Revision != revision {
+			return nil
+		}
+		return config.Phases
+	}
 	if a.state.ActivityBoardConfig.Revision != revision {
 		return nil
 	}
@@ -190,6 +205,10 @@ func (a *app) boardExecuteMove(c activityBoardConnection, protected []byte, item
 	// Project removal while doing HTTP must prevent a not-yet-dispatched write.
 	a.mu.Lock()
 	available := !a.closing && a.boardAvailableProject(c.ProjectID) && a.state.ActivityBoardConfig.Revision == m.ConfigRevision
+	if a.store != nil {
+		config, readErr := a.readSQLBoardConfig(ctx)
+		available = !a.closing && readErr == nil && config.Revision == m.ConfigRevision && a.boardAvailableProject(c.ProjectID)
+	}
 	a.mu.Unlock()
 	if err == nil && !available {
 		err = errors.New("Board scope unavailable. Refresh before another update.")
@@ -236,6 +255,36 @@ func (a *app) boardExecuteMove(c activityBoardConnection, protected []byte, item
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.activityBoardBusy, c.ID)
+	if a.store != nil {
+		_ = a.persistSQLGraphLocked(func(st *sqliteSessionTx) error {
+			m.Status, m.Message, m.UpdatedAt = status, message, now()
+			if err := st.putRoot("board_moves", m.OperationID, m); err != nil {
+				return err
+			}
+			var old activityBoardItem
+			err := decodeSQLiteRecord(st.ctx, st.tx, "board_items", actual.Key, 2<<20, &old)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if actual.Version != "" && (c.Provider != "azure" || actual.Revision >= old.Revision) {
+				if err := st.putBoardItem(actual, c); err != nil {
+					return err
+				}
+			}
+			if status != "confirmed" {
+				sync, err := st.boardSync(c.ID)
+				if err != nil {
+					return err
+				}
+				sync.Stale, sync.Error = true, message
+				if err := st.putRoot("board_sync", c.ID, sync); err != nil {
+					return err
+				}
+			}
+			return st.boardProjection(false)
+		})
+		return
+	}
 	_ = a.commitTransactionLocked(func(d *diskState) error {
 		m.Status, m.Message, m.UpdatedAt = status, message, now()
 		d.ActivityBoardMoves[m.OperationID] = m

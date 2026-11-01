@@ -3,25 +3,28 @@ package main
 import (
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 )
 
 // A spawn is provenance and an idempotency receipt, never an ownership link.
 type SessionSpawn struct {
-	Request           spawnArgs `json:"request"`
-	From              string    `json:"from"`
-	SessionID         string    `json:"sessionId"`
-	MessageID         string    `json:"messageId"`
-	SourceUserEventID string    `json:"sourceUserEventId"`
-	OperationID       string    `json:"operationId"`
-	Title             string    `json:"title"`
-	Prompt            string    `json:"prompt"`
-	Workspace         string    `json:"workspace"`
-	TopicID           string    `json:"topicId,omitempty"`
-	Harness           string    `json:"harness"`
-	Model             string    `json:"model"`
-	Effort            string    `json:"effort"`
-	YOLO              bool      `json:"yolo,omitempty"`
+	Agent             *AgentCapture        `json:"agent,omitempty"`
+	Configuration     *ResolvedAgentConfig `json:"configuration,omitempty"`
+	Request           spawnArgs            `json:"request"`
+	From              string               `json:"from"`
+	SessionID         string               `json:"sessionId"`
+	MessageID         string               `json:"messageId"`
+	SourceUserEventID string               `json:"sourceUserEventId"`
+	OperationID       string               `json:"operationId"`
+	Title             string               `json:"title"`
+	Prompt            string               `json:"prompt"`
+	Workspace         string               `json:"workspace"`
+	TopicID           string               `json:"topicId,omitempty"`
+	Harness           string               `json:"harness"`
+	Model             string               `json:"model"`
+	Effort            string               `json:"effort"`
+	YOLO              bool                 `json:"yolo,omitempty"`
 }
 
 type SpawnOrigin struct {
@@ -32,16 +35,21 @@ type SpawnOrigin struct {
 }
 
 type spawnArgs struct {
-	ProjectID         string `json:"projectId,omitempty"`
-	Title             string `json:"title"`
-	Prompt            string `json:"prompt"`
-	OperationID       string `json:"operationId"`
-	SourceUserEventID string `json:"sourceUserEventId"`
-	Harness           string `json:"harness"`
-	Model             string `json:"model"`
-	Effort            string `json:"effort"`
-	Workspace         string `json:"workspace"`
-	YOLO              *bool  `json:"yolo,omitempty"`
+	Agent                     string                `json:"agent,omitempty"`
+	AgentSourceUID            string                `json:"agentSourceUid,omitempty"`
+	AgentRevision             string                `json:"agentRevision,omitempty"`
+	AgentOverrides            *AgentConfigOverrides `json:"agentOverrides,omitempty"`
+	InheritParentCapabilities *bool                 `json:"inheritParentCapabilities,omitempty"`
+	ProjectID                 string                `json:"projectId,omitempty"`
+	Title                     string                `json:"title"`
+	Prompt                    string                `json:"prompt"`
+	OperationID               string                `json:"operationId"`
+	SourceUserEventID         string                `json:"sourceUserEventId"`
+	Harness                   string                `json:"harness"`
+	Model                     string                `json:"model"`
+	Effort                    string                `json:"effort"`
+	Workspace                 string                `json:"workspace"`
+	YOLO                      *bool                 `json:"yolo,omitempty"`
 }
 
 func spawnSender(from *Session, args spawnArgs) bool {
@@ -71,9 +79,7 @@ func validateSessionSpawns(d *diskState) error {
 }
 
 func sameSpawnRequest(left, right spawnArgs) bool {
-	leftYOLO, rightYOLO := left.YOLO, right.YOLO
-	left.YOLO, right.YOLO = nil, nil
-	return left == right && (leftYOLO == nil && rightYOLO == nil || leftYOLO != nil && rightYOLO != nil && *leftYOLO == *rightYOLO)
+	return reflect.DeepEqual(left, right)
 }
 
 func newTopLevelSession(projectID, title, group, harness, model, effort string) Session {
@@ -218,6 +224,14 @@ func (a *app) spawnSelectionLocked(from *Session, args spawnArgs) (Session, erro
 func spawnReceiptResult(receipt SessionSpawn) map[string]any {
 	result := map[string]any{"sessionId": receipt.SessionID, "title": receipt.Title, "messageId": receipt.MessageID, "yolo": receipt.YOLO, "accepted": true}
 	result["topicId"] = receipt.TopicID
+	if receipt.Agent != nil {
+		// The durable record keeps the full capture. Acceptance/replay crosses a
+		// bounded tool transport: never echo prompts, skills or MCP catalogs here.
+		result["agent"] = map[string]any{"source": receipt.Agent.Source, "name": receipt.Agent.Name, "revision": receipt.Agent.Revision}
+		if receipt.Configuration != nil {
+			result["configuration"] = map[string]string{"harness": receipt.Configuration.Harness, "model": receipt.Configuration.Model, "effort": receipt.Configuration.Effort}
+		}
+	}
 	if receipt.Request.ProjectID != "" {
 		result["projectId"], result["folder"] = receipt.Request.ProjectID, receipt.Workspace
 		result["harness"], result["model"], result["effort"] = receipt.Harness, receipt.Model, receipt.Effort

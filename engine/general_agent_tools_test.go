@@ -43,7 +43,7 @@ func TestGeneralToolScopeAndAtomicSettings(t *testing.T) {
 		}
 		return false
 	}
-	general := &adapter{role: sessionRoleGeneralAgent}
+	general := &adapter{app: &app{}, role: sessionRoleGeneralAgent}
 	if !contains(general, "project_list") || !contains(general, "session_send") || contains(general, "linked_discover") || contains(general, "session_spawn") || contains(general, "graph_invoke") {
 		t.Fatal("general catalog has wrong capabilities")
 	}
@@ -65,7 +65,11 @@ func TestGeneralToolScopeAndAtomicSettings(t *testing.T) {
 	delete(a.runs, "target")
 	s := a.state.session("target")
 	s.Model, s.Effort = "old", "high"
-	a.catalogs = map[string]catalogCache{"p2/pi": {catalog: &ModelCatalog{Models: []ModelOption{{ID: "old", Efforts: []string{"high"}}, {ID: "new", Efforts: []string{"low"}}}}, expires: time.Now().Add(time.Hour)}}
+	cacheKey, err := modelCatalogCacheKey(*s, a.state.project("p2").Folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.catalogs = map[string]catalogCache{cacheKey: {catalog: &ModelCatalog{Models: []ModelOption{{ID: "old", Efforts: []string{"high"}}, {ID: "new", Efforts: []string{"low"}}}}, expires: time.Now().Add(time.Hour)}}
 	model, yolo := "new", true
 	if err := a.changeSessionSettings(context.Background(), "target", &model, nil, &yolo); err == nil {
 		t.Fatal("invalid preserved effort accepted")

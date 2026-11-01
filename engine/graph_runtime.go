@@ -43,6 +43,9 @@ func (a *app) signalGraphLocked(runID string) {
 	}
 }
 func (a *app) endGraphLocked(runID string, result GraphRunResult, uncertain string) error {
+	if a.store != nil {
+		return a.endSQLGraphLocked(runID, result, uncertain)
+	}
 	err := a.graphChangeLocked(func(d *diskState) error {
 		r := d.graphRun(runID)
 		if r == nil || !graphRunActive(r.Status) {
@@ -153,6 +156,9 @@ func addGraphDelivery(d *diskState, r *GraphRun, x GraphActivation, edge GraphCo
 }
 
 func (a *app) finishGraphRunLocked(runID string) error {
+	if a.store != nil {
+		return a.finishSQLGraphRunLocked(runID)
+	}
 	return a.graphChangeLocked(func(d *diskState) error {
 		r := d.graphRun(runID)
 		if r == nil || r.Status != "ending" || r.Result == nil {
@@ -205,6 +211,10 @@ func (a *app) finishGraphRunLocked(runID string) error {
 }
 
 func (a *app) runGraph(runID string, g *graphExecution) {
+	if a.store != nil {
+		a.runSQLGraph(runID, g)
+		return
+	}
 	defer a.wg.Done()
 	defer func() {
 		g.cancel()
@@ -353,15 +363,37 @@ func (a *app) launchGraphActivation(g *graphExecution, run GraphRun, x GraphActi
 		return
 	}
 	a.mu.Lock()
-	err := a.graphChangeLocked(func(d *diskState) error {
-		r := d.graphRun(run.ID)
-		if r.Status != "running" {
-			return errors.New("Run is ending.")
-		}
-		activation := d.graphActivation(x.ID)
-		activation.Status, activation.UpdatedAt = "running", now()
-		return nil
-	})
+	var err error
+	if a.store != nil {
+		err = a.writeSQLLocked(g.ctx, func(st *sqliteSessionTx) error {
+			r, err := st.graphRunRecord(run.ID)
+			if err != nil {
+				return err
+			}
+			if r.Status != "running" {
+				return errors.New("Run is ending.")
+			}
+			current, err := st.graphActivation(x.ID)
+			if err != nil {
+				return err
+			}
+			if current.RunID != run.ID || current.Status != "reserved" {
+				return errors.New("Activation is no longer reserved.")
+			}
+			current.Status, current.UpdatedAt = "running", now()
+			return st.putRoot("graph_activations", current.ID, current)
+		})
+	} else {
+		err = a.graphChangeLocked(func(d *diskState) error {
+			r := d.graphRun(run.ID)
+			if r.Status != "running" {
+				return errors.New("Run is ending.")
+			}
+			activation := d.graphActivation(x.ID)
+			activation.Status, activation.UpdatedAt = "running", now()
+			return nil
+		})
+	}
 	a.mu.Unlock()
 	if err != nil {
 		send(graphCompletion{activationID: x.ID, drained: true, err: err})
@@ -379,6 +411,10 @@ func (a *app) launchGraphActivation(g *graphExecution, run GraphRun, x GraphActi
 }
 
 func (a *app) launchGraphAgent(g *graphExecution, run GraphRun, x GraphActivation, send func(graphCompletion)) {
+	if a.store != nil {
+		a.launchSQLGraphAgent(g, run, x, send)
+		return
+	}
 	failure := func(err error) { send(graphCompletion{activationID: x.ID, drained: true, err: err}) }
 	compiled, err := compileGraphSnapshot(run.Snapshot)
 	if err != nil {
@@ -527,6 +563,9 @@ func (a *app) launchGraphAgent(g *graphExecution, run GraphRun, x GraphActivatio
 }
 
 func (a *app) reserveGraphChoice(ctx context.Context, runID, activationID, turnID, callID string, raw json.RawMessage) (any, error) {
+	if a.store != nil {
+		return a.reserveSQLGraphChoice(ctx, runID, activationID, turnID, callID, raw)
+	}
 	a.mu.Lock()
 	r := a.state.graphRun(runID)
 	x := a.state.graphActivation(activationID)
@@ -608,6 +647,9 @@ func (a *app) reserveGraphChoice(ctx context.Context, runID, activationID, turnI
 }
 
 func (a *app) transitionGraphChoice(ctx context.Context, runID, activationID, stage string) error {
+	if a.store != nil {
+		return a.transitionSQLGraphChoice(ctx, runID, activationID, stage)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.graphChangeLocked(func(d *diskState) error {
@@ -644,6 +686,10 @@ func (a *app) transitionGraphChoice(ctx context.Context, runID, activationID, st
 }
 
 func (a *app) completeGraphActivationLocked(runID string, result graphCompletion) {
+	if a.store != nil {
+		a.completeSQLGraphActivationLocked(runID, result)
+		return
+	}
 	r := a.state.graphRun(runID)
 	x := a.state.graphActivation(result.activationID)
 	if r == nil || x == nil {

@@ -4,6 +4,19 @@
 .agents-toolbar .button { flex-shrink: 0; }
 .agents-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .agents-empty { padding: 32px 0; text-align: center; color: var(--color-muted); }
+.agents-heading { margin-bottom: 16px; }
+.agents-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 20px; font-size: var(--text-sm); color: var(--color-muted); }
+.agent-problem { margin-bottom: 12px; overflow-wrap: anywhere; }
+.agent-problem ul { padding-left: 20px; }
+.agent-override-fields { display: grid; gap: 12px; min-width: 0; }
+.agent-override-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: var(--text-sm); }
+.agent-binding-identity { display: grid; gap: 6px; overflow-wrap: anywhere; font-size: var(--text-sm); }
+.agent-config-prompt { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; font-size: var(--text-sm); }
+.agent-session-notice { font-size: var(--text-sm); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.agent-session-notice > p { flex-basis: 100%; }
+.agent-picker { margin: 16px 0; display: grid; gap: 8px; }
+.agent-picker > .list-tile { margin-top: 6px; }
+.settings-panel > .agents-page { padding: 0; overflow: visible; }
 .agent-model { overflow-wrap: anywhere; }
 .agent-effort, .agent-harness { border-left: 1px solid var(--color-border); padding-left: 12px; }
 .agent-harness { display: inline-flex; align-items: center; gap: 6px; }
@@ -28,5 +41,7 @@
 @media (max-width: 760px) {
   .agents-page { padding: 16px; }
   .agents-toolbar { gap: 8px; }
+  .agents-toolbar { flex-wrap: wrap; }
+  .agents-toolbar .input { flex: 1; min-width: 120px; }
   .agent-editor-grid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
 }

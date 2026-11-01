@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../design_system/components.dart';
 import '../../design_system/icons.dart';
 import '../../design_system/theme.dart';
@@ -150,6 +151,44 @@ class _HostWebViewAttemptState extends State<_HostWebViewAttempt>
           if (message.message != 'home') return;
           final current = Uri.tryParse(await _controller.currentUrl() ?? '');
           if (mounted && current != null && _belongsToHost(current)) _home();
+        },
+      );
+      await _controller.addJavaScriptChannel(
+        'KlmDownload',
+        onMessageReceived: (message) async {
+          final current = Uri.tryParse(await _controller.currentUrl() ?? '');
+          final url = Uri.tryParse(message.message);
+          if (!mounted ||
+              current == null ||
+              !current.hasAuthority ||
+              current.origin != widget.url.origin ||
+              url == null) {
+            return;
+          }
+          final loopback = ['localhost', '127.0.0.1', '::1'].contains(url.host);
+          if (!(url.scheme == 'https' || url.scheme == 'http' && loopback) ||
+              url.userInfo.isNotEmpty ||
+              url.hasFragment ||
+              url.query != 'contract=3' ||
+              !RegExp(
+                r'(^|/)api/content-downloads/[A-Za-z0-9_-]{43}$',
+              ).hasMatch(url.path)) {
+            return;
+          }
+          try {
+            if (!await launchUrl(url, mode: LaunchMode.externalApplication) &&
+                mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Could not open download.')),
+              );
+            }
+          } catch (_) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Could not open download.')),
+              );
+            }
+          }
         },
       );
       await _controller.setNavigationDelegate(

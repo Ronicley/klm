@@ -1,10 +1,12 @@
-import { useId, useRef, useState } from 'react';
+import { useContext, useId, useRef, useState } from 'react';
 import { Braces, Plus, Trash2 } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
 import { TokenTextarea } from '../../design-system/TokenTextarea';
 import { Menu, MenuItem } from '../../design-system/Menu';
 import { normalizeChoiceName, type ChoiceOutputField } from './choice';
+import { useEngineDraft } from '../drafts/draftStore';
+import { GraphDraftScope } from './draftScope';
 
 function OutputField({ field, variables, payloadContext, onChange, onRemove }: {
   field: ChoiceOutputField;
@@ -15,7 +17,8 @@ function OutputField({ field, variables, payloadContext, onChange, onRemove }: {
 }) {
   const id = useId();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [payloadField, setPayloadField] = useState('');
+  const scope = useContext(GraphDraftScope);
+  const [payloadField, setPayloadField] = useEngineDraft(`${scope}.payloadField:${field.key}`, '');
   const selection = useRef<{ start: number; end: number } | null>(null);
   const tokens = [...field.value.matchAll(/\{\{\s*[^{}]+?\s*\}\}/g)].map(match => ({ start: match.index, end: match.index + match[0].length }));
 

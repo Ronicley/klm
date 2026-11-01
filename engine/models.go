@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -18,6 +20,7 @@ import (
 )
 
 const modelCatalogTimeout = 45 * time.Second
+const modelCatalogLoadError = "Could not discover harness models. Check the installation and provider configuration for the engine's OS account, then refresh."
 
 type ModelOption struct {
 	ID            string   `json:"id"`
@@ -69,9 +72,29 @@ func (c *ModelCatalog) find(id string) *ModelOption {
 	return nil
 }
 
+// Discovery can consume project/CWD-specific harness configuration. Both the
+// cached result and in-flight discovery must have exactly that same identity.
+// Keep lexical aliases distinct; resolving symlinks could change parent config
+// discovery semantics. Windows directory identity is case-insensitive.
+func modelCatalogCacheKey(s Session, cwd string) (string, error) {
+	directory, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", err
+	}
+	directory = filepath.Clean(directory)
+	if runtime.GOOS == "windows" {
+		directory = strings.ToLower(directory)
+	}
+	encoded, err := json.Marshal([3]string{s.ProjectID, s.Harness, directory})
+	return string(encoded), err
+}
+
 func (a *app) catalog(ctx context.Context, s Session, cwd string, refresh bool) (*ModelCatalog, error) {
+	key, err := modelCatalogCacheKey(s, cwd)
+	if err != nil {
+		return nil, err
+	}
 	a.catalogMu.Lock()
-	key := s.ProjectID + "/" + s.Harness
 	if entry, ok := a.catalogs[key]; ok && !refresh && time.Now().Before(entry.expires) {
 		a.catalogMu.Unlock()
 		return entry.catalog, nil
@@ -126,6 +149,11 @@ func (a *app) catalog(ctx context.Context, s Session, cwd string, refresh bool) 
 }
 
 func (a *app) discoverCatalog(ctx context.Context, s Session, cwd string) (*ModelCatalog, error) {
+	release, admissionErr := a.acquireHarnessConsumer()
+	if admissionErr != nil {
+		return nil, admissionErr
+	}
+	defer release()
 	a.mu.Lock()
 	b, installed := a.binaries[s.Harness]
 	a.mu.Unlock()
@@ -171,6 +199,14 @@ func (a *app) discoverCatalog(ctx context.Context, s Session, cwd string) (*Mode
 }
 
 func (a *app) sessionForRead(w http.ResponseWriter, r *http.Request) (Session, string, bool) {
+	if a.store != nil {
+		s, cwd, err := a.readSQLConversation(r.Context(), r.PathValue("id"))
+		if err != nil {
+			sqlHTTPError(w, err)
+			return Session{}, "", false
+		}
+		return s, cwd, true
+	}
 	a.mu.Lock()
 	s := a.state.session(r.PathValue("id"))
 	if s == nil {
@@ -197,7 +233,7 @@ func (a *app) getModels(w http.ResponseWriter, r *http.Request) {
 	}
 	catalog, err := a.catalog(r.Context(), s, cwd, r.URL.Query().Get("refresh") == "true")
 	if err != nil {
-		fail(w, 502, "Could not load harness models. Check the harness configuration and retry.")
+		fail(w, 502, modelCatalogLoadError)
 		return
 	}
 	respond(w, 200, catalog)
@@ -295,7 +331,10 @@ func codexCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, err
 	authType := "configured"
 	if provider == "openai" {
 		account, accountErr := rpc.call("account/read", map[string]any{"refreshToken": false})
-		if accountErr != nil || object(account["account"]) == nil {
+		if accountErr != nil {
+			return nil, accountErr
+		}
+		if object(account["account"]) == nil {
 			return c, nil
 		}
 		switch str(object(account["account"]), "type") {
@@ -375,6 +414,7 @@ func piCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, error)
 	const script = `import {pathToFileURL} from 'node:url'; const lib=await import(import.meta.resolve('@earendil-works/pi-ai',pathToFileURL(process.argv[1]).href)); let input=''; for await(const chunk of process.stdin) input+=chunk; console.log(JSON.stringify(JSON.parse(input).map(m=>lib.getSupportedThinkingLevels(m))));`
 	data, _ := json.Marshal(items)
 	cmd := exec.CommandContext(ctx, b.path, "--experimental-import-meta-resolve", "--input-type=module", "-e", script, b.args[0])
+	cmd.Env = runtimeEnvironment(os.Environ(), b.node)
 	cmd.Dir = cwd
 	cmd.Stdin = bytes.NewReader(data)
 	cmd.Stderr = &cappedBuffer{}
@@ -434,7 +474,7 @@ func (b *limitedOutput) Write(p []byte) (int, error) {
 
 // Short-lived authenticated loopback server used only for catalog/config reads.
 func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, error) {
-	if err := validateOpenCodeLibraryBinary(b); err != nil {
+	if err := validateOpenCodeCatalogBinary(b); err != nil {
 		return nil, err
 	}
 	dir, err := os.MkdirTemp("", "klm-opencode-catalog-")
@@ -458,7 +498,7 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 	h.client = &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("Redirect refused.") }}
 	cmd := exec.CommandContext(ctx, b.path, append(append([]string{}, b.args...), "serve", "--hostname", "127.0.0.1", "--port", "0", "--mdns=false")...)
 	cmd.Dir = cwd
-	for _, entry := range os.Environ() {
+	for _, entry := range runtimeEnvironment(os.Environ(), b.node) {
 		key, _, _ := strings.Cut(entry, "=")
 		if strings.HasPrefix(strings.ToUpper(key), "OPENCODE_") || strings.EqualFold(key, "XDG_CONFIG_HOME") {
 			continue
@@ -578,6 +618,19 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 func (p *adapter) resolvedSelection(model, effort string) error {
 	p.app.mu.Lock()
 	defer p.app.mu.Unlock()
+	if p.app.store != nil {
+		return p.sqlAnalyticsWrite(func(st *sqliteSessionTx) error {
+			s, err := st.sessionMeta(p.id)
+			if err != nil {
+				return err
+			}
+			if s.ResolvedModel == model && s.ResolvedEffort == effort {
+				return nil
+			}
+			s.ResolvedModel, s.ResolvedEffort, s.UpdatedAt = model, effort, now()
+			return st.putSessionMeta(s)
+		})
+	}
 	s := p.app.state.session(p.id)
 	if s == nil || (s.ResolvedModel == model && s.ResolvedEffort == effort) {
 		return nil
@@ -606,6 +659,10 @@ func (a *app) updateModelSettings(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := a.changeSessionSettings(r.Context(), id, body.Model, body.Effort, nil); err != nil {
 		failSessionControl(w, err)
+		return
+	}
+	if a.store != nil {
+		a.respondSQLSession(w, r, id, 200)
 		return
 	}
 	a.mu.Lock()

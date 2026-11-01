@@ -97,8 +97,10 @@ type ownedProcess struct {
 	mu        sync.Mutex
 	cmd       *exec.Cmd
 	group     *runtimeProcessGroup
+	process   syscall.Handle // Independent of the handle released by cmd.Wait.
 	exclusive bool
 	stopped   bool
+	stopErr   error
 }
 
 func newRuntimeProcessGroup() (*runtimeProcessGroup, error) {
@@ -165,12 +167,16 @@ func (o *ownedProcess) Attach() error {
 		return errors.New("Owned harness runtime closed before job assignment.")
 	}
 	// This PID comes directly from the still-suspended process we just created.
-	h, err := syscall.OpenProcess(0x0100|0x0800|0x0001, false, uint32(o.cmd.Process.Pid))
+	h, err := syscall.OpenProcess(0x0100|0x0800|syscall.PROCESS_TERMINATE|syscall.SYNCHRONIZE, false, uint32(o.cmd.Process.Pid))
 	if err != nil {
 		_ = o.cmd.Process.Kill()
 		return errors.New("Cannot open the suspended owned harness.")
 	}
-	defer syscall.CloseHandle(h)
+	defer func() {
+		if h != 0 {
+			_ = syscall.CloseHandle(h)
+		}
+	}()
 	if ok, _, _ := assignProcessToJob.Call(uintptr(o.group.job), uintptr(h)); ok == 0 {
 		_ = o.cmd.Process.Kill()
 		return errors.New("Cannot contain the harness in its owned job; execution was refused.")
@@ -179,23 +185,60 @@ func (o *ownedProcess) Attach() error {
 		_ = o.cmd.Process.Kill()
 		return errors.New("Cannot resume the contained harness.")
 	}
+	if !o.exclusive {
+		// Keep a stable process identity through concurrent cmd.Cancel/cmd.Wait.
+		// ProcessState is not synchronized, and Go 1.24's Windows Wait releases
+		// cmd.Process's handle, after which Kill returns EINVAL.
+		o.process, h = h, 0
+	}
 	return nil
+}
+
+func stopOwnedWindowsProcess(process syscall.Handle) error {
+	state, err := syscall.WaitForSingleObject(process, 0)
+	switch state {
+	case syscall.WAIT_OBJECT_0:
+		return nil // Confirmed exit: do not issue a redundant termination.
+	case syscall.WAIT_TIMEOUT:
+		// The retained handle cannot be released by cmd.Wait or refer to a reused PID.
+	default:
+		if err != nil {
+			return os.NewSyscallError("WaitForSingleObject", err)
+		}
+		return fmt.Errorf("Unexpected owned harness process wait result: %d", state)
+	}
+	err = syscall.TerminateProcess(process, 1)
+	if errors.Is(err, syscall.ERROR_ACCESS_DENIED) {
+		// Job shutdown and cmd.Cancel can race: Windows refuses another
+		// termination while exit is still in progress, before the handle is
+		// signaled. Wait on this exact owned identity, with the same bounded
+		// drainage budget, and accept only a confirmed exit.
+		if state, _ := syscall.WaitForSingleObject(process, 5000); state == syscall.WAIT_OBJECT_0 {
+			return nil
+		}
+	}
+	return os.NewSyscallError("TerminateProcess", err)
 }
 
 func (o *ownedProcess) Stop() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.stopped {
-		return nil
+		return o.stopErr
 	}
 	o.stopped = true
 	if o.exclusive {
-		return o.group.Close()
+		o.stopErr = o.group.Close()
+	} else if o.process != 0 {
+		o.stopErr = stopOwnedWindowsProcess(o.process)
+		o.stopErr = errors.Join(o.stopErr, syscall.CloseHandle(o.process))
+		o.process = 0
+	} else if o.cmd.Process != nil {
+		// Cancellation before Attach: the process is still suspended and no
+		// caller has started Wait yet. Attach will refuse to resume it.
+		o.stopErr = o.cmd.Process.Kill()
 	}
-	if o.cmd.Process != nil {
-		return o.cmd.Process.Kill()
-	}
-	return nil
+	return o.stopErr
 }
 
 func (o *ownedProcess) Close() error { return o.Stop() }
@@ -209,10 +252,19 @@ func (o *ownedProcess) Drained() bool {
 	return o.group.drained
 }
 
-func (g *runtimeProcessGroup) BeginTurn() {
+func (g *runtimeProcessGroup) BeginTurn() error {
 	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return errors.New("Owned harness runtime closed before the next turn.")
+	}
+	active, err := g.activeProcessesLocked()
+	if err != nil {
+		return err
+	}
+	g.updateWorkloadLocked(active)
 	g.turnActive = true
-	g.mu.Unlock()
+	return nil
 }
 
 func (g *runtimeProcessGroup) EndTurn() {
@@ -262,16 +314,7 @@ func (g *runtimeProcessGroup) MarkInfrastructure() {
 	}
 }
 
-func (g *runtimeProcessGroup) HasWorkload() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.closed || g.turnActive {
-		return false
-	}
-	active, err := g.activeProcessesLocked()
-	if err != nil {
-		return true
-	}
+func (g *runtimeProcessGroup) updateWorkloadLocked(active map[uintptr]bool) {
 	for pid := range g.infrastructure {
 		if !active[pid] {
 			delete(g.infrastructure, pid)
@@ -287,6 +330,19 @@ func (g *runtimeProcessGroup) HasWorkload() bool {
 			g.workload[pid] = true
 		}
 	}
+}
+
+func (g *runtimeProcessGroup) HasWorkload() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed || g.turnActive {
+		return false
+	}
+	active, err := g.activeProcessesLocked()
+	if err != nil {
+		return true
+	}
+	g.updateWorkloadLocked(active)
 	return len(g.workload) > 0
 }
 

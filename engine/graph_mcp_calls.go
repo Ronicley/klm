@@ -140,6 +140,15 @@ func (p *adapter) observeCodexMCP(method string, params map[string]any) {
 	if key.Session == "" || key.Turn == "" || key.Call == "" {
 		return
 	}
+	responseReturned := false
+	if method == "item/completed" {
+		content, err := nativeField(item["result"], "content")
+		if err == nil && content != nil {
+			if source, ok := content.(*protocolContent); !ok || source.kind != 'n' {
+				responseReturned = true
+			}
+		}
+	}
 	b := p.graph
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -160,7 +169,7 @@ func (p *adapter) observeCodexMCP(method string, params map[string]any) {
 		// A result envelope (also isError=true) is a real returned tool response.
 		// Failed/cancelled + error text alone cannot distinguish remote RPC errors
 		// from local aborts, timeouts or disconnected transports in this protocol.
-		if result := object(item["result"]); result != nil && result["content"] != nil {
+		if responseReturned {
 			state = "response"
 		}
 		b.endMCPCallLocked(key, state)
@@ -171,14 +180,20 @@ func (p *adapter) noteCodexChildren(item map[string]any) {
 	if !p.graphNode() || str(item, "type") != "collabAgentToolCall" {
 		return
 	}
+	ids, err := nativeIDs(item["receiverThreadIds"])
 	p.graph.mu.Lock()
 	defer p.graph.mu.Unlock()
+	if err != nil {
+		if p.graph.codexCoverageUnknown == nil {
+			p.graph.codexCoverageUnknown = map[string]bool{}
+		}
+		p.graph.codexCoverageUnknown[""] = true
+		return
+	}
 	if p.graph.codexChildren == nil {
 		p.graph.codexChildren = map[string]bool{}
 	}
-	ids, _ := item["receiverThreadIds"].([]any)
-	for _, value := range ids {
-		id, _ := value.(string)
+	for _, id := range ids {
 		if id != "" && id != p.graph.nativeSession {
 			p.graph.codexChildren[id] = p.graph.codexChildren[id] || str(item, "tool") == "spawnAgent"
 		}
@@ -208,10 +223,10 @@ func (p *adapter) auditCodexChildTurn(thread string, turn map[string]any) {
 	if !known {
 		// A legacy/resumed child's turn can lack timestamps and live observation.
 		// Do not silently claim coverage of an unreturned MCP item in that case.
-		items, _ := turn["items"].([]any)
-		for _, value := range items {
+		err := protocolArrayEach(turn["items"], func(value any) error {
 			item := object(value)
-			if str(item, "type") == "mcpToolCall" && str(item, "server") != "klm_linked" && object(item["result"])["content"] == nil {
+			content, readErr := nativeField(item["result"], "content")
+			if str(item, "type") == "mcpToolCall" && str(item, "server") != "klm_linked" && (content == nil || readErr != nil) {
 				p.graph.mu.Lock()
 				if p.graph.codexCoverageUnknown == nil {
 					p.graph.codexCoverageUnknown = map[string]bool{}
@@ -219,12 +234,29 @@ func (p *adapter) auditCodexChildTurn(thread string, turn map[string]any) {
 				p.graph.codexCoverageUnknown[thread] = true
 				p.graph.mu.Unlock()
 			}
+			return nil
+		})
+		if err != nil {
+			p.graph.mu.Lock()
+			if p.graph.codexCoverageUnknown == nil {
+				p.graph.codexCoverageUnknown = map[string]bool{}
+			}
+			p.graph.codexCoverageUnknown[thread] = true
+			p.graph.mu.Unlock()
 		}
 		return
 	}
-	items, _ := turn["items"].([]any)
-	for _, value := range items {
+	err := protocolArrayEach(turn["items"], func(value any) error {
 		item := object(value)
 		p.observeCodexMCP("item/completed", map[string]any{"threadId": thread, "turnId": id, "item": item})
+		return nil
+	})
+	if err != nil {
+		p.graph.mu.Lock()
+		if p.graph.codexCoverageUnknown == nil {
+			p.graph.codexCoverageUnknown = map[string]bool{}
+		}
+		p.graph.codexCoverageUnknown[thread] = true
+		p.graph.mu.Unlock()
 	}
 }

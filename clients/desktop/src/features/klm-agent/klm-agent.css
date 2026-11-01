@@ -68,6 +68,7 @@
 .activity-filters button:hover { background: var(--activity-hover); color: var(--color-heading); }
 .activity-filters button.is-active { color: var(--activity-accent); background: var(--activity-selected); font-weight: 600; }
 .activity-filters button.is-active::after { content: ''; position: absolute; height: 3px; background: var(--color-accent); width: 30px; max-width: 70%; bottom: 0; left: 50%; transform: translateX(-50%); border-radius: 3px; }
+.activity-posts { width: 100%; max-width: 800px; margin-inline: auto; }
 .activity-post { padding: 15px 18px 8px; border-bottom: 1px solid var(--activity-border); background: var(--activity-surface); transition: background var(--transition-fast); }
 .activity-post:hover { background: var(--activity-hover); }
 :root[data-theme="dark"] .activity-post { background: var(--color-surface); }

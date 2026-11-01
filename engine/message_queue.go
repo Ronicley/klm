@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,6 +178,9 @@ func (p *adapter) takeSteering() (*QueuedMessage, submission, error) {
 	if a.closing || p.turn.ctx.Err() != nil || a.runs[p.id] != nil && a.runs[p.id] != p.turn {
 		return nil, submission{}, nil
 	}
+	if a.store != nil {
+		return p.takeSQLSteeringLocked()
+	}
 	s := a.state.session(p.id)
 	for _, q := range s.Queue {
 		if q.Status == "sending" {
@@ -227,6 +231,32 @@ func (p *adapter) acknowledgeSteering(id string) error {
 	a := p.app
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.store != nil {
+		err := p.sqlAnalyticsWrite(func(st *sqliteSessionTx) error {
+			for _, input := range p.turn.steeringBatches[id] {
+				key, err := st.queueKey(p.id, input)
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				var q QueuedMessage
+				if err := decodeSQLiteRecord(st.ctx, st.tx, "queued_messages", key, 1<<20, &q); err != nil {
+					return err
+				}
+				if q.Status == "sending" {
+					q.Status = "accepted"
+					if err := st.putExistingRecord("queued_messages", key, q); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		})
+		a.wakeSteeringLocked(p.id)
+		return err
+	}
 	err := a.commitLocked(func(d *diskState) {
 		for i := range d.session(p.id).Queue {
 			q := &d.session(p.id).Queue[i]
@@ -254,6 +284,20 @@ func (p *adapter) steeringBoundary(method string, raw json.RawMessage) (any, err
 	if p.harness == "opencode" {
 		p.app.mu.Lock()
 		nativeID := p.app.state.Native[p.id].ID
+		if p.app.store != nil {
+			var native nativeSession
+			err := p.app.store.readSnapshot(p.turn.ctx, func(tx *sql.Tx) error {
+				st := &sqliteSessionTx{ctx: p.turn.ctx, tx: tx}
+				var err error
+				native, err = st.native(p.id)
+				return err
+			})
+			if err != nil {
+				p.app.mu.Unlock()
+				return nil, err
+			}
+			nativeID = native.ID
+		}
 		p.app.mu.Unlock()
 		if params.SessionID == "" || params.SessionID != nativeID {
 			return map[string]any{}, nil // Native child sessions never consume parent input.
@@ -286,7 +330,17 @@ func (p *adapter) finishPiSteering(text string) error {
 		for _, inputID := range ids {
 			messages = append(messages, QueuedMessage{ID: inputID})
 		}
-		payload, err := queuedSubmission(&p.app.state, messages)
+		var payload submission
+		var err error
+		if p.app.store != nil {
+			err = p.app.store.readSnapshot(p.turn.ctx, func(tx *sql.Tx) error {
+				st := &sqliteSessionTx{ctx: p.turn.ctx, tx: tx}
+				payload, err = st.queuedSubmission(messages)
+				return err
+			})
+		} else {
+			payload, err = queuedSubmission(&p.app.state, messages)
+		}
 		if err == nil {
 			payload.Text = "Steering input " + id + ":\n" + payload.Text
 			if payload.piText() == text {
@@ -312,6 +366,9 @@ func (p *adapter) finishSteering(id, failure string) error {
 	a := p.app
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.store != nil {
+		return p.finishSQLSteeringLocked(id, failure)
+	}
 	ids := p.turn.steeringBatches[id]
 	if len(ids) == 0 {
 		ids = []string{id}
@@ -350,11 +407,18 @@ func (p *adapter) finishSteering(id, failure string) error {
 
 // Called under app.mu, sharing the same one-turn reservation as ordinary sends.
 func (a *app) scheduleMessagesLocked() {
+	if a.harnessInstalling {
+		return
+	}
+	if a.store != nil {
+		a.scheduleSQLMessagesLocked()
+		return
+	}
 	if a.closing || a.storageErr != nil {
 		return
 	}
 	for _, s := range a.state.Sessions {
-		if a.runs[s.ID] != nil || len(s.Queue) == 0 || a.state.conversationArchived(&s) {
+		if a.state.activeAutomation(s.ID) != nil || a.runs[s.ID] != nil || len(s.Queue) == 0 || a.state.conversationArchived(&s) {
 			continue
 		}
 		messages := steeringMessages(&s)
@@ -413,6 +477,16 @@ func (a *app) scheduleMessagesLocked() {
 func (a *app) changeQueuedMessage(w http.ResponseWriter, r *http.Request) {
 	id, messageID := r.PathValue("id"), r.PathValue("messageID")
 	a.mu.Lock()
+	if a.store != nil {
+		_, err := a.changeSQLQueuedLocked(id, messageID, r.Method == http.MethodDelete, true, nil)
+		a.mu.Unlock()
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		a.respondSQLSession(w, r, id, 200)
+		return
+	}
 	_, err := a.changeQueuedMessageLocked(id, messageID, r.Method == http.MethodDelete, true, nil)
 	response := a.currentSessionUpdateLocked(id)
 	a.mu.Unlock()
@@ -424,6 +498,12 @@ func (a *app) changeQueuedMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) changeQueuedMessageLocked(id, messageID string, remove, retryUncertain bool, origin *SpawnOrigin) (string, error) {
+	if a.store != nil {
+		return a.changeSQLQueuedLocked(id, messageID, remove, retryUncertain, origin)
+	}
+	if !remove && a.state.activeAutomation(id) != nil {
+		return "", controlError(409, "Only steering is available during an automation run.")
+	}
 	s := a.state.session(id)
 	if s == nil {
 		return "", controlError(404, "Session not found.")

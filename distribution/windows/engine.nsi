@@ -1,5 +1,5 @@
 !ifndef VERSION
-!define VERSION "0.5.0"
+!define VERSION "0.6.0"
 !endif
 Unicode true
 ManifestDPIAware true

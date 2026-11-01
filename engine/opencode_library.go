@@ -28,16 +28,27 @@ func (p *adapter) openCodeManagedAgent() string {
 }
 
 func validateOpenCodeLibraryBinary(b binary) error {
-	if runtime.GOOS != "windows" {
-		return errors.New("Managed OpenCode Library execution is validated on Windows only.")
+	if err := validateManagedChatPlatform(); err != nil {
+		return err
+	}
+	return validateOpenCodeCatalogBinary(b)
+}
+
+// Catalog reads share the pinned profile format, not managed execution admission.
+// Ordinary Linux turns additionally establish an owned subreaper/pidfd runtime;
+// graph platform admission remains independent and Windows-only.
+func validateOpenCodeCatalogBinary(b binary) error {
+	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
+		return errors.New("OpenCode model discovery is supported on Windows and Linux only.")
 	}
 	data, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(b.path)), "package.json"))
 	var metadata struct {
 		Version string `json:"version"`
 		Name    string `json:"name"`
 	}
-	if err != nil || json.Unmarshal(data, &metadata) != nil || metadata.Name != "opencode-ai" || metadata.Version != "1.18.35" {
-		return errors.New("Managed OpenCode Library execution requires the validated opencode-ai 1.18.35 installation.")
+	recipe, _ := harnessRecipeFor("opencode")
+	if err != nil || json.Unmarshal(data, &metadata) != nil || metadata.Name != recipe.Package || metadata.Version != recipe.Version {
+		return errors.New("OpenCode requires the pinned opencode-ai 1.18.35 installation.")
 	}
 	return nil
 }
@@ -508,12 +519,16 @@ func inspectOpenCodeLibrarySources(ctx context.Context) error {
 	} else if !os.IsNotExist(err) {
 		return errors.New("Cannot inspect OpenCode authentication sources.")
 	}
-	managed := os.Getenv("ProgramData")
-	if managed == "" {
-		managed = `C:\ProgramData`
+	managed := "/etc/opencode"
+	if runtime.GOOS == "windows" {
+		managed = os.Getenv("ProgramData")
+		if managed == "" {
+			managed = `C:\ProgramData`
+		}
+		managed = filepath.Join(managed, "opencode")
 	}
 	for _, name := range []string{"opencode.json", "opencode.jsonc"} {
-		if _, err := os.Stat(filepath.Join(managed, "opencode", name)); err == nil {
+		if _, err := os.Stat(filepath.Join(managed, name)); err == nil {
 			return errors.New("Managed OpenCode Library cannot replace administrator-managed OpenCode configuration.")
 		} else if !os.IsNotExist(err) {
 			return err

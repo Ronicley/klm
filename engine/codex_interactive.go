@@ -36,6 +36,7 @@ type codexSubagent struct {
 func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error) {
 	started := time.Now()
 	phase := "process startup"
+	var dispatchedAt time.Time
 	// Registered before cleanup so cancellation diagnostics also cover teardown.
 	defer func() {
 		if err == nil {
@@ -54,8 +55,29 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 	}()
 	p.app.mu.Lock()
 	native := p.app.state.Native[p.id]
+	if p.app.store != nil {
+		_, value, _, readErr := p.app.store.readTurnSession(p.turn.ctx, p.id)
+		if readErr != nil {
+			p.app.mu.Unlock()
+			return readErr
+		}
+		native = value
+	}
 	sessionModel := p.model
 	p.app.mu.Unlock()
+	if p.delegation != nil {
+		if native.ID == "" {
+			manifest, manifestErr := delegationCodexManifestV1()
+			if manifestErr != nil {
+				return manifestErr
+			}
+			p.pendingCodexDelegation = &manifest
+		} else if native.Delegation == nil || validateDelegationCodexManifest(*native.Delegation) != nil {
+			return errors.New("Codex delegation manifest is unavailable for this native history.")
+		} else {
+			p.pendingCodexDelegation = native.Delegation
+		}
+	}
 
 	process, reused := (*interactiveProcess)(nil), false
 	toolKey := p.runtimeToolKey()
@@ -80,24 +102,30 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			payload.Text = p.codexSelectedSkillContext() + "\n\n" + payload.Text
 		}
 		args = append(args, "app-server", "--listen", "stdio://")
-		process, err = startInteractive(p.turn, b, args, cwd, p.runtime)
+		process, err = startInteractive(p.turn, b, args, cwd, p.runtime, protocolLineInput{dir: p.app.dir, harness: "codex", scope: p.turn.protocolScope})
 		if err != nil {
 			return err
 		}
 		if p.runtime != nil {
-			if err := p.runtime.retainInteractive(process, "codex", "", "", toolKey, nil); err != nil {
+			if err := p.runtime.retainInteractive(process, "codex", "", "", toolKey, p.capabilities != nil, nil); err != nil {
 				closeRuntimeInteractive(&runtimeInteractive{process: process})
 				return err
 			}
 		}
 	}
 	p.processesDrained = false
+	process.bindProtocolScope(p.turn.protocolScope)
 	cancelSettled := false
 	defer func() {
 		if p.runtime != nil && p.capabilities != nil {
-			shutdownErr := p.runtime.shutdown()
-			p.processesDrained = shutdownErr == nil && !p.processDrainFailed
-			err = errors.Join(err, shutdownErr)
+			// Native EOF/flush is separate from session disposal. After success,
+			// retain the owned container and background workload across turns.
+			// Only turn-scoped transports/gateways rotate before the next turn.
+			if err != nil || p.failed || !p.completed || p.turn.ctx.Err() != nil || p.processDrainFailed {
+				shutdownErr := p.runtime.shutdown()
+				p.processesDrained = shutdownErr == nil && !p.processDrainFailed
+				err = errors.Join(err, shutdownErr)
+			}
 		} else if p.runtime == nil {
 			_ = process.Close()
 			for frame := range process.Frames {
@@ -223,6 +251,9 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			params["config"] = libraryConfig
 		}
 		method := "thread/start"
+		if native.ID == "" && p.pendingCodexDelegation != nil {
+			params["dynamicTools"] = []DelegationCodexSpec{delegationCodexSpecV1()}
+		}
 		if native.ID != "" {
 			method, params["threadId"] = "thread/resume", native.ID
 			// KLM already stores the timeline; omit old turns from the response,
@@ -308,6 +339,11 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			case <-p.turn.ctx.Done():
 				return p.turn.ctx.Err()
 			case <-deadline:
+				if process.ingestionInFlight() {
+					startup.Reset(30 * time.Second)
+					deadline = startup.C
+					continue
+				}
 				return errors.New("Codex app-server startup timed out.")
 			}
 		}
@@ -319,17 +355,17 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			return err
 		}
 		if deadline != nil {
-			select {
-			case <-deadline:
-				return errors.New("Codex app-server startup timed out.")
-			default:
-			}
+			startup.Reset(30 * time.Second)
+			deadline = startup.C
 		}
 		method := str(frame, "method")
 		if method != "" {
 			if phase == "klm-turn" {
 				// Notifications and requests can precede turn/start's response.
 				// Do not offer consent until its native turn ID is confirmed.
+				if err := p.turn.protocolScope.cacheValue("codex-early/"+strconv.Itoa(len(early)), frame); err != nil {
+					return err
+				}
 				early = append(early, frame)
 				continue
 			}
@@ -427,6 +463,13 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 				return err
 			}
 			c.threadID = threadID
+			p.analyticsBindNative(threadID, "")
+			if native.ID == "" {
+				zero := int64(0)
+				if err := p.setUsageBaseline(&SessionUsage{InputTokens: &zero, OutputTokens: &zero}); err != nil {
+					return err
+				}
+			}
 			p.setGraphNativeSession(threadID)
 			effort := p.effort
 			if effort == "" {
@@ -441,8 +484,7 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			}
 		case "klm-mcp":
 			found := false
-			servers, _ := result["data"].([]any)
-			for _, value := range servers {
+			if err := protocolArrayEach(result["data"], func(value any) error {
 				server := object(value)
 				if p.capabilities != nil {
 					if err := p.verifyCodexLibraryServer(server); err != nil {
@@ -451,7 +493,7 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 				}
 				library := str(server, "name") == "klm_library"
 				if str(server, "name") != "klm_linked" && !library {
-					continue
+					return nil
 				}
 				tools := object(server["tools"])
 				serverFound := true
@@ -469,6 +511,9 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 				} else {
 					found = found || serverFound
 				}
+				return nil
+			}); err != nil {
+				return err
 			}
 			mcpBridgeFound = mcpBridgeFound || found
 			if (p.graphNode() || p.capabilities != nil || !mcpBridgeFound) && str(result, "nextCursor") != "" {
@@ -497,6 +542,11 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			if p.effort != "" {
 				turnParams["effort"] = p.effort
 			}
+			dispatchedAt, err = p.analyticsDispatch()
+			if err != nil {
+				return err
+			}
+			p.delegationPromptAttempted()
 			if err := c.send(map[string]any{"id": phase, "method": "turn/start", "params": turnParams}); err != nil {
 				return err
 			}
@@ -505,10 +555,19 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 			if !codexIdentifier(c.turnID) {
 				return errors.New("Codex returned an invalid native turn identifier.")
 			}
+			if err := p.delegationNativeStarted(c.turnID); err != nil {
+				return err
+			}
+			if err := p.analyticsStartAt(dispatchedAt); err != nil {
+				return err
+			}
 			phase, deadline = "", nil
 			startup.Stop()
-			for _, queued := range early {
+			for index, queued := range early {
 				if err := c.frame(queued); err != nil {
+					return err
+				}
+				if err := p.turn.protocolScope.cacheValue("codex-early/"+strconv.Itoa(index), nil); err != nil {
 					return err
 				}
 				if p.completed && !p.graphMCPPending() {
@@ -527,7 +586,14 @@ func (p *adapter) runCodex(b binary, cwd string, payload submission) (err error)
 func (p *adapter) finishCodexNative(process *interactiveProcess, b binary, cwd, threadID, turnID string) error {
 	if !p.graphNode() {
 		if p.capabilities != nil {
-			return finishCodexProcess(process, p.turn.ctx, nil)
+			if err := finishCodexProcess(process, p.turn.ctx, nil); err != nil {
+				return err
+			}
+			if p.runtime != nil {
+				// The app-server has exited and persisted its transcript. Release
+				// its transport without disposing the session's remaining resources.
+				p.runtime.discardInteractive(process)
+			}
 		}
 		return nil
 	}
@@ -541,7 +607,7 @@ func (p *adapter) finishCodexNative(process *interactiveProcess, b binary, cwd, 
 	if p.capabilities != nil {
 		probeArgs = append(codexLibraryFlags(), probeArgs...)
 	}
-	probe, err := startInteractive(p.turn, b, probeArgs, cwd, nil)
+	probe, err := startInteractive(p.turn, b, probeArgs, cwd, nil, protocolLineInput{dir: p.app.dir, harness: "codex", scope: p.turn.protocolScope})
 	if err != nil {
 		return err
 	}
@@ -562,6 +628,10 @@ func (p *adapter) finishCodexNative(process *interactiveProcess, b binary, cwd, 
 		case <-p.turn.ctx.Done():
 			return p.turn.ctx.Err()
 		case <-timer.C:
+			if probe.ingestionInFlight() {
+				timer.Reset(30 * time.Second)
+				continue
+			}
 			return errors.New("Codex persisted-history verification timed out.")
 		case frame, ok := <-probe.Frames:
 			if !ok {
@@ -587,30 +657,34 @@ func (p *adapter) finishCodexNative(process *interactiveProcess, b binary, cwd, 
 			if str(thread, "id") != readingThread {
 				return errors.New("Codex persisted-history response belongs to a different thread.")
 			}
-			turns, _ := thread["turns"].([]any)
 			matched, receipt := false, false
-			for _, value := range turns {
+			if err := protocolArrayEach(thread["turns"], func(value any) error {
 				nativeTurn := object(value)
 				if readingThread != threadID {
 					p.auditCodexChildTurn(readingThread, nativeTurn)
-					continue
+					return nil
 				}
 				if str(nativeTurn, "status") == "inProgress" {
 					return errors.New("Codex persisted graph history still has an unfinished turn.")
 				}
 				if str(nativeTurn, "id") != turnID {
-					continue
+					return nil
 				}
 				status := str(nativeTurn, "status")
 				matched = status == "completed" || status == "interrupted"
-				items, _ := nativeTurn["items"].([]any)
-				for _, value := range items {
+				if err := protocolArrayEach(nativeTurn["items"], func(value any) error {
 					item := object(value)
 					p.observeCodexMCP("item/completed", map[string]any{"threadId": threadID, "turnId": turnID, "item": item})
 					if str(item, "type") == "mcpToolCall" && str(item, "server") == "klm_linked" && str(item, "tool") == "graph_submit_choice" {
 						receipt = receipt || p.graphReservationReceipt(item["result"])
 					}
+					return nil
+				}); err != nil {
+					return err
 				}
+				return nil
+			}); err != nil {
+				return err
 			}
 			if readingThread == threadID && (!matched || (p.graphSealed() && !receipt)) {
 				return errors.New("Codex persisted history does not contain the settled graph turn and its reserved Choice result.")
@@ -713,6 +787,13 @@ func (c *codexInteractive) warning(text string) error {
 }
 
 func (c *codexInteractive) frame(frame map[string]any) error {
+	if c.p.turn != nil && c.p.turn.protocolScope != nil {
+		release, err := acquireProtocolStage(c.p.turn.ctx, protocolNormalizeSlots)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	method, params := str(frame, "method"), object(frame["params"])
 	c.p.observeCodexMCP(method, params)
 	if _, request := frame["id"]; request {
@@ -742,6 +823,14 @@ func (c *codexInteractive) frame(frame map[string]any) error {
 		if str(nativeTurn, "id") != c.turnID {
 			return nil
 		}
+		if c.p.delegation != nil {
+			if err := c.p.delegation.gate(c.p.turn.ctx, "native_completion"); err != nil {
+				return err
+			}
+		}
+		if err := c.p.analyticsEnd(); err != nil {
+			return err
+		}
 		status, message := "completed", "Turn completed."
 		switch str(nativeTurn, "status") {
 		case "failed":
@@ -764,6 +853,8 @@ func (c *codexInteractive) frame(frame map[string]any) error {
 		return nil
 	}
 	if method == "thread/tokenUsage/updated" {
+		// Codex supplies no authoritative pre-resume total. First totals on a
+		// resumed thread establish a baseline and remain explicitly incomplete.
 		return c.p.setUsage(codexSessionUsage(object(params["tokenUsage"])))
 	}
 	if method == "error" {
@@ -782,7 +873,14 @@ func (c *codexInteractive) frame(frame map[string]any) error {
 		if !codexIdentifier(id) {
 			return errors.New("Codex returned an item without a valid identifier.")
 		}
-		c.items[id] = item
+		if err := cacheNativeMap(c.p.turn.protocolScope, "codex-items/"+c.threadID, c.items, id, item); err != nil {
+			return err
+		}
+		if method == "item/completed" && str(item, "type") == "dynamicToolCall" && str(item, "tool") == delegationToolName && c.p.delegation != nil {
+			if err := c.p.delegation.nativeResultSeen(id, c.turnID); err != nil {
+				return err
+			}
+		}
 		if str(item, "type") == "userMessage" {
 			if clientID := str(item, "clientId"); clientID != "" {
 				if err := c.p.finishSteering(clientID, ""); err != nil {
@@ -798,7 +896,11 @@ func (c *codexInteractive) frame(frame map[string]any) error {
 				return err
 			}
 		}
-		return c.item(item, method == "item/completed")
+		err := c.item(item, method == "item/completed")
+		if err == nil && method == "item/completed" {
+			err = cacheNativeMap(c.p.turn.protocolScope, "codex-items/"+c.threadID, c.items, id, map[string]any{"id": id, "type": item["type"], "$klmCompleted": true})
+		}
+		return err
 	}
 	id := str(params, "itemId")
 	if !codexIdentifier(id) {
@@ -830,7 +932,7 @@ func (c *codexInteractive) frame(frame map[string]any) error {
 	default:
 		return nil
 	}
-	return c.p.put(key, kind, title, str(params, "delta"), "running", true,
+	return c.p.put(key, kind, title, displayNativeText(params["delta"]), "running", true,
 		map[string]any{"type": method, "itemId": id})
 }
 
@@ -855,7 +957,8 @@ func putCodexItem(p *adapter, trackedParts map[string]map[string]bool, item map[
 	case "declined":
 		status = "cancelled"
 	}
-	kind, title, text := "tool", typ, str(item, "text")
+	kind, title := "tool", typ
+	text := displayNativeText(item["text"])
 	switch typ {
 	case "agentMessage":
 		kind, title = "assistant", ""
@@ -863,16 +966,23 @@ func putCodexItem(p *adapter, trackedParts map[string]map[string]bool, item map[
 		if trackedParts[id] == nil {
 			trackedParts[id] = map[string]bool{}
 		}
-		final := map[string]string{}
+		final := map[string]bool{}
 		for _, group := range []string{"summary", "content"} {
-			parts, _ := item[group].([]any)
-			for index, part := range parts {
+			index := 0
+			if item[group] == nil {
+				continue
+			}
+			if err := protocolArrayEach(item[group], func(part any) error {
 				name := group + "/" + strconv.Itoa(index)
-				final[name] = contentText(part)
+				index++
+				final[name] = true
 				trackedParts[id][name] = true
-				if err := p.put(key+"/"+name, "reasoning", "", final[name], status, false, nil); err != nil {
+				if err := p.put(key+"/"+name, "reasoning", "", displayNativeText(part), status, false, nil); err != nil {
 					return err
 				}
+				return nil
+			}); err != nil {
+				return err
 			}
 		}
 		if completed {
@@ -887,11 +997,11 @@ func putCodexItem(p *adapter, trackedParts map[string]map[string]bool, item map[
 		return nil
 	case "commandExecution":
 		kind, title = "command", "Command"
-		text = str(item, "command")
-		if output := str(item, "aggregatedOutput"); output != "" {
-			text += "\n" + output
-		} else if !completed && text != "" {
-			text += "\n"
+		text = displayNativeText(item["command"])
+		if output := item["aggregatedOutput"]; nativeStringPresent(output) {
+			text = joinNativeValues(text, "\n", displayNativeText(output))
+		} else if !completed && nativeStringPresent(item["command"]) {
+			text = joinNativeValues(text, "\n")
 		}
 		if code, ok := item["exitCode"].(json.Number); ok {
 			if value, err := code.Int64(); err == nil && value != 0 {
@@ -899,7 +1009,7 @@ func putCodexItem(p *adapter, trackedParts map[string]map[string]bool, item map[
 			}
 		}
 	case "fileChange":
-		title, text = "File changes", codexJSON(item["changes"])
+		title, text = "File changes", displayNativeJSON(item["changes"])
 	case "mcpToolCall":
 		kind, title = "mcp", str(item, "server")+" / "+str(item, "tool")
 		if str(item, "server") == "klm_library" {
@@ -910,12 +1020,17 @@ func putCodexItem(p *adapter, trackedParts map[string]map[string]bool, item map[
 				}
 			}
 		}
-		text = contentText(item["result"])
-		if text == "" && item["result"] != nil {
-			text = codexJSON(item["result"])
+		text = displayNativeText(item["result"])
+		empty, err := nativeTextIsEmpty(text)
+		if err != nil {
+			return err
 		}
-		if text == "" && item["arguments"] != nil {
-			text = codexJSON(item["arguments"])
+		if empty && item["result"] != nil {
+			text = displayNativeJSON(item["result"])
+			empty = false
+		}
+		if empty && item["arguments"] != nil {
+			text = displayNativeJSON(item["arguments"])
 		}
 		if message := humanError(item["error"]); message != "" {
 			text, status = message, "error"
@@ -939,9 +1054,11 @@ func (c *codexInteractive) collaboration(item map[string]any) error {
 		title = str(item, "prompt")
 	}
 	title = subagentTitle(title)
-	receivers, _ := item["receiverThreadIds"].([]any)
-	for _, value := range receivers {
-		nativeID, _ := value.(string)
+	receivers, err := nativeIDs(item["receiverThreadIds"])
+	if err != nil {
+		return err
+	}
+	for _, nativeID := range receivers {
 		if nativeID == "" || nativeID == c.threadID {
 			continue
 		}
@@ -1012,11 +1129,17 @@ func (c *codexInteractive) childFrame(child *codexSubagent, method string, param
 		if !codexIdentifier(id) {
 			return errors.New("Codex returned a subagent item without a valid identifier.")
 		}
-		child.items[id] = item
+		if err := cacheNativeMap(c.p.turn.protocolScope, "codex-items/"+str(params, "threadId"), child.items, id, item); err != nil {
+			return err
+		}
 		if str(item, "type") == "contextCompaction" {
 			return child.adapter.clearContextUsage()
 		}
-		return putCodexItem(child.adapter, child.parts, item, method == "item/completed")
+		err := putCodexItem(child.adapter, child.parts, item, method == "item/completed")
+		if err == nil && method == "item/completed" {
+			err = cacheNativeMap(c.p.turn.protocolScope, "codex-items/"+str(params, "threadId"), child.items, id, map[string]any{"id": id, "type": item["type"], "$klmCompleted": true})
+		}
+		return err
 	}
 	id := str(params, "itemId")
 	if !codexIdentifier(id) {
@@ -1048,7 +1171,7 @@ func (c *codexInteractive) childFrame(child *codexSubagent, method string, param
 	default:
 		return nil
 	}
-	return child.adapter.put(key, kind, title, str(params, "delta"), "running", true, map[string]any{"type": method, "itemId": id})
+	return child.adapter.put(key, kind, title, displayNativeText(params["delta"]), "running", true, map[string]any{"type": method, "itemId": id})
 }
 
 func (c *codexInteractive) request(frame map[string]any) error {
@@ -1059,6 +1182,12 @@ func (c *codexInteractive) request(frame map[string]any) error {
 	}
 	if !validID {
 		return errors.New("Codex returned an invalid server request identifier.")
+	}
+	if protocolHasContent(params) {
+		return rpcError(-32602, "Request scope exceeds the supported interactive envelope. No approval or answer was supplied.")
+	}
+	if method == "item/tool/call" {
+		return c.delegationRequest(frame, sourceID)
 	}
 	if c.p.graphSealed() {
 		return rpcError(-32000, "Graph activation is closing; no further interaction is permitted.")
@@ -1071,6 +1200,13 @@ func (c *codexInteractive) request(frame map[string]any) error {
 	if child := c.children[str(params, "threadId")]; child != nil {
 		requestItems = child.items
 		bound = child.turnID == "" || str(params, "turnId") == "" || str(params, "turnId") == child.turnID
+	}
+	if truth(requestItems[str(params, "itemId")], "$klmCompleted") {
+		return rpcError(-32602, "The native item has already completed; no approval was supplied.")
+	}
+	if method == "item/fileChange/requestApproval" && protocolHasContent(requestItems[str(params, "itemId")]["changes"]) ||
+		method == "item/commandExecution/requestApproval" && protocolHasContent(requestItems[str(params, "itemId")]["command"]) {
+		return rpcError(-32602, "Complete action scope exceeds the supported interactive envelope. No approval was supplied.")
 	}
 	if method == "mcpServer/elicitation/request" && params["turnId"] == nil {
 		bound = c.threadID != "" && c.turnID != "" && str(params, "threadId") == c.threadID
@@ -1121,7 +1257,7 @@ func (c *codexInteractive) request(frame map[string]any) error {
 		if !ok || len(questions) == 0 || len(questions) > 12 {
 			return invalid()
 		}
-		req := QuestionRequest{SourceID: sourceID}
+		req := QuestionRequest{SourceID: sourceID, analyticsOrigin: analyticsHash(c.p.id, c.p.harness, str(params, "threadId"), "")}
 		for _, value := range questions {
 			question := object(value)
 			custom, validCustom := question["isOther"].(bool)
@@ -1157,7 +1293,7 @@ func (c *codexInteractive) request(frame map[string]any) error {
 		return nil
 	}
 
-	req := Permission{Harness: "codex", SourceID: sourceID, Details: params,
+	req := Permission{Harness: "codex", SourceID: sourceID, Details: params, analyticsOrigin: analyticsHash(c.p.id, c.p.harness, str(params, "threadId"), ""),
 		Decisions: []string{"once", "session", "always", "reject"}}
 	var scope map[string]any
 	positive := true

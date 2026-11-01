@@ -9,6 +9,8 @@ import (
 )
 
 // Internal skills are explicitly associated with roles, never directory-discovered.
+// An empty root selects the embedded distribution package. Explicit/editable
+// sources are authoritative: invalid content must never fall back silently.
 func internalSkillRoot() (string, error) {
 	if dir := os.Getenv("KLM_SKILLS_DIR"); dir != "" {
 		if !filepath.IsAbs(dir) {
@@ -16,16 +18,28 @@ func internalSkillRoot() (string, error) {
 		}
 		return dir, nil // Authoritative even when missing/invalid.
 	}
+	dirs := []string{}
 	if exe, err := os.Executable(); err == nil {
-		dir := filepath.Join(filepath.Dir(exe), "skills")
-		if _, err := os.Stat(dir); err == nil {
-			return dir, nil
+		dirs = append(dirs, filepath.Join(filepath.Dir(exe), "skills"))
+	}
+	// -trimpath produces a module-relative name, not a source location.
+	if _, source, _, ok := runtime.Caller(0); ok && filepath.IsAbs(source) {
+		dirs = append(dirs, filepath.Join(filepath.Dir(source), "skills"))
+	}
+	for _, dir := range dirs {
+		info, err := os.Stat(dir)
+		if os.IsNotExist(err) {
+			continue
 		}
+		if err != nil {
+			return "", err
+		}
+		if !info.IsDir() {
+			return "", errors.New("Internal skills source is not a directory: " + dir)
+		}
+		return dir, nil
 	}
-	if _, source, _, ok := runtime.Caller(0); ok {
-		return filepath.Join(filepath.Dir(source), "skills"), nil
-	}
-	return "", errors.New("Cannot locate internal skills; configure KLM_SKILLS_DIR.")
+	return "", nil
 }
 
 func (a *app) captureInternalSkills(role string) ([]SkillSnapshot, error) {
@@ -37,7 +51,12 @@ func (a *app) captureInternalSkills(role string) ([]SkillSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, err := stableSkillPackage(root, "skill-library-manager", true)
+	var p skillPackage
+	if root == "" {
+		p, err = packagedInternalSkill()
+	} else {
+		p, err = stableSkillPackage(root, "skill-library-manager", true)
+	}
 	if err != nil {
 		return nil, err
 	}

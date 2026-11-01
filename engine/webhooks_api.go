@@ -31,6 +31,10 @@ func (a *app) createWebhook(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Provide provider github, a name of 1 to 60 characters, a secret of 16 to 512 UTF-8 bytes without controls, and an explicit valid retention.")
 		return
 	}
+	if a.store != nil {
+		a.createSQLWebhook(w, r, name, secret, body.Retention)
+		return
+	}
 	a.mu.Lock()
 	if !a.webhookProjectLocked(w, r.PathValue("id")) || !a.webhookWritableLocked(w) {
 		a.mu.Unlock()
@@ -111,6 +115,23 @@ func (a *app) patchWebhook(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Secret must contain 16 to 512 UTF-8 bytes without control characters.")
 		return
 	}
+	if a.store != nil {
+		a.mutateSQLWebhook(w, r, func(c *WebhookConnection) {
+			if len(body.Name) > 0 {
+				c.Name = name
+			}
+			if len(body.Enabled) > 0 {
+				c.Enabled = enabled
+			}
+			if len(body.Retention) > 0 {
+				c.Retention = retention
+			}
+			if len(body.Secret) > 0 && c.Secret != secret {
+				c.Secret, c.LastPingAt = secret, ""
+			}
+		})
+		return
+	}
 	a.mu.Lock()
 	c, ok := a.webhookConnectionLocked(w, r)
 	if !ok || !a.webhookWritableLocked(w) {
@@ -148,6 +169,10 @@ func (a *app) patchWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) deleteWebhook(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.deleteSQLWebhook(w, r)
+		return
+	}
 	a.mu.Lock()
 	c, ok := a.webhookConnectionLocked(w, r)
 	if !ok || !a.webhookWritableLocked(w) {
@@ -183,6 +208,18 @@ func singleWebhookHeader(r *http.Request, name string) (string, bool) {
 func (a *app) webhookIngressConnectionLocked(w http.ResponseWriter, id string) (WebhookConnection, bool) {
 	if !a.webhookWritableLocked(w) {
 		return WebhookConnection{}, false
+	}
+	if a.store != nil {
+		c, err := a.store.readWebhookConnection(a.ctx, "", id)
+		if err != nil {
+			sqlHTTPError(w, err)
+			return c, false
+		}
+		if !c.Enabled {
+			fail(w, 409, "Webhook is disabled.")
+			return c, false
+		}
+		return c, true
 	}
 	c, exists := a.state.WebhookConnections[id]
 	p := a.state.project(c.ProjectID)
@@ -273,6 +310,10 @@ func (a *app) receiveGithubWebhook(w http.ResponseWriter, r *http.Request) {
 	action, err := webhookPayloadAction(payload)
 	if err != nil {
 		fail(w, 400, err.Error())
+		return
+	}
+	if a.store != nil {
+		a.acceptSQLWebhookHTTP(w, r, c, deliveryID, eventType, signature, body, received)
 		return
 	}
 	a.mu.Lock()

@@ -1,23 +1,8 @@
 import type { Harness } from '../../engine';
-import type { MCPSelection } from '../library/api';
+import type { Agent } from './types';
+import type { AgentModel } from './catalog';
 
 // UI-only records. Model/effort/harness values below are visual fixtures, not execution defaults.
-export type Agent = {
-  skills?: string[];
-  mcpConnections?: MCPSelection[];
-  revision?: string;
-  id: string;
-  name: string;
-  description: string;
-  enabled: boolean;
-  model?: string;
-  effort?: string;
-  defaultHarness?: Harness['id'];
-  prompt?: string;
-  // Snapshot of simulated references, retained when the prototype's slug changes.
-  graphReferences?: string[];
-};
-
 export const mockAgentSettings = {
   model: 'GPT-5.6 Terra',
   effort: 'high',
@@ -54,7 +39,10 @@ export function modelsForHarness(harness: Harness['id']) {
   return mockAgentModels.filter(model => model.harnesses.includes(harness) && mockConnectedProviders[harness].includes(model.provider));
 }
 
-export function agentSlug(name: string) {
-  return name.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().trim()
-    .replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '');
-}
+// Preview callers explicitly supply these through DemoAgentModels; production
+// authoring never selects fixtures because its project context is missing.
+export const demoAgentModels: Record<Harness['id'], AgentModel[]> = {
+  pi: modelsForHarness('pi').map(model => ({ ...model, id: model.name })),
+  opencode: modelsForHarness('opencode').map(model => ({ ...model, id: model.name })),
+  codex: modelsForHarness('codex').map(model => ({ ...model, id: model.name })),
+};

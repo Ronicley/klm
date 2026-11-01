@@ -1,3 +1,4 @@
+import { createClientEventSource } from '../../clientAuth';
 // EventSource's built-in retry reuses its original URL. Recreate the connection
 // so each retry starts at the revisions currently applied by the client.
 export function connectUpdates(
@@ -7,7 +8,7 @@ export function connectUpdates(
   onMessage: (event: MessageEvent, source: EventSource) => void,
   onError: () => void,
   onConnection: (source: EventSource | null) => void,
-  create: (url: string) => EventSource = value => new EventSource(value),
+  create: (url: string) => EventSource = createClientEventSource,
 ) {
   let active = true;
   let source: EventSource | null = null;

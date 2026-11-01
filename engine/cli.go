@@ -26,8 +26,8 @@ func engineDataDir() (string, error) {
 }
 
 func dispatchCLI(args []string) error {
-	if len(args) != 1 || (args[0] != "start" && args[0] != "stop" && args[0] != "__worker") {
-		return errors.New("Usage: klm start | klm stop")
+	if len(args) != 1 || (args[0] != "start" && args[0] != "stop" && args[0] != "pair" && args[0] != "revoke-clients" && args[0] != "__worker" && args[0] != "__restart") {
+		return errors.New("Usage: klm start | klm stop | klm pair | klm revoke-clients")
 	}
 	dir, err := engineDataDir()
 	if err != nil {
@@ -36,7 +36,21 @@ func dispatchCLI(args []string) error {
 	if args[0] == "__worker" {
 		return runEngine(dir)
 	}
+	if args[0] == "__restart" {
+		// Independent helper: stop waits for the old worker and its data lock to
+		// settle before start can admit the replacement. Both use local control.
+		if err := dispatchCLI([]string{"stop"}); err != nil {
+			return err
+		}
+		return dispatchCLI([]string{"start"})
+	}
+	if args[0] == "pair" || args[0] == "revoke-clients" {
+		return engineControl(dir, args[0])
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	if err := validateEngineDataDir(dir); err != nil {
 		return err
 	}
 	// Serialize start/stop without persisting a PID or interfering with the worker lock.
@@ -65,7 +79,7 @@ func dispatchCLI(args []string) error {
 		return err
 	}
 	logPath := filepath.Join(dir, "engine.log")
-	output, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	output, err := openEngineLog(dir)
 	if err != nil {
 		return err
 	}
@@ -79,7 +93,7 @@ func dispatchCLI(args []string) error {
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	deadline = time.Now().Add(45 * time.Second)
+	nextProgress := time.Now().Add(15 * time.Second)
 	for {
 		if err := engineControl(dir, "ready"); err == nil {
 			fmt.Printf("KLM engine started at http://localhost:%s.\n", apiPort)
@@ -90,11 +104,36 @@ func dispatchCLI(args []string) error {
 			return fmt.Errorf("engine exited during startup (%v); see %s (check port %s and the data-directory lock)", err, logPath, apiPort)
 		default:
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("engine readiness timed out; see %s", logPath)
+		// A large verified import is not a hung HTTP server. Keep observing the
+		// owned child until ready/exit instead of killing it at an arbitrary 45s.
+		if time.Now().After(nextProgress) {
+			fmt.Printf("KLM is preparing storage and recovering owned work; see %s.\n", logPath)
+			nextProgress = time.Now().Add(15 * time.Second)
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
+}
+
+func spawnEngineRestart(dir string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	output, err := openEngineLog(dir)
+	if err != nil {
+		return err
+	}
+	defer output.Close()
+	cmd := exec.Command(exe, "__restart")
+	cmd.Dir = filepath.Dir(exe)
+	cmd.Stdout, cmd.Stderr = output, output
+	configureEngineWorker(cmd)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// Waiting here would deadlock: the helper waits for this worker to exit.
+	_ = cmd.Process.Release()
+	return nil
 }
 
 func stopEngine(dir string) error {

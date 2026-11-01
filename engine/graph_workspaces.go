@@ -92,6 +92,9 @@ func validateGraphReuse(snapshot GraphSnapshot, decision GraphWorkspaceDecision)
 // Check every explicit association before reserving a run, including associations
 // on paths that might not be visited. Never silently discard an edited-graph map.
 func (a *app) preflightGraphReuse(ctx context.Context, activity GraphActivity) error {
+	if a.store != nil {
+		return a.preflightSQLGraphReuse(ctx, activity)
+	}
 	if activity.Workspace.Attempt != "reuse" {
 		return nil
 	}
@@ -144,6 +147,9 @@ func (a *app) preflightGraphReuse(ctx context.Context, activity GraphActivity) e
 }
 
 func (a *app) graphUseWorkspace(runID, activationID, key, workspaceID string) error {
+	if a.store != nil {
+		return a.sqlGraphUseWorkspace(runID, activationID, key, workspaceID)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.graphChangeLocked(func(d *diskState) error {
@@ -165,6 +171,9 @@ func (a *app) graphUseWorkspace(runID, activationID, key, workspaceID string) er
 }
 
 func (a *app) reuseGraphWorkspace(ctx context.Context, run GraphRun, activationID, key, sourceCWD string) (string, error) {
+	if a.store != nil {
+		return a.reuseSQLGraphWorkspace(ctx, run, activationID, key, sourceCWD)
+	}
 	id := run.Workspace.Reuse[key]
 	if id == "" {
 		return "", nil
@@ -263,14 +272,27 @@ func (a *app) createGraphWorkspace(ctx context.Context, run GraphRun, activation
 		}
 	}
 	a.mu.Lock()
-	err = a.graphChangeLocked(func(d *diskState) error {
-		r := d.graphRun(run.ID)
-		if r == nil || r.Status == "ending" {
-			return errors.New("Run is ending.")
-		}
-		d.GraphWorkspaces = append(d.GraphWorkspaces, w)
-		return nil
-	})
+	if a.store != nil {
+		err = a.writeSQLLocked(ctx, func(st *sqliteSessionTx) error {
+			r, err := st.graphRunRecord(run.ID)
+			if err != nil {
+				return err
+			}
+			if !graphRunActive(r.Status) || r.Status == "ending" {
+				return errors.New("Run is ending.")
+			}
+			return st.putRoot("graph_workspaces", w.ID, w)
+		})
+	} else {
+		err = a.graphChangeLocked(func(d *diskState) error {
+			r := d.graphRun(run.ID)
+			if r == nil || r.Status == "ending" {
+				return errors.New("Run is ending.")
+			}
+			d.GraphWorkspaces = append(d.GraphWorkspaces, w)
+			return nil
+		})
+	}
 	a.mu.Unlock()
 	if err != nil {
 		return "", err
@@ -282,15 +304,31 @@ func (a *app) createGraphWorkspace(ctx context.Context, run GraphRun, activation
 		w.Directory, err = CanonicalGraphDirectory(w.Directory)
 	}
 	a.mu.Lock()
-	persistErr := a.graphChangeLocked(func(d *diskState) error {
-		record := d.graphWorkspace(w.ID)
-		if err != nil {
-			record.Status, record.Error = "failed", err.Error()
-		} else {
-			record.Status, record.Directory = "ready", w.Directory
-		}
-		return nil
-	})
+	var persistErr error
+	if a.store != nil {
+		persistErr = a.persistSQLGraphLocked(func(st *sqliteSessionTx) error {
+			record, readErr := st.graphWorkspace(w.ID)
+			if readErr != nil {
+				return readErr
+			}
+			if err != nil {
+				record.Status, record.Error = "failed", err.Error()
+			} else {
+				record.Status, record.Directory = "ready", w.Directory
+			}
+			return st.putRoot("graph_workspaces", record.ID, record)
+		})
+	} else {
+		persistErr = a.graphChangeLocked(func(d *diskState) error {
+			record := d.graphWorkspace(w.ID)
+			if err != nil {
+				record.Status, record.Error = "failed", err.Error()
+			} else {
+				record.Status, record.Directory = "ready", w.Directory
+			}
+			return nil
+		})
+	}
 	a.mu.Unlock()
 	if err != nil || persistErr != nil {
 		return "", errors.Join(err, persistErr)
@@ -302,6 +340,9 @@ func (a *app) createGraphWorkspace(ctx context.Context, run GraphRun, activation
 }
 
 func (a *app) prepareInitialGraphWorkspace(g *graphExecution, run GraphRun) (string, error) {
+	if a.store != nil {
+		return a.prepareSQLInitialGraphWorkspace(g, run)
+	}
 	normalizeGraphWorkspaceDecision(&run.Workspace)
 	a.mu.Lock()
 	if err := validateGraphWorkspaceDecision(&a.state, run.ConversationID, run.Workspace, false); err != nil {
@@ -338,10 +379,20 @@ func (a *app) executeGraphFork(g *graphExecution, run GraphRun, x GraphActivatio
 	result := graphCompletion{activationID: x.ID, drained: true}
 	node := run.Snapshot.Graph.Definition.Nodes[x.NodeID]
 	a.mu.Lock()
-	workspace := a.state.graphWorkspace(x.WorkspaceID)
 	var origin WorkspaceRecord
-	if workspace != nil {
-		origin = *workspace
+	if a.store != nil {
+		var err error
+		origin, err = a.readSQLGraphWorkspace(g.ctx, x.WorkspaceID)
+		if err != nil {
+			a.mu.Unlock()
+			result.err = err
+			return result
+		}
+	} else {
+		workspace := a.state.graphWorkspace(x.WorkspaceID)
+		if workspace != nil {
+			origin = *workspace
+		}
 	}
 	a.mu.Unlock()
 	compiled, err := compileGraphSnapshot(run.Snapshot)
@@ -361,7 +412,18 @@ func (a *app) executeGraphFork(g *graphExecution, run GraphRun, x GraphActivatio
 		return result
 	}
 	a.mu.Lock()
-	err = a.graphChangeLocked(func(d *diskState) error { d.graphActivation(x.ID).IncomingCommit = base; return nil })
+	if a.store != nil {
+		err = a.writeSQLLocked(g.ctx, func(st *sqliteSessionTx) error {
+			current, err := st.graphActivation(x.ID)
+			if err != nil {
+				return err
+			}
+			current.IncomingCommit = base
+			return st.putRoot("graph_activations", current.ID, current)
+		})
+	} else {
+		err = a.graphChangeLocked(func(d *diskState) error { d.graphActivation(x.ID).IncomingCommit = base; return nil })
+	}
 	a.mu.Unlock()
 	if err != nil {
 		result.err = err
@@ -396,6 +458,9 @@ func (a *app) executeGraphFork(g *graphExecution, run GraphRun, x GraphActivatio
 }
 
 func (a *app) prepareGraphJoin(g *graphExecution, run GraphRun, x GraphActivation) (GraphActivation, any, error) {
+	if a.store != nil {
+		return a.prepareSQLGraphJoin(g, run, x)
+	}
 	a.mu.Lock()
 	var round JoinRound
 	for _, saved := range a.state.GraphJoinRounds {

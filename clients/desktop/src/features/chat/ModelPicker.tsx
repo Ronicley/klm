@@ -7,6 +7,8 @@ import { HarnessIcon } from './HarnessIcon';
 import { type Session, type SessionResponse } from '../../engine';
 import { SessionOptions } from './SessionOptions';
 import { useModelCatalog } from './modelCatalog';
+import { editableAgentSession, useSessionAgent } from '../agents/binding';
+import { SessionAgentDialog } from '../agents/SessionAgentDialog';
 
 const effortOrder = ['none', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 function effortRank(value: string) {
@@ -17,11 +19,27 @@ function effortLabel(value: string) {
   return value === 'xhigh' ? 'Extra high' : value ? value[0].toUpperCase() + value.slice(1) : 'Default';
 }
 
-export function ModelPicker({ session, disabled, optionsDisabled = disabled, onSave, onSnapshot, graphControl }: {
+type ModelPickerProps = {
   session: Session; disabled: boolean; optionsDisabled?: boolean; onSave: (model: string, effort: string) => Promise<boolean>;
   onSnapshot?: (snapshot: SessionResponse) => void;
   graphControl?: ReactNode;
-}) {
+};
+export function ModelPicker(props: ModelPickerProps) {
+  const disabled = props.disabled || props.session.delegation?.actions.settings === false;
+  return editableAgentSession(props.session) ? <BoundModelPicker {...props} disabled={disabled} /> : <UnboundModelPicker {...props} disabled={disabled} />;
+}
+function BoundModelPicker({ session, disabled, optionsDisabled = disabled, onSnapshot, graphControl }: ModelPickerProps) {
+  const state = useSessionAgent(session);
+  const [open, setOpen] = useState(false);
+  const config = session.status === 'running' ? state.agent?.applied?.config ?? state.agent?.desired : state.agent?.desired;
+  return <div className="model-picker-controls">
+    {onSnapshot && <SessionOptions session={session} disabled={optionsDisabled} onSnapshot={onSnapshot} graphControl={graphControl} />}
+    <Button variant="ghost" size="sm" disabled={disabled} aria-label="Choose model" onClick={() => setOpen(true)}><HarnessIcon harness={session.harness} />{config?.model || session.model || 'Choose model'}<ChevronDown /></Button>
+    <Button variant="ghost" size="sm" disabled={disabled} aria-label="Choose effort" onClick={() => setOpen(true)}>{config?.effort || 'Default'}<ChevronDown /></Button>
+    {open && <SessionAgentDialog session={session} onSnapshot={onSnapshot} onClose={() => setOpen(false)} />}
+  </div>;
+}
+function UnboundModelPicker({ session, disabled, optionsDisabled = disabled, onSave, onSnapshot, graphControl }: ModelPickerProps) {
   const { catalog, loading, error, refresh, revalidate } = useModelCatalog(session.projectId, session.harness, session.id);
   const [menu, setMenu] = useState<'model' | 'effort' | null>(null);
   const [search, setSearch] = useState('');
@@ -100,7 +118,7 @@ export function ModelPicker({ session, disabled, optionsDisabled = disabled, onS
         {filtered.map(option => <MenuItem key={option.id} className="model-menu-option" selected={chosenModel === option.id} disabled={locked} title={option.id} onClick={() => chooseModel(option.id)}>
           <span><span className="model-menu-option-name">{option.name || option.id}</span><small>{option.providerName}</small></span>{chosenModel === option.id && <Check />}
         </MenuItem>)}
-        {!filtered.length && <p className="menu-feedback muted">{search ? 'No matching models.' : 'No connected models available.'}</p>}
+        {!filtered.length && !error && catalog && <p className="menu-feedback muted">{search ? 'No matching models.' : connected.size ? 'Connected providers returned no models. Check their configuration, then refresh.' : "No connected providers found. Sign in to this harness using the engine's OS account, then refresh."}</p>}
       </div>}
       <div className="model-menu-footer"><MenuItem selected={!chosenModel} disabled={locked || !catalog} onClick={() => chooseModel('')}>Harness default{!chosenModel && <Check />}</MenuItem></div>
       {saveError && <p className="form-error menu-feedback" role="alert">{saveError}</p>}

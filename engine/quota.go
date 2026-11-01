@@ -147,6 +147,11 @@ func quotaFamily(m *ModelOption) string {
 }
 
 func piSubscriptionCredential(ctx context.Context, b binary, cwd string, m *ModelOption) map[string]any {
+	release, err := b.use()
+	if err != nil {
+		return nil
+	}
+	defer release()
 	if m.api != "openai-codex-responses" {
 		return nil
 	}
@@ -154,6 +159,7 @@ func piSubscriptionCredential(ctx context.Context, b binary, cwd string, m *Mode
 	// subscription may have no OAuth entry under its custom provider ID.
 	args := append(append([]string{}, b.args...), "auth", "check", "--json", "--credentials", "--no-refresh", "--provider", m.Provider, "--model", strings.TrimPrefix(m.ID, m.Provider+"/"))
 	cmd := exec.CommandContext(ctx, b.path, args...)
+	cmd.Env = runtimeEnvironment(os.Environ(), b.node)
 	cmd.Dir = cwd
 	cmd.Stderr = &cappedBuffer{}
 	configureProcess(cmd)

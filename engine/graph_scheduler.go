@@ -13,6 +13,9 @@ func (a *app) graphActivityReadyLocked(id string) bool {
 	if activity == nil || activity.Status != "ready" && activity.Status != "scheduled" {
 		return false
 	}
+	if !a.state.automationGraphAllowed(activity.ConversationID, activity.GraphID) {
+		return false
+	}
 	for _, dependency := range activity.Dependencies {
 		prerequisite := a.state.graphActivity(dependency)
 		if prerequisite == nil || prerequisite.Status != "succeeded" {
@@ -44,6 +47,15 @@ func (a *app) graphFirstReadyLocked(owner string) string {
 	return first.ID
 }
 func (a *app) scheduleGraphActivitiesLocked() {
+	if a.harnessInstalling {
+		return
+	}
+	if a.store != nil {
+		if err := a.scheduleSQLGraphActivitiesLocked(); err != nil && a.ctx.Err() == nil {
+			a.failStorageLocked(err)
+		}
+		return
+	}
 	if a.closing || a.storageErr != nil {
 		return
 	}
@@ -72,6 +84,10 @@ func (a *app) scheduleGraphActivitiesLocked() {
 
 func (a *app) startGraphActivity(ctx context.Context, id string) error {
 	a.mu.Lock()
+	if a.harnessInstalling {
+		a.mu.Unlock()
+		return errors.New("A global harness installation is in progress.")
+	}
 	activity := a.state.graphActivity(id)
 	if activity == nil {
 		a.mu.Unlock()
@@ -99,6 +115,9 @@ func (a *app) startReservedGraphActivity(ctx context.Context, id string) error {
 	activity := *saved
 	normalizeGraphWorkspaceDecision(&activity.Workspace)
 	decisionErr := validateGraphAuthorization(&a.state, activity.ConversationID, activity.Authorization)
+	if !a.state.automationGraphAllowed(activity.ConversationID, activity.GraphID) {
+		decisionErr = errors.New("Graph is not enabled for this automation run.")
+	}
 	if decisionErr == nil {
 		decisionErr = validateGraphWorkspaceDecision(&a.state, activity.ConversationID, activity.Workspace, graphActivityHasRun(&a.state, activity.ID))
 	}
@@ -237,6 +256,15 @@ func (d *diskState) graphNotification(id string) *RunNotification {
 // Called by the existing linked arbiter under app.mu. Its native turn reservation
 // is shared with ordinary user turns and linked consultations.
 func (a *app) scheduleGraphNotificationsLocked() {
+	if a.harnessInstalling {
+		return
+	}
+	if a.store != nil {
+		if err := a.scheduleSQLGraphNotificationsLocked(); err != nil && a.ctx.Err() == nil {
+			a.failStorageLocked(err)
+		}
+		return
+	}
 	if a.closing || a.storageErr != nil {
 		return
 	}
@@ -322,6 +350,29 @@ func (a *app) scheduleGraphNotificationsLocked() {
 func (a *app) graphNotificationFinished(id string, result GraphAdapterResult) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.store != nil {
+		_ = a.persistSQLGraphLocked(func(st *sqliteSessionTx) error {
+			var n RunNotification
+			if err := decodeSQLiteRecord(st.ctx, st.tx, "graph_notifications", id, 1<<20, &n); err != nil {
+				return err
+			}
+			if n.Status != "delivering" {
+				return nil
+			}
+			if result.Outcome == "completed" && result.Error == nil {
+				n.Status, n.DeliveredAt, n.Error = "delivered", now(), ""
+			} else {
+				n.Status = "pending"
+				n.RetryAfter = time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339Nano)
+				if result.Error != nil {
+					n.Error = result.Error.Error()
+				}
+			}
+			return st.putRoot("graph_notifications", id, n)
+		})
+		a.scheduleLinkedLocked()
+		return
+	}
 	_ = a.graphChangeLocked(func(d *diskState) error {
 		n := d.graphNotification(id)
 		if n == nil || n.Status != "delivering" {

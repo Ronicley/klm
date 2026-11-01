@@ -43,6 +43,10 @@
   --topic-green: #247043;
   --topic-amber: #8a5a0b;
   --topic-rose: #b23c60;
+  --topic-cyan: #0e6888;
+  --topic-teal: #0f7069;
+  --topic-orange: #a44913;
+  --topic-red: #b63535;
   --gradient-canvas: var(--gradient-canvas-default);
   --gradient-canvas-default: radial-gradient(ellipse at 15% 15%, #dbeafe 0%, transparent 55%), radial-gradient(ellipse at 85% 85%, #c4b5fd 0%, transparent 55%), linear-gradient(135deg, #c7d2fe, #e0f2fe 50%, #a5b4fc);
   --gradient-canvas-ocean: radial-gradient(ellipse at 15% 20%, #c3f3e7 0%, transparent 60%), radial-gradient(ellipse at 85% 80%, #a5c9ee 0%, transparent 55%), linear-gradient(135deg, #d9f5ef, #d9edf9 50%, #b4d8ed);
@@ -91,6 +95,10 @@
   --topic-green: #8dcea3;
   --topic-amber: #dfb86c;
   --topic-rose: #ee9bb5;
+  --topic-cyan: #7ecde6;
+  --topic-teal: #7ad3c4;
+  --topic-orange: #f1b07e;
+  --topic-red: #f19b98;
   color-scheme: dark;
   --color-canvas: #050606;
   --color-surface: #101111;

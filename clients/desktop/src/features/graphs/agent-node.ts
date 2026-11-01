@@ -1,5 +1,5 @@
 import type { Harness } from '../../engine';
-import type { Agent } from '../agents/demo';
+import type { Agent } from '../agents/types';
 import type { AgentModel } from '../agents/catalog';
 
 export type AgentNodeOverrides = { harness?: Harness['id']; model?: string; effort?: string };

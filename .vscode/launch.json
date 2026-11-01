@@ -9,6 +9,9 @@
       "program": "${workspaceFolder}/engine",
       "cwd": "${workspaceFolder}/engine",
       "buildFlags": "-tags=dev",
+      "env": {
+        "KLM_DEV_DISABLE_CLIENT_AUTH": "1"
+      },
       "args": ["__worker"],
       "console": "integratedTerminal"
     },

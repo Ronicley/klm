@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
+	"time"
 )
 
 const (
@@ -27,8 +29,22 @@ func (p *adapter) ensureSubagent(nativeID, title, model, effort string) (*adapte
 		return child, nil
 	}
 	p.app.mu.Lock()
+	if p.app.store != nil {
+		s, err := p.ensureSQLSubagentLocked(nativeID, title, model, effort)
+		p.app.mu.Unlock()
+		if err != nil || s == nil {
+			return nil, err
+		}
+		child := &adapter{app: p.app, turn: p.turn, id: s.ID, harness: p.harness, role: sessionRoleSubagent, subagent: true, yolo: p.yolo, cwd: p.cwd, keys: map[string]string{}, toolNames: map[string]string{}, commands: map[string]any{}, processesDrained: true, model: s.Model, effort: s.Effort}
+		child.stream = newStreamBatch(child)
+		if p.subagents == nil {
+			p.subagents = map[string]*adapter{}
+		}
+		p.subagents[nativeID] = child
+		return child, nil
+	}
 	parent := p.app.state.session(p.id)
-	if parent == nil || parent.ParentID != "" || parent.GraphRunID != "" {
+	if parent == nil || parent.ParentID != "" && parent.Role != sessionRoleSideAgent || parent.Role == sessionRoleSubagent || parent.GraphRunID != "" {
 		p.app.mu.Unlock()
 		return nil, nil
 	}
@@ -68,7 +84,7 @@ func (p *adapter) ensureSubagent(nativeID, title, model, effort string) (*adapte
 	childID := childSession.ID
 	p.app.mu.Unlock()
 	child := &adapter{app: p.app, turn: p.turn, id: childID, harness: p.harness, role: sessionRoleSubagent, subagent: true, yolo: p.yolo, cwd: p.cwd,
-		keys: map[string]string{}, toolNames: map[string]string{}, commands: map[string]string{}, processesDrained: true, model: model, effort: effort}
+		keys: map[string]string{}, toolNames: map[string]string{}, commands: map[string]any{}, processesDrained: true, model: model, effort: effort}
 	child.stream = newStreamBatch(child)
 	if p.subagents == nil {
 		p.subagents = map[string]*adapter{}
@@ -83,6 +99,19 @@ func (p *adapter) startSubagent(child *adapter) error {
 	}
 	child.app.mu.Lock()
 	defer child.app.mu.Unlock()
+	if child.app.store != nil {
+		return child.sqlAnalyticsWrite(func(st *sqliteSessionTx) error {
+			s, err := st.sessionMeta(child.id)
+			if err != nil {
+				return err
+			}
+			if s.Status == "running" {
+				return nil
+			}
+			s.Status, s.UpdatedAt = "running", now()
+			return st.putSessionMeta(s)
+		})
+	}
 	if s := child.app.state.session(child.id); s == nil || s.Status == "running" {
 		return nil
 	}
@@ -112,8 +141,53 @@ func (p *adapter) finishSubagentInvocation(child *adapter, status, parentEventID
 	if status == "error" || status == "failed" || status == "interrupted" {
 		sessionStatus = "error"
 	}
+	if child.app.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := child.app.prepareSessionEventStatuses(ctx, child.id, status); err != nil {
+			return err
+		}
+		meta, err := child.app.store.readSessionMeta(ctx, child.id)
+		if err != nil {
+			return err
+		}
+		parentStatus := status
+		if meta.Status == "error" && sessionStatus == "idle" {
+			parentStatus = "error"
+		}
+		where := `AND kind='subagent' AND x_data_childSessionId=?`
+		args := []any{child.id}
+		if parentEventID != "" {
+			where += ` AND record_id=?`
+			args = append(args, parentEventID)
+		}
+		if err := child.app.prepareSelectedEventStatuses(ctx, meta.ParentID, where, args, parentStatus, parentEventID != ""); err != nil {
+			return err
+		}
+	}
 	child.app.mu.Lock()
 	defer child.app.mu.Unlock()
+	if child.app.store != nil {
+		return child.sqlAnalyticsWrite(func(st *sqliteSessionTx) error {
+			s, err := st.sessionMeta(child.id)
+			if err != nil {
+				return err
+			}
+			if s.Status == "error" && sessionStatus == "idle" {
+				return st.syncSubagentParent(s, "error", parentEventID)
+			}
+			s.Status, s.UpdatedAt = sessionStatus, now()
+			if err := st.putSessionMeta(s); err != nil {
+				return err
+			}
+			if err := st.eachMatching("session_events", `owner_id=? AND status IN ('running','pending')`, []any{child.id}, func(key string) error {
+				return st.patchEventMetadata(child.id, key, func(e *Event) error { e.Status = status; return nil })
+			}); err != nil {
+				return err
+			}
+			return st.syncSubagentParent(s, status, parentEventID)
+		})
+	}
 	return child.app.commitLocked(func(d *diskState) {
 		s := d.session(child.id)
 		if s == nil {

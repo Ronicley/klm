@@ -219,7 +219,11 @@ func BenchmarkLatencyCommands(b *testing.B) {
 		b.Run(fmt.Sprintf("model_settings_cached_catalog_%dMiB", mib), func(b *testing.B) {
 			a := latencyDiagnosticApp(b, mib)
 			a.state.session("active").Status = "idle"
-			a.catalogs = map[string]catalogCache{"project/": {catalog: &ModelCatalog{Models: []ModelOption{{ID: "fixture", Efforts: []string{"high", "low"}}}}, expires: time.Now().Add(time.Hour)}}
+			cacheKey, err := modelCatalogCacheKey(*a.state.session("active"), a.state.project("project").Folder)
+			if err != nil {
+				b.Fatal(err)
+			}
+			a.catalogs = map[string]catalogCache{cacheKey: {catalog: &ModelCatalog{Models: []ModelOption{{ID: "fixture", Efforts: []string{"high", "low"}}}}, expires: time.Now().Add(time.Hour)}}
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				effort := "high"

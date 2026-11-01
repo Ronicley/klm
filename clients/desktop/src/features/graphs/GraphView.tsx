@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Background, MarkerType, Panel, ReactFlow } from '@xyflow/react';
-import type { Agent } from '../agents/demo';
+import type { Agent } from '../agents/types';
 import type { GraphRunProjection } from '../../engine';
 import { resolveAgentNode } from './agent-node';
 import { CanvasControls, graphViewNodeTypes, type CanvasNode } from './GraphCanvas';
 import { graphDrawing, graphViewport, type GraphFile } from './files';
 import { NodeConfigurationPanel } from './NodeConfigurationPanel';
 import { GraphRunActivity } from './GraphRunActivity';
+import { nodeLegacyHandles } from './DynamicHandles';
 
 export function GraphView({ sessionId, graph, agents, visible, run }: { sessionId: string; graph: GraphFile; agents: Agent[]; visible: boolean; run?: GraphRunProjection | null }) {
   const root = useRef<HTMLElement>(null);
@@ -39,7 +40,7 @@ export function GraphView({ sessionId, graph, agents, visible, run }: { sessionI
       const agent = running ? undefined : agentById.get(node.data.join?.agentId ?? node.data.agentId ?? '');
       const status = active.has(node.id) ? 'running' : collecting.has(node.id) ? 'collecting' : completed.has(node.id) ? 'completed' : 'pending';
       return { ...node, draggable: false, selectable: false, connectable: false, deletable: false, focusable: false,
-        data: { ...node.data, readOnly: true, agent, settings: agent ? resolveAgentNode(agent, node.data.overrides ?? {}) : undefined,
+        data: { ...node.data, legacyHandles: nodeLegacyHandles(node, drawing.edges), readOnly: true, agent, settings: agent ? resolveAgentNode(agent, node.data.overrides ?? {}) : undefined,
           running: status === 'running', activityStatus: running ? status : undefined,
           inspectionMode: running ? 'activity' : 'configuration', configuring: !running && node.id === inspectingId,
           inspecting: node.id === inspectingId, onInspect: running && node.type !== 'aiAgent' && node.type !== 'join' ? undefined : () => { setInspectingId(node.id); setInspectionRun(running ? run ?? null : null); } },

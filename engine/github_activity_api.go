@@ -47,6 +47,9 @@ type githubActivityBookmark struct {
 // Resolve only requested original-event anchors, not aliases for every member.
 // This stays bounded independently of history size and honors source retention.
 func (a *app) readGithubActivityBookmarks(ctx context.Context, ids []string, watermark string) ([]githubActivityBookmark, error) {
+	if a.store != nil {
+		return a.readSQLGithubBookmarks(ctx, ids, watermark)
+	}
 	if len(ids) > 100 {
 		return nil, errors.New("At most 100 bookmark anchors may be resolved per request.")
 	}
@@ -186,6 +189,9 @@ func (a *app) readGithubActivityPage(ctx context.Context, q url.Values, byteLimi
 	canonical, _ := json.Marshal([]any{category, search, ids, cardID, view})
 	digest := sha256.Sum256(canonical)
 	filter := hex.EncodeToString(digest[:])
+	if a.store != nil {
+		return a.readSQLGithubActivityPage(ctx, q, byteLimit, limit, category, search, excluded, filter)
+	}
 	at := time.Now().UTC()
 	sources, high := a.githubActivitySnapshot(at)
 	if value := q.Get("high"); value != "" {
@@ -266,6 +272,9 @@ func (a *app) getGithubActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) readGithubActivityDetails(id string) (githubActivityDetails, error) {
+	if a.store != nil {
+		return a.readSQLGithubDetails(context.Background(), id)
+	}
 	if strings.HasPrefix(id, "pipeline-") {
 		sources, high := a.githubActivitySnapshot(time.Now().UTC())
 		projection, err := a.projectGithubActivity(context.Background(), sources, high, nil, "", "")

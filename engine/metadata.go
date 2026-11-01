@@ -15,6 +15,32 @@ type SessionMetadata struct {
 }
 
 func (a *app) getSessionMetadata(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		s, err := a.store.readSessionMeta(r.Context(), r.PathValue("id"))
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		cwd := s.ExecutionCWD
+		if cwd == "" && s.ProjectID != "" {
+			p, err := a.store.readProjectMeta(r.Context(), s.ProjectID)
+			if err != nil {
+				sqlHTTPError(w, err)
+				return
+			}
+			if !p.Removed {
+				cwd = p.Folder
+			}
+		}
+		metadata := SessionMetadata{SessionID: s.ID}
+		if cwd != "" {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			metadata.GitBranch = currentGitBranch(ctx, cwd)
+			cancel()
+		}
+		respond(w, 200, metadata)
+		return
+	}
 	a.mu.Lock()
 	s := a.state.session(r.PathValue("id"))
 	if s == nil {

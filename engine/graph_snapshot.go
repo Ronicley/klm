@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,22 +21,35 @@ type GraphSourceSnapshot struct {
 }
 
 type GraphSnapshot struct {
-	LibraryRevision string                         `json:"libraryRevision,omitempty"`
-	Capabilities    map[string]*CapabilitySnapshot `json:"capabilities,omitempty"`
-	GraphID         string                         `json:"graphId"`
-	Revision        string                         `json:"revision"` // content hash of executable sources, not layout
-	CapturedAt      string                         `json:"capturedAt"`
-	Graph           GraphRecord                    `json:"graph"`
-	Agents          []AgentRecord                  `json:"agents"`
-	EffectiveAgents map[string]EffectiveGraphAgent `json:"effectiveAgents"`
-	Sources         map[string]GraphSourceSnapshot `json:"sources"` // project-relative YAML/TOML
+	Version           int                            `json:"version,omitempty"`
+	ProjectID         string                         `json:"projectId,omitempty"`
+	AgentOrigins      map[string]AgentSourceRef      `json:"agentOrigins,omitempty"`
+	GlobalSources     map[string]GraphSourceSnapshot `json:"globalSources,omitempty"`
+	DelegationCatalog *GraphFrozenAgentCatalog       `json:"delegationCatalog,omitempty"`
+	LibraryRevision   string                         `json:"libraryRevision,omitempty"`
+	Capabilities      map[string]*CapabilitySnapshot `json:"capabilities,omitempty"`
+	GraphID           string                         `json:"graphId"`
+	Revision          string                         `json:"revision"` // content hash of executable sources, not layout
+	CapturedAt        string                         `json:"capturedAt"`
+	Graph             GraphRecord                    `json:"graph"`
+	Agents            []AgentRecord                  `json:"agents"`
+	EffectiveAgents   map[string]EffectiveGraphAgent `json:"effectiveAgents"`
+	Sources           map[string]GraphSourceSnapshot `json:"sources"` // project-relative YAML/TOML
 }
 
 // Caller must not hold app.mu. authoringMu prevents our CRUD from interleaving;
 // a second complete read detects observed external edits. This is not an external
 // multi-file filesystem transaction. Layout errors never invalidate execution.
 func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID string) (GraphSnapshot, *CompiledGraph, error) {
+	if a.store != nil {
+		return a.captureGraphSnapshotV2(ctx, projectID, graphID)
+	}
 	var snapshot GraphSnapshot
+	release, admissionErr := a.acquireHarnessConsumer()
+	if admissionErr != nil {
+		return snapshot, nil, admissionErr
+	}
+	defer release()
 	if !validAuthoringID(graphID) {
 		return snapshot, nil, errors.New("Invalid graph identifier.")
 	}
@@ -45,16 +58,40 @@ func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID strin
 	a.libraryMu.Lock()
 	defer a.libraryMu.Unlock()
 	a.mu.Lock()
-	if len(a.state.LibraryDeletions) > 0 {
-		a.mu.Unlock()
-		return snapshot, nil, errors.New("A library deletion needs recovery before starting another graph run.")
+	var p Project
+	if a.store != nil {
+		err := a.store.readSnapshot(ctx, func(tx *sql.Tx) error {
+			st := &sqliteSessionTx{ctx: ctx, tx: tx}
+			var pending bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM data_library_deletions)`).Scan(&pending); err != nil {
+				return err
+			}
+			if pending {
+				return errors.New("A library deletion needs recovery before starting another graph run.")
+			}
+			var err error
+			p, err = st.project(projectID)
+			if err == nil && p.Removed {
+				err = errors.New("Project not found.")
+			}
+			return err
+		})
+		if err != nil {
+			a.mu.Unlock()
+			return snapshot, nil, err
+		}
+	} else {
+		if len(a.state.LibraryDeletions) > 0 {
+			a.mu.Unlock()
+			return snapshot, nil, errors.New("A library deletion needs recovery before starting another graph run.")
+		}
+		project := a.state.project(projectID)
+		if project == nil || project.Removed {
+			a.mu.Unlock()
+			return snapshot, nil, errors.New("Project not found.")
+		}
+		p = *project
 	}
-	project := a.state.project(projectID)
-	if project == nil || project.Removed {
-		a.mu.Unlock()
-		return snapshot, nil, errors.New("Project not found.")
-	}
-	p := *project
 	a.mu.Unlock()
 	if err := recoverAuthoring(p); err != nil {
 		return snapshot, nil, err
@@ -98,8 +135,9 @@ func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID strin
 		if err != nil {
 			return snapshot, nil, fmt.Errorf("Agent %s: %w", id, err)
 		}
-		agent := AgentDefinition{Enabled: true}
-		if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&agent); err != nil {
+		document, err := readAgentDocument(data)
+		agent := document.AgentDefinition
+		if err != nil {
 			return snapshot, nil, err
 		}
 		if authoringSlug(agent.Name) != id {
@@ -108,6 +146,7 @@ func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID strin
 		snapshot.Agents = append(snapshot.Agents, AgentRecord{AgentDefinition: agent, ID: id, Revision: revision(data), GraphReferences: []string{}})
 	}
 	validated := map[string]bool{}
+	bs := a.binarySnapshot()
 	compiled, err := compileGraph(g, snapshot.Agents, func(agent EffectiveGraphAgent) error {
 		for _, definition := range snapshot.Agents {
 			if definition.ID == agent.AgentID {
@@ -121,21 +160,21 @@ func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID strin
 			}
 		}
 		if agent.Harness == "pi" {
-			if b, installed := a.binaries["pi"]; installed {
+			if b, installed := bs["pi"]; installed {
 				if err := validatePiLibraryBinary(b); err != nil {
 					return err
 				}
 			}
 		}
 		if agent.Harness == "opencode" {
-			if b, installed := a.binaries[agent.Harness]; installed {
+			if b, installed := bs[agent.Harness]; installed {
 				if err := validateOpenCodeLibraryBinary(b); err != nil {
 					return err
 				}
 			}
 		}
 		if agent.Harness == "codex" {
-			if b, installed := a.binaries[agent.Harness]; installed {
+			if b, installed := bs[agent.Harness]; installed {
 				if err := validateCodexLibraryBinary(b); err != nil {
 					return err
 				}
@@ -174,8 +213,11 @@ func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID strin
 	layout := GraphLayout{Positions: map[string]Point{}}
 	if data, err := readConfig(p, layoutFile(graphID)); err == nil {
 		var candidate GraphLayout
-		if json.Unmarshal(data, &candidate) == nil && validateLayout(candidate) == nil && candidate.Positions != nil {
-			layout = candidate
+		if json.Unmarshal(data, &candidate) == nil {
+			discardInvalidGraphHandles(&candidate)
+			if validateLayout(candidate) == nil && candidate.Positions != nil {
+				layout = candidate
+			}
 		}
 	}
 	snapshot.Graph = GraphRecord{ID: graphID, Revision: snapshot.Sources[graphFile(graphID)].Revision, Definition: compiled.Definition, Layout: layout}
@@ -226,32 +268,75 @@ func compileGraphSnapshot(snapshot GraphSnapshot) (*CompiledGraph, error) {
 // Preparation may take time (e.g. workspace reuse checks); do not reserve a run
 // with a removed/replaced credential or a superseded skill/configuration capture.
 func (a *app) revalidateGraphCapabilities(snapshot GraphSnapshot) error {
-	a.mu.Lock()
-	if len(a.state.LibraryDeletions) > 0 {
-		a.mu.Unlock()
-		return errors.New("A library deletion needs recovery before reserving this run.")
+	if snapshot.Version == 2 {
+		if err := a.revalidateFrozenGraphCatalog(snapshot); err != nil {
+			return err
+		}
 	}
-	for _, captured := range snapshot.Capabilities {
-		if captured != nil {
-			for _, c := range captured.Connections {
-				current, exists := a.state.MCPConnections[c.ID]
-				catalogRevision, knownRevision := "", ""
-				if current.Catalog != nil {
-					catalogRevision = current.Catalog.Revision
+	a.mu.Lock()
+	if a.store != nil {
+		err := a.store.readSnapshot(a.ctx, func(tx *sql.Tx) error {
+			var pending bool
+			if err := tx.QueryRowContext(a.ctx, `SELECT EXISTS(SELECT 1 FROM data_library_deletions)`).Scan(&pending); err != nil {
+				return err
+			}
+			if pending {
+				return errors.New("A library deletion needs recovery before reserving this run.")
+			}
+			for _, captured := range graphCapturedCapabilities(snapshot) {
+				if captured == nil {
+					continue
 				}
-				if c.Catalog != nil {
-					knownRevision = c.Catalog.Revision
+				for _, c := range captured.Connections {
+					var current MCPConnection
+					if err := decodeSQLiteRecord(a.ctx, tx, "mcp_connections", c.ID, 8<<20, &current); err != nil {
+						return err
+					}
+					currentCatalog, capturedCatalog := "", ""
+					if current.Catalog != nil {
+						currentCatalog = current.Catalog.Revision
+					}
+					if c.Catalog != nil {
+						capturedCatalog = c.Catalog.Revision
+					}
+					if current.Revision != c.Revision || current.CredentialID != c.CredentialID || currentCatalog != capturedCatalog {
+						return errors.New("MCP library configuration changed before execution could be reserved; retry with current definitions.")
+					}
 				}
-				if !exists || current.Revision != c.Revision || current.CredentialID != c.CredentialID || catalogRevision != knownRevision {
-					a.mu.Unlock()
-					return errors.New("MCP library configuration changed before execution could be reserved; retry with current definitions.")
+			}
+			return nil
+		})
+		if err != nil {
+			a.mu.Unlock()
+			return err
+		}
+	} else {
+		if len(a.state.LibraryDeletions) > 0 {
+			a.mu.Unlock()
+			return errors.New("A library deletion needs recovery before reserving this run.")
+		}
+		for _, captured := range graphCapturedCapabilities(snapshot) {
+			if captured != nil {
+				for _, c := range captured.Connections {
+					current, exists := a.state.MCPConnections[c.ID]
+					catalogRevision, knownRevision := "", ""
+					if current.Catalog != nil {
+						catalogRevision = current.Catalog.Revision
+					}
+					if c.Catalog != nil {
+						knownRevision = c.Catalog.Revision
+					}
+					if !exists || current.Revision != c.Revision || current.CredentialID != c.CredentialID || catalogRevision != knownRevision {
+						a.mu.Unlock()
+						return errors.New("MCP library configuration changed before execution could be reserved; retry with current definitions.")
+					}
 				}
 			}
 		}
 	}
 	a.mu.Unlock()
 	root := ""
-	for _, captured := range snapshot.Capabilities {
+	for _, captured := range graphCapturedCapabilities(snapshot) {
 		if captured != nil {
 			for _, skill := range captured.Skills {
 				if root == "" {
@@ -275,6 +360,14 @@ func (a *app) revalidateGraphCapabilities(snapshot GraphSnapshot) error {
 }
 
 func validateGraphSnapshot(snapshot GraphSnapshot) error {
+	if snapshot.Version != 0 && snapshot.Version != 1 && snapshot.Version != 2 {
+		return errors.New("Unsupported graph snapshot version.")
+	}
+	if snapshot.Version == 2 {
+		if err := validateGraphSnapshotV2Catalog(snapshot); err != nil {
+			return err
+		}
+	}
 	if snapshot.LibraryRevision != "" {
 		data, _ := json.Marshal(snapshot.Capabilities)
 		if revision(data) != snapshot.LibraryRevision {
@@ -310,7 +403,11 @@ func validateGraphSnapshot(snapshot GraphSnapshot) error {
 	if err != nil {
 		return err
 	}
-	if revision(encoded) != snapshot.Revision || snapshot.Sources[graphFile(snapshot.GraphID)].Revision != snapshot.Graph.Revision {
+	expectedRevision := revision(encoded)
+	if snapshot.Version == 2 {
+		expectedRevision = graphSnapshotV2Revision(snapshot)
+	}
+	if expectedRevision != snapshot.Revision || snapshot.Sources[graphFile(snapshot.GraphID)].Revision != snapshot.Graph.Revision {
 		return errors.New("Graph snapshot revision mismatch.")
 	}
 	// Check serialized definitions against raw source data, not just their hashes.
@@ -327,12 +424,15 @@ func validateGraphSnapshot(snapshot GraphSnapshot) error {
 	seen := map[string]bool{}
 	for _, record := range snapshot.Agents {
 		source, ok := snapshot.Sources[agentFile(record.ID)]
+		if snapshot.Version == 2 && snapshot.AgentOrigins[record.ID].Scope == "global" {
+			source, ok = snapshot.GlobalSources[record.ID]
+		}
 		if !ok || seen[record.ID] || source.Revision != record.Revision {
 			return errors.New("Invalid captured agent reference.")
 		}
 		seen[record.ID] = true
-		agent := AgentDefinition{Enabled: true}
-		if toml.Unmarshal([]byte(source.Text), &agent) != nil || !equalCapturedAgentDefinitions(agent, record.AgentDefinition) {
+		document, parseErr := readAgentDocument([]byte(source.Text))
+		if parseErr != nil || !equalCapturedAgentDefinitions(document.AgentDefinition, record.AgentDefinition) {
 			return errors.New("Captured agent differs from its source.")
 		}
 	}
@@ -420,6 +520,9 @@ func applyGraphCatalogChange(d *diskState, change GraphCatalogChange) {
 func (a *app) commitGraphAuthoring(p Project, writes map[string][]byte, oldID, newGraphID string) error {
 	if oldID == newGraphID {
 		return commitAuthoring(p, writes)
+	}
+	if a.store != nil {
+		return a.commitSQLGraphAuthoring(a.ctx, p, writes, oldID, newGraphID)
 	}
 	change := GraphCatalogChange{ID: newID(), ProjectID: p.ID, OldID: oldID, NewID: newGraphID, Writes: writes}
 	a.mu.Lock()

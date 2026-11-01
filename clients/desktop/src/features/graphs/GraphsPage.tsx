@@ -7,17 +7,18 @@ import { Menu, MenuItem } from '../../design-system/Menu';
 import { GraphDetailsDialog } from './GraphDetailsDialog';
 import { DeleteGraphDialog } from './DeleteGraphDialog';
 import { authoringPath, graphListEntry, type GraphFile } from './files';
-import type { Agent } from '../agents/demo';
+import type { Agent } from '../agents/types';
 import { request } from '../../engine';
 import './graphs.css';
+import { flushDrafts, useEngineDraft } from '../drafts/draftStore';
 
 const GraphCanvas = lazy(() => import('./GraphCanvas').then(module => ({ default: module.GraphCanvas })));
 
 export function GraphsPage({ projectId, graphs, agents, catalogError = false, onChanged }: { projectId: string; graphs: GraphFile[]; agents: Agent[]; catalogError?: boolean; onChanged: () => Promise<void> }) {
   const [search, setSearch] = useState('');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [editing, setEditing] = useState<GraphFile | null>(null);
+  const [creating, setCreating] = useEngineDraft(`ui.graphs:${projectId}.creating`, false);
+  const [editing, setEditing] = useEngineDraft<GraphFile | null>(`ui.graphs:${projectId}.editing`, null);
   const [deleting, setDeleting] = useState<GraphFile | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
@@ -41,7 +42,8 @@ export function GraphsPage({ projectId, graphs, agents, catalogError = false, on
           <MenuItem role="menuitem" className="graph-delete-action" onClick={() => { setOpenMenu(null); setDeleting(graph); }}><Trash2 />Delete</MenuItem>
         </Menu>} />
     </li>)}</ul> : <p className="graphs-empty" role="status">{catalogError ? 'Graph catalog is unavailable.' : query ? 'No graphs found' : 'No graphs yet'}</p>}
-    {creating && <GraphDetailsDialog graphs={graphs.map(graphListEntry)} onClose={() => setCreating(false)} onSave={async (name, description) => {
+    {creating && <GraphDetailsDialog draftKey={`form.graphDetails:${projectId}:new`} graphs={graphs.map(graphListEntry)} onClose={() => setCreating(false)} onSave={async (name, description) => {
+      await flushDrafts();
       const draft = await request<GraphFile>(`${base}/graph-drafts`, 'POST', { name, description });
       setCreating(false); setEditing(draft);
     }} />}

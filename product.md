@@ -35,17 +35,90 @@ work and manages its execution with an agent. It is not just the language model.
 
 ## Current Definition Boundaries
 
+### 0.6.0 persistence and on-demand clients
+
+The engine's runtime authority is SQLite (`engine.sqlite3`), with separate records
+for growing histories, queues, receipts, graph/automation work and accounting.
+Clients negotiate storage contract 3, load compact bootstrap metadata, then acquire
+project, conversation and history pages on demand. Revisions are decimal strings;
+scoped live updates invalidate bounded windows rather than retransmitting global
+history. Hidden general chats and unopened native children do not load histories.
+Exact-ID navigation and embedded topic identity keep an unloaded page from being
+mistaken for unavailable content. Topic/Library search applies to the requested
+engine/project scope before pagination. Background execution does not depend on
+open clients or subscriptions.
+
+On the first upgrade, exact existing `state.json`, `stream.sealed`, `stream.journal`,
+`client-auth.json` and `engine-access.json` bytes are preserved under
+`<engine-data-dir>/legacy-backups/<migration-id>/`, with an absence/hash manifest.
+Those originals remain immutable and are never automatically deleted during 0.6.0.
+Verified import precedes SQL authority. The root `state.json` becomes a version-600
+downgrade fence naming the original backup; it is not a live checkpoint or the
+preserved original. Once committed, normal startup never falls back to JSON or
+automatically reverses authority. Older binaries must not use the fenced directory.
+Point-in-time recovery requires intentional separate copies and compatible referenced
+artifacts, and cannot preserve post-cutover changes by replaying the old JSON files.
+Existing paired-client records, saved empty access policy and native identities are
+preserved; the upgrade does not deliberately force re-pairing or replay interrupted work.
+
+The normal CLI and shared frontend have isolated runtime/browser evidence.
+Implementation and exactly two independent review rounds are complete; round 1's
+three findings were fixed and final round 2 requested no changes. A consistent copy
+of the actual 1.04 GiB checkpoint was migrated and inspected in the browser; a normal
+CLI stop/start on that migrated database measured 53.5/189.5 ms with warm OS caches.
+The installed source was not upgraded. Installer/LAN, Flutter/WebView, live provider/harness paths and the full
+planned history-scaling memory/latency measurements remain separate acceptance
+checks; compilation, bounded fixtures and reviews do not establish them. No
+installation was performed. Evidence and compatibility details
+are recorded in `SQLITE_0_6_0_IMPLEMENTATION_PROGRESS.md`, both review reports and
+`engine/README.md`.
+
 The first real slice is a separate Go engine with persistent projects and sessions,
 and a React client. A project has a name, directory, and icon. Ordinary sessions belong
 to one project and use Pi, OpenCode, or Codex headlessly. The client presents the
 messages, exposed reasoning, commands, and MCP/tool events those harnesses emit.
 
+Project registration keeps a manual absolute-path field and defaults to an in-app
+engine-filesystem directory browser on every client. It lists existing directories
+under the engine user's permissions, with a locations sidebar, home/path
+navigation and name filtering/sorting. The first `...` row opens the server-reported
+parent on double click or Enter; roots have no parent row. A single click selects a child directory;
+a double click, Enter or its Open action navigates into it. The primary action
+selects that child, or the current directory when none is selected. Directory
+aliases retain their lexical paths;
+bounded or skipped listings are disclosed. Native picking is a secondary explicit
+action only when advertised by the engine, never inferred from client locality or
+OS. A directory's context menu (also available from Directory actions) offers
+New folder, requiring an explicit name and Create confirmation. It creates one
+child under the displayed directory with the engine user's permissions, without
+overwriting an existing entry or registering a project. The picker opens the new
+folder after confirmed creation; uncertain delivery requires explicit refresh,
+not automatic retry. Right-clicking a child directory also offers Rename and
+Delete; Directory actions exposes them for the selected child on keyboard/touch.
+Rename requires explicit confirmation and never replaces an existing entry.
+Delete requires confirmation of the named folder and removes only empty directories,
+never their contents. Roots, the engine user's home and their ancestors, the engine
+data tree, and registered project roots/ancestors are protected from these actions;
+project metadata is not silently retargeted. Directory links cannot be renamed or
+deleted here. Browsing otherwise does not modify directories, clone, upload or read
+file contents. Editing an existing project never changes its directory.
+Compilation evidence and pending human acceptance are tracked in
+`REMOTE_DIRECTORY_BROWSER_IMPLEMENTATION_PROGRESS.md`.
+
 Top-level sessions are grouped by persistent, project-scoped **topics**, replacing
 visual session folders. A new independent project session starts without a topic
 unless the user explicitly creates it inside an existing topic.
 During its ordinary turn, as soon as the objective is understood, its main agent
-sets a short initial topic name through the private `session_topic_set` tool.
-Agent assignment is one-time: repeated calls return the current topic unchanged.
+assigns an initial topic through the private `session_topic_set` tool. Unassigned
+normal project conversations receive the project's nonarchived topic IDs, names,
+colors and active color-usage counts in their engine-provided turn context. The
+agent reuses an active topic only when the objective fits it very well, supplying
+`topicId` alone; otherwise it creates a topic with a short name and a palette color.
+New colors should preferably be unused among active topics, or least-used when all
+are represented; repetitions are allowed. Reuse never renames or recolors the topic.
+Older name-only calls default to a least-used active color. Archived topics do not
+appear in the options or contribute to usage, and cannot be reused. Agent assignment
+is one-time: repeated calls return the current topic unchanged.
 Only the user can edit its name/color or move a session to another existing active
 topic through UI. Equal names do not merge identities.
 The engine gives spawned sessions and further descendants the source main topic ID,
@@ -61,8 +134,9 @@ ties. Users can drag a topic's header above/below another topic to save a manual
 project-wide order. Once positioned, topics retain that order even when members
 move; new unpositioned topics appear ahead of it. Messages and runtime disposal
 do not reorder them. Collapse is local per
-browser/WebView, engine, project and topic ID; old folder-name collapse preferences
-are not applied to the new topic namespace. Search includes topic names and titles
+browser/WebView, engine, project and topic ID. Groups without a saved preference
+start collapsed; existing saved expanded/collapsed choices are preserved. Old folder-name
+collapse preferences are not applied to the new topic namespace. Search includes topic names and titles
 and temporarily expands matches without overwriting collapse preferences.
 
 Desktop and browser session rows also display a recency subtitle below the title,
@@ -80,8 +154,13 @@ supports Left/Right, Home and End. Narrow navigation and the Flutter-hosted mobi
 layout retain their existing presentation without a resize handle. Temporary window
 constraints do not replace the saved preferred width.
 
-The chat navigation's topic tag opens a shared name/color editor. Colors use a small
-theme-aware palette (Neutral, Blue, Purple, Green, Amber, Rose), initially Neutral.
+The chat navigation's topic tag opens a searchable topic picker for that chat's
+project, with its current topic indicated. Users can apply an existing active topic,
+edit the current topic, or create a new topic and move the chat into it atomically.
+Ungrouped chats expose Choose topic in the same location. Archived chats/topics
+retain the name/color editor and must be restored before moving. The shared dialog
+uses a labeled ten-color palette (Neutral, Blue, Cyan, Teal, Green, Purple, Rose,
+Red, Orange, Amber), initially Neutral; colors adapt to light and dark themes.
 The Add topic icon, immediately left of Search sessions, opens the same name/color
 dialog in creation mode. It creates a persistent empty topic at the top of the list
 without creating, assigning or starting any session. An expanded active topic with
@@ -125,7 +204,7 @@ as favorites.
 ### Project Settings and GitHub Webhooks
 
 The **Project settings** button in the sessions sidebar opens a modal with
-**General**, **Webhooks** and **Tasks** sections. General edits the project's name and icon,
+**General**, **Webhooks**, **Tasks** and **Automations** sections. General edits the project's name and icon,
 shows its fixed directory and provides confirmed project removal. Project creation
 and the rail's Edit/Remove menu retain their existing entry points. Webhooks belong
 to this project modal, not global Settings.
@@ -205,22 +284,103 @@ pending recovery, retention and full lifecycle still await human validation. Set
 API contracts and the manual acceptance route are documented in `engine/README.md`
 and `GITHUB_WEBHOOKS_IMPLEMENTATION_PLAN.md`.
 
+### Project Automations
+
+Project settings → Automations manages versioned project-owned webhook or scheduled
+tasks. Session mode can create a new normal top-level session per run, create one
+session on the first run and reuse it, or use an existing normal session in the
+same project. Legacy automations retain new-per-run mode. Creation applies the
+saved title, harness/model/effort, YOLO, Library selection and topic in the registered
+project directory; new topics are created atomically on Save. Reused sessions keep
+their identity, history, native continuation and preferences. Normal reuse captures
+the session's current settings at admission; active runs freeze these options and
+their Library snapshot. The graph allowlist remains automation-owned. Reusable
+destinations serialize, including between automations, and wait for chat, queued
+messages, graph or consultation work to finish. They never restore archived content
+or silently create a replacement. A reusable destination is fixed once linked.
+
+Initial and follow-up prompts are separate. A run that creates a session sends only
+the initial prompt; a run in an existing/linked session sends only its follow-up,
+including the first run when an existing session was chosen. Prior objectives or
+classifications in the conversation do not classify the current run.
+
+The initial webhook trigger is GitHub `pull_request/opened`, scoped by the receiving
+project rather than repository. The editor discovers and inserts PR number,
+organization login (empty when absent), and repository name references. Raw payloads
+are not passed to automation agents. Scheduled prompts reject webhook references;
+switching activation preserves the text and requires removing those references.
+Trigger data and automatic prompts are never
+human graph/session authorization. Webhook parallelism is optional; serial webhooks
+and all schedules use a separate durable FIFO with one active run per automation.
+
+Schedules use the global engine IANA time zone (initially America/Sao_Paulo), editable in Settings.
+Once accepts an explicit date and local time and fires automatically only once.
+Its durable consumed marker prevents reactivation or a time-zone change from firing
+it again; changing the actual schedule can explicitly schedule another occurrence.
+Daily, every N calendar days, selected weekly weekdays and monthly days use the next
+valid selected local time, today if it has not passed. A selected weekday means its
+next occurrence, not the following calendar day. Monthly dates absent from a month
+and nonexistent DST times are skipped; repeated wall times occur once. Run now is
+available only for schedules, including paused ones, and does not move recurrence.
+Pause blocks new automatic triggers; already accepted triggers proceed. Deletion
+cancels pending triggers and retains active runs and their normal sessions. History
+contains session-title links only, without run dates/status, and refresh retains
+the loaded page window.
+
+Active automation composers accept steering at model boundaries. Send now and
+configuration edits are blocked. Questions and permissions remain answerable.
+Confirmed Stop cancels the model, records interruption by the user after confirmed
+shutdown, and returns the session to normal chat. Two turn-bound main-agent tools
+record satisfied/unsatisfied objectives; native completion alone is not success.
+One automatic classification reminder is allowed; a second unclassified completion
+becomes an execution failure. Tools are absent from children, side/general chats
+and completed runs. Graph allowlists do not replace existing authorization gates.
+
+Startup preserves interrupted sessions, marks their runs as execution failures and
+records missed schedule intervals. KLM Agent receives a durable recovery request
+when its harness is configured and it is free; otherwise the request remains
+pending. Internal recovery notices do not lock the initial harness choice, including
+across restart; accepting the first real input still locks it durably. Missed
+intervals retain the saved calendar/time zone and enumerate individual scheduled
+times and stable occurrence IDs in bounded pages. Recovery requires a real later
+human reply and admits one new run per explicitly selected occurrence or
+interrupted run, using saved configuration and session mode. Reusable destinations
+receive follow-ups in the same session; new-per-run creates new sessions. Decisions
+and their idempotent receipts persist per selected set; nothing automatically replays downtime.
+Uncertain notification delivery is not retried automatically. Details and manual
+acceptance remain tracked in `AUTOMATIONS_IMPLEMENTATION_PROGRESS.md`.
+
 ### KLM Agent
 
-The general agent is presented as **KLM Agent** in the client. Its view splits the
-available area between the existing chat and an X-inspired activity feed, initially
-one-third chat and two-thirds feed. The divider supports dragging and keyboard
-resizing, with a 360px minimum per pane and a locally remembered split. Double-click
-restores the default proportions. Hovering or focusing the divider reveals a
-centered swap button that exchanges the panels while retaining their widths and
-content. Panel order is also remembered locally.
+The general agent is presented as **KLM Agent** in the client. Its frontend now has
+left navigation with **Home**, then **Analytics**. Home retains the real activity
+feed in the center and Happening now on the right. Narrow layouts use horizontal
+navigation. The existing chat is a bottom-docked surface shared across Home and
+Analytics, initially minimized, with expand/restore, minimize and close controls.
+Closing and minimizing show the same bottom-docked reopen bar; neither stops execution or
+discards drafts. The dock reuses the existing conversation, composer, requests and
+Focus floating-window action rather than introducing another chat engine.
+
+Analytics retains the approved Overview, Topics and Graphs layout and now reads
+one engine-owned accounting snapshot through `/api/analytics`. Prospective durable
+execution/usage observations, retained ordinary-session creation inventory and
+graph facts supply project filters, local Monday weeks, elapsed-week comparison,
+calendar, rankings and tables. Current owner-session topic membership groups work;
+archived history is included and removed projects are hidden without deleting it.
+The general agent's own work is excluded from project totals. Missing history and
+unsupported native-child measurements remain unavailable/partial. Graph wall-clock
+is separate and never added to agent-hours. Native lifetime totals are not spend.
+Implementation evidence, adapter limits and pending originating review/manual
+runtime acceptance are recorded in `ANALYTICS_IMPLEMENTATION_PROGRESS.md`.
 The timeline displays real released GitHub deliveries across active projects, with
 project icons, GitHub provider, factual action/result, safe resource links, category
 and summary search, on-demand compact Details, and in-memory bookmarks. Feed settings
 starts with all 56 event families enabled; local preferences are scoped to browser
 origin and engine URL and affect display only. The push-ruleset bypass preference
 uses the documented request discriminator; its canonical header is still unconfirmed.
-No local fixtures or internal agent posts appear in the live timeline.
+No local fixtures or internal agent posts appear in the production timeline.
+Development Home and independent Focus feed widgets are also live-only; temporary
+visual sample posts were removed after layout approval. See `ANALYTICS_VISUAL_PROTOTYPE.md`.
 The KLM Agent can explicitly consult all available feed posts using its private
 `feed_read` tool, paginated newest first across nonremoved projects and independent
 of client-side category/event preferences. A post ID reads the same compact Details
@@ -263,20 +423,19 @@ between the KLM Agent list and the Focus widget. Newly appearing sessions withou
 a saved position precede the saved order, newest first; streaming does not reorder
 cards. Dropping a card does not open its chat. Show more expands a scrollable list with a persistent
 Show less control, including when the active list shrinks, and an empty state appears
-when none are active. Its column has a separate draggable divider and
-centered hover/focus swap button, retaining its width and side locally. It starts
-at 230px, with a 200px minimum and at least 320px left for the timeline; double-click
-resets the width. Timeline and sidebar scroll independently in the column layout.
-It moves above the feed in narrower split views, where this divider is hidden;
-compact windows switch between Chat and Activity. Happening now uses the existing
+when none are active. Its column has a separate draggable divider, retaining its width locally. On Home
+it stays to the right of the timeline. It starts at 230px, with a 200px minimum and
+at least 320px left for the timeline; double-click resets the width. Timeline and
+sidebar scroll independently in the column layout. It moves above the feed in
+narrower views, where this divider is hidden; chat remains available in its dock. Happening now uses the existing
 engine state/update stream. Activity polls while visible and refreshes on focus;
 refresh reloads its contiguous loaded window before replacing it, preserving the
 pagination boundary. Retention/deletion and removed projects limit availability;
 readers do not consume deliveries or extend retention. No automatic agent monitoring
 or event-triggered execution is included.
 
-Clicking a Happening now session opens its live chat as a shorter overlay above
-the KLM Agent composer, flush with the chat column's sides and bottom and rounded
+Clicking a Happening now session opens the chat dock with its live chat as a shorter
+overlay above the KLM Agent composer, flush with the dock's sides and bottom and rounded
 at its top corners. A translucent backdrop, light in light theme and dark in dark
 theme, covers the general conversation
 and its Chat header; the foreground overlay and composer remain undimmed. The
@@ -289,8 +448,8 @@ Clicking the translucent backdrop also closes the overlay and restores the gener
 Both chats remain subscribed while the overlay is open. Its header has Close and
 Open in project actions; the same project-navigation action appears on row hover
 or keyboard focus (always visible on touch). Navigation selects the owning project,
-expands the session's topic and opens that session's Chat tab. On compact screens,
-opening an overlay switches Activity to Chat. Archiving the overlaid session or its
+expands the session's topic and opens that session's Chat tab. On compact browser screens,
+opening an overlay opens the chat dock. Archiving the overlaid session or its
 topic, or removing its project, closes the overlay.
 
 The KLM logo at the top of Project Rail opens one persistent general-agent
@@ -384,6 +543,46 @@ lifecycle cases still await validation.
 
 ### Windows Delivery and Focus
 
+The Windows/Tauri desktop can save multiple engines, with no product-imposed
+registration count limit and one active connection per page load. The avatar
+between Theme and Settings opens the searchable saved-engine list. Each entry has
+a required client-local name and an optional predefined icon (otherwise initials);
+the separate Client name belongs to the paired device on the engine. Edit/Remove
+manage this desktop's metadata/credential only. Removing the active entry leaves
+selection empty instead of silently choosing another engine.
+
+Changing engine freezes new UI actions, waits for actual local save/submission/
+layout work, detaches reads/streams/renewal, confirms protected draft persistence,
+commits the selected registration and reloads the complete UI. It never sends Stop
+or Restart, and work on the previous engine continues. Audio recording and native
+pickers must finish/cancel first; waiting for finite work has Cancel switch, which
+does not undo server actions. Registry readback failures do not claim a proven
+persistent rollback. Offline/401/loading/no-selection recovery can select or add
+an engine outside the workspace/auth gates.
+
+Editable chat/form values, secret inputs, original revisions/operation IDs and
+editor locators are retained in Windows CurrentUser DPAPI storage below the
+desktop's app-data directory, separate from engine data and static web assets.
+Pre-auth connection drafts have a separate protected profile document, never an
+entity/database namespace. Restoring drafts never submits, authorizes or replays
+work. Browser/Focus/mobile keep their existing independent single-connection
+behavior; they do not inherit the desktop registry or native credentials.
+
+On native desktop, `VITE_ENGINE_URL` seeds a genuinely absent registry; a saved
+selection takes precedence afterward. Browser/mobile retain the fixed override
+semantics. Dev/release app identities and credentials remain separate. Implementation
+and lightweight checks are tracked in `MULTI_ENGINE_SWITCHING_IMPLEMENTATION_PROGRESS.md`
+and `MULTI_ENGINE_DRAFTS_COVERAGE.md`. Directed real Windows/Tauri/WebView2 Playwright
+exercised authenticated Local DEV ↔ VPS switching, keyring/DPAPI retention with
+representative drafts, transport teardown and selected failure/recovery paths.
+The Project Settings locator defect was corrected and passed a focused native
+retest. [MULTI_ENGINE_PLAYWRIGHT_VALIDATION.md](MULTI_ENGINE_PLAYWRIGHT_VALIDATION.md)
+preserves both tested SHAs and limits:
+actual lost-message ACK/work continuity, audio/native pickers/transcription,
+remaining variants and broad client/installation acceptance are not inferred to
+pass. Human acceptance remains pending. `MULTI_ENGINE_DEV_VALIDATION.md` describes
+the isolated DEV-only procedure.
+
 The engine and Tauri 2 desktop client are installed separately. `klm start` starts
 the engine in the background and returns after readiness; `klm stop` requests
 graceful shutdown through a local, per-user Windows channel. The engine installer
@@ -391,21 +590,45 @@ adds user PATH and starts the engine at login via HKCU Run. Data stays under
 `%APPDATA%/klm/engine`; uninstall preserves it. Stopping manually does not disable
 the next login start. There is no pre-login Windows service.
 
-The public HTTP API listens on `0.0.0.0:7331`. Network authentication and TLS are
-deferred by the approved personal-use contract; grants, sandbox and the private
-authenticated loopback bridge keep their existing boundaries. Commands, project
-files and native directory dialogs always belong to the engine computer.
+The public HTTP API listens on `0.0.0.0:7331` and requires individual paired-client
+credentials for all application reads, writes, downloads, uploads and streams.
+`klm pair` issues a one-use 256-bit code over the protected per-user local channel;
+it expires after five minutes. Credentials expire only after seven consecutive
+days without authenticated use, with no absolute lifetime. Settings → Connected
+devices revokes one/all devices and terminates their streams; `klm revoke-clients`
+provides protected local recovery. All paired clients have full engine access.
 
-The public API accepts any HTTP Host and any CORS origin, including tunnel/proxy
-domains, without an allowlist. This does not change the private authenticated
-loopback bridge. Frontend Settings accept an engine IP or domain, with optional
-HTTP(S) scheme and port. IPs without a port use 7331; explicit ports are preserved.
-Domains receive no added port. Without a scheme, IPs use HTTP and domains use
-HTTPS. A tunnel subdomain change only requires updating the frontend engine URL.
+An explicit `KLM_DEV_DISABLE_CLIENT_AUTH=1` flag is available only in dev-tag builds
+and is enabled by the VS Code engine debug configuration. In this mode anyone
+reaching the dev application URL can access it without pairing; public client
+auth/origin/CSRF/HTTPS enforcement is bypassed. Dev builds remain protected without
+the flag, and release builds always ignore it. Separate private harness/Library
+capabilities and independently validated webhook/OAuth ingress are unaffected.
+
+Settings → Engine edits exact allowed frontend origins and trusted TLS-proxy
+CIDRs. Values are stored with engine data and apply after restart; environment
+variables remain the bootstrap fallback until the first saved UI configuration.
+The authenticated Restart engine action explicitly confirms interruption of all
+agents and graph runs in progress, then uses a detached helper and existing local
+stop/start control. Restart preserves paired-client credentials and normal engine
+recovery semantics; it does not automatically replay interrupted work.
+
+Remote access requires HTTPS, with explicit trusted TLS-proxy configuration and
+an exact configured frontend-origin allowlist. The supplied same-site HTTPS
+frontend/engine use a host-only Secure HttpOnly Strict cookie. The native Windows
+desktop uses an engine-scoped credential in OS Credential Manager. Direct loopback
+HTTP remains authenticated; plaintext LAN credentials are rejected. Engine URL
+settings preserve explicit ports and add no port to domains. HTTPS LAN browser/
+mobile access requires same-site cookie-compatible frontend and engine hosts.
+Grants, sandbox and the private authenticated harness/Library bridges keep their
+existing separate boundaries. Commands, files and directory dialogs belong to the
+engine computer. Setup and pending human acceptance are recorded in
+`CLIENT_AUTH_IMPLEMENTATION_PROGRESS.md` and `engine/README.md`.
 
 The desktop fills its native window. Closing it hides to the tray; **Open** restores
 it and **Exit** ends only desktop/web. The client neither starts nor stops the
-engine. Opening another desktop shortcut restores the same instance.
+engine automatically. An authenticated user can explicitly request restart from
+Engine settings. Opening another desktop shortcut restores the same instance.
 
 While Tauri is active, it serves the same built application on `0.0.0.0:7332`.
 The **Focus** header button, between **Session log** and **Side agent**, opens
@@ -419,7 +642,8 @@ focused. Minimum usable dimensions apply, but there is no maximum size or
 viewport-based resizing limit; oversized windows remain draggable.
 Resizing is unavailable in the maximized layout, narrow mobile layout and
 Flutter-hosted WebView. The toggle is absent in the Flutter-hosted WebView. Another device
-uses `http://IP-OF-ENGINE-COMPUTER:7332`; API and SSE use that same host on 7331.
+uses configured same-site HTTPS frontend/engine hosts; the HTTP listeners on
+7332/7331 serve as TLS-proxy upstreams for remote access.
 Ports remain fixed; collisions are reported instead of selecting another port.
 
 In the browser's floating Focus layout, right-clicking the gradient opens a
@@ -496,6 +720,48 @@ The private bridge also exposes graph operations according to the conversation's
 role. Graph-node sessions receive their own Choice capability, without access to
 main/side conversation history or tools to invoke other graphs.
 
+### Linux headless engine
+
+Linux now supports the existing engine CLI lifecycle and local pairing/revocation
+through a protected same-user Unix socket. Windows retains its named-pipe control.
+An optional `KLM_API_BIND_HOST` literal loopback setting isolates the public API
+behind a TLS proxy; its unset default preserves the existing Windows/LAN binding.
+A dedicated-user systemd deployment template is provided in `distribution/linux`.
+The template does not claim automatic worker crash supervision or agent sandboxing.
+
+This does not move frontend hosting into the engine: Windows Tauri retains its
+bundled UI and can target a remote engine. An initial Ubuntu deployment exercised
+start/stop, protected socket permissions, HTTPS and real browser pairing, then
+stopped at the first blocker: no harness executables installed. Native Tauri
+remote pairing, harness/provider execution, Linux graph containment and ai-jail
+remain unvalidated/unimplemented as applicable. Detailed evidence and operational
+limits are in `LINUX_VPS_IMPLEMENTATION_PROGRESS.md`.
+
+### Global harness installation
+
+Settings → **Harnesses** shows Pi, OpenCode and Codex versions and effective
+executable paths, with individual confirmed global Install actions on the engine
+computer. Targets are `@earendil-works/pi-coding-agent@0.85.1`,
+`opencode-ai@1.18.35` and `@openai/codex@0.153.4`. Ordinary npm global installations
+and the engine user's native provider/auth configuration are retained. Installation
+does not select a harness or create/start a conversation.
+
+On Windows amd64 and glibc Linux amd64, missing Node/npm can be bootstrapped from
+verified official Node.js 22.22.0 artifacts using the process's existing OS write
+permissions. Missing permission is explicit; existing broken/incompatible Node/npm
+requires repair through its original installer rather than implicit replacement.
+Durable, serialized jobs survive client disconnects; interrupted jobs are not
+replayed. Verified inventory changes refresh connected selectors without restarting
+the engine. Global packages are shared by dev/release engines. Linux ordinary
+managed chats now have a nonroot subreaper/pidfd ownership path, with explicit
+failure when teardown cannot be confirmed. Version pins, exclusive profiles and
+role/Library controls remain mandatory; graph execution and protected MCP
+credential storage remain unsupported on Linux. Focused Linux runtime and real
+messaging acceptance are still required; installation/discovery alone is not acceptance.
+Runtime/manual acceptance remains pending and the originating-assistant review/
+correction workflow is in progress; scope, limitations and checks are in
+`HARNESS_INSTALLATION_IMPLEMENTATION_PROGRESS.md`.
+
 ### Skills and MCP Library
 
 Settings → **Library** manages engine-shared user skills and MCP connections. User
@@ -551,7 +817,15 @@ profile; independent KLM sessions and graph agents retain their normal behavior.
 
 OpenCode/Codex use a fresh managed process per complete engine turn and resume the
 same native history; Codex waits for EOF shutdown before retiring it so the native
-transcript can flush. Changing selection during execution still waits for the next
+transcript can flush. Successful ordinary OpenCode and Codex turns retain their
+session runtime, keeping the session active and visible in Happening now. OpenCode
+retains its idle server; Codex releases its exited app-server but retains the owned
+process container and unbound gateway. Before the next turn captures its selection,
+only the managed harness/profile and gateways are retired. The session process
+container and its workloads (including browsers and development servers) survive
+ordinary turn boundaries. Stop during an active turn and the existing 40-minute
+timeout with no remaining workload retire the runtime. Graph nodes retain their
+immediate shutdown rules. Changing selection during execution still waits for the next
 complete turn. Other versions/configuration variants fail preparation explicitly.
 The mandatory general-agent installation guidance remains independent of external
 selection and is delivered as engine-owned role context on all three harnesses.
@@ -560,8 +834,24 @@ The engine is the MCP client for stdio and Streamable HTTP. Harnesses receive on
 authenticated loopback gateways and the turn's allowed catalogs, never upstream
 credentials. Conversation-role tools (`klm_linked`) and external Library tools
 (`klm_library`) have different tokens/catalogs/dispatch scopes; the Library token
-cannot call privileged role/control methods. OpenCode native children receive only
-the external selection, not root conversation-role tools or the internal manager.
+cannot call privileged role/control methods. OpenCode native children and managed
+Pi native children receive only the external selection, not root conversation-role
+tools or the internal manager.
+
+The legacy managed Pi path loads `pi-subagents` 0.70.0 through a version-gated private
+projection, without enabling unrelated extensions or changing global settings.
+Native foreground/background workers inherit the parent's resolved model, effort,
+live permission policy and captured external Library. They use hidden child history
+and route permissions/questions through the owning conversation. They are not
+independent top-level sessions. The engine keeps the complete turn bound through
+background result delivery, then refreshes that managed Pi profile before the next
+turn. Native workflows, schedules, external runners and model overrides are not
+exposed. Native graph-node delegation remains disabled. The owned reusable-child
+path below replaces this native factory for instrumented parents and supports v2
+graph nodes without giving children Choice or administrative tools.
+Go compilation and a non-model extension/SDK-child load probe provide lightweight
+evidence, not runtime acceptance. Model execution, background delivery, Stop and
+restart checks remain pending in `PI_SUBAGENTS_IMPLEMENTATION_PROGRESS.md`.
 Tools, resources and form/HTTPS-URL elicitation are implemented;
 Prompts, Sampling, legacy HTTP+SSE and resource subscriptions are not enabled.
 Elicitation uses correlated pending questions with Accept/Decline/Cancel and is
@@ -577,7 +867,8 @@ HTTPS redirect reaching the dedicated public API callback; browser localhost is
 not substituted for the engine. The mobile web flow uses explicit same-tab
 navigation and a return-to-Library link. Providers' embedded-WebView policies and
 real desktop/mobile login still require human validation. The public personal-use
-API's existing network contract is unchanged.
+API requires paired-client access; the callback retains its independent OAuth
+state/transaction validation.
 
 Missing/offline MCP connections warn the model and user while retaining selection.
 Invalid selected skills, corrupted snapshots and isolation failures stop preparation.
@@ -606,13 +897,14 @@ Desktop and ordinary browser recording require `getUserMedia` and `MediaRecorder
 Browser security rules may deny microphone capture on insecure remote origins, so remote
 HTTP browser access is not promised to support recording. The Flutter-hosted mobile
 WebView instead uses native microphone permission and AAC/M4A recording, including on
-HTTP LAN hosts. Its separate audio bridge is restricted to the exact saved frontend
+HTTP LAN hosts for capture, while remote engine uploads require HTTPS pairing.
+Its separate audio bridge is restricted to the exact saved frontend
 origin and forwards bounded audio chunks to the existing engine transcription upload.
 Cancel discards audio or aborts transcription; backgrounding, navigation and disposal
 release capture and temporary files. Recordings are limited to ten minutes and 25 MiB.
 Transcripts append to the current draft and preserve references without sending. This
-requires an updated mobile app and frontend and does not change the existing personal-use
-network and authentication contract.
+requires an updated mobile app and frontend. Remote transcription uploads follow
+the paired-client HTTPS and CSRF contract described above.
 
 Permission prompts are supported for OpenCode, Pi, and Codex. Cards expose **Allow**,
 **Allow session**, and **Deny**, with a menu for **Allow in this project**, **Deny in
@@ -723,15 +1015,16 @@ The sheet closes through Close, backdrop tap or Escape. Desktop and browser Focu
 retain their existing options menu, YOLO label and composer graph selector.
 
 The mobile KLM Agent view omits the outer title header and its session-log button.
-The KLM Agent's Feed is the mobile home: each new WebView load opens it regardless
+The KLM Agent's Home feed is the mobile home: each new WebView load opens it regardless
 of the previously selected project or chat, retaining project/session selections
-for subsequent navigation.
+for subsequent navigation. Home and Analytics appear in horizontal navigation;
+KLM Agent chat is available through the bottom dock.
 Project Rail starts hidden on the mobile KLM Agent page. A **Show projects** icon
 inside the Feed search field toggles it without leaving the feed; returning from
 a project or opening the app starts with the rail hidden again.
-Its compact tabs are ordered **Feed**, then **KLM Agent**, replacing the previous
-**Chat** and **Activity** labels. Desktop and browser Focus keep their existing header
-and tab labels/order.
+Show projects is also available in the KLM Agent navigation, including on Analytics.
+The former Feed/KLM Agent tabs are replaced by Home/Analytics navigation and the
+shared minimizable chat dock.
 
 The mobile Feed omits the Activity header, project counter and refresh button.
 Feed settings is an icon button inside the search field. Pulling down at the top
@@ -742,7 +1035,7 @@ Mobile Happening now displays every matching session in a vertical list, with no
 Show more/Show less controls or internal scrolling. The full list scrolls with the
 feed, preserving the existing session actions and ordering.
 
-On mobile, tapping a Happening now session keeps the Feed tab selected and opens
+On mobile, tapping a Happening now session keeps Home selected and opens
 that session in an edge-to-edge bottom sheet at 85% of the viewport height, with
 rounded top corners and a modal mask above it. The sheet owns its composer, draft,
 live history, queue, requests, Stop, model and graph controls; it does not retarget
@@ -992,11 +1285,63 @@ subscription or automatic continuation. `ask` remains for information/clarificat
 and retains correlated replies. Agent-authored instructions and question responses
 are not human authorization for graph execution or session creation.
 
+## Reusable Agents and Owned Children
+
+In the stacked publication, SQLite schema4 follows the predecessor's content2
+and adds catalog3 then delegation4. Unpublished standalone agent-only schemas2/3
+are rejected without mutation and require an explicit migration; see
+`AGENTS_UNIFICATION_PUBLICATION.md`.
+
+The reusable-agent implementation unifies global SQLite definitions and local
+`.klm/agents` TOMLs through one visible slug catalog with durable source identity.
+Sessions can follow a saved definition while keeping independent field overrides;
+sources refresh between complete turns, never during an admitted execution.
+
+The engine-owned `subagent_run` tool delegates task work from main, side, general
+and v2 graph-node parents. A batch has 1–8 leaf children, at most four simultaneous
+executions and one active batch per parent. The parent receives a consolidated
+result only after every child settles. Specialists can use another supported
+harness/model/effort; unnamed children use effective parent settings and an empty
+external Library by default. Inheriting the parent's entire external selection is
+a false-by-default creation option, requiring an explicit human request. Internal
+roles and administrative tools never transfer. Independent session creation keeps
+its separate human authorization and lifecycle.
+
+Owned children retain their same-parent history, harness and directory for reuse.
+Parent Stop cancels them. Permissions, questions and MCP elicitation are answered
+through the actual owner with exact request/grant scope; child histories are
+read-only. Unconfirmed native/process/tool finality retains quarantine and blocks
+continuation. Restart invalidates interrupted work without replay. A chat Stop
+continues to leave independent graph execution alone.
+
+Pi/OpenCode use owned local wrappers with native delegation suppressed. Codex
+registers the v1 dynamic tool only on newly created instrumented native threads;
+older threads keep normal chat without adopting or rewriting history. Graph v2
+delegation resolves only from the run's sealed specialist, Library and public model
+metadata. Existing v1 artifacts retain their original contract. Child admission
+and Choice reservation exclude each other; Choice acceptance follows all-child
+join, owned drainage and confirmed result delivery in the same activation/workspace.
+
+The shared UI presents factual batch progress, outcomes, settings, reuse, bounded
+output and read-only child histories, plus owning-chat request cards. Isolated
+Playwright validation exercised actual frontend/backend and installed Pi, OpenCode
+and new Codex parent/child adapters against a deterministic local model provider.
+Core evidence covers creation/overrides/source refresh, two-child consolidation,
+Pi reuse and owner question replies under YOLO, graph Save/selection, Focus controls
+and a narrow browser viewport. Four reproduced UI/process-lifecycle issues were
+fixed and rechecked. Live upstream providers, native graph Choice/drain, remote MCP
+paths, already-running-child Stop, unexercised harness/role combinations and native
+Tauri/Flutter remain human/runtime acceptance checks. No production installation
+was performed. Checkpoints and actual evidence/retention limits are recorded in
+`AGENTS_UNIFICATION_COMPLETION_CP_R1.md`, `AGENTS_UNIFICATION_COMPLETION_CP_R2.md`
+and `AGENTS_UNIFICATION_PLAYWRIGHT_VALIDATION.md`.
+
 ## Agent and Graph Authoring
 
-Project agents and graphs can be authored independently of graph execution. Each
-agent is a TOML in `.klm/agents`; each graph is a YAML in the sibling `.klm/graphs`.
-The project files are the source of truth. Agents use real harness model identifiers
+Agents and project graphs can be authored independently of graph execution. Local
+agents are TOMLs in `.klm/agents`; global agents are engine-owned SQLite definitions.
+Each graph is a YAML in the sibling `.klm/graphs`. Local project files remain their
+source of truth. Agents use real harness model identifiers
 and require effort only when supported by the model. Their prompts live in TOML.
 
 Graph creation starts with a name and optional description. Save persists the graph
@@ -1004,6 +1349,29 @@ definition; node positions autosave on drag release to a separate layout file, e
 before the draft's first Save. A layout alone is not a catalog graph. Saved graphs
 can be reopened, edited, enabled/disabled and deleted. Agent references are preserved
 when agents are renamed; referenced agents cannot be deleted or disabled.
+
+The graph editor exposes cursor-following connection points around node borders.
+Dragging freezes the origin; dropping on a valid destination or within 50 CSS pixels
+of it creates fixed relative anchors. Fork retains its labeled branch-specific
+outgoing connectors and uses dynamic incoming points. Devices without hover retain
+a visible outgoing start point. Logical ports and existing connection limits remain
+independent of anchor IDs. Explicit Save commits topology and endpoint geometry
+together; position/viewport autosave preserves previously committed endpoints.
+Legacy graphs and run snapshots without endpoint metadata retain their original
+connectors. Read-only Graph views render saved geometry without editing handles.
+Connections in editor and read-only canvases use short animated dashes moving from
+source to destination, including the connection preview while dragging. Arrowheads
+remain visible. This indicates connection direction, not execution status;
+reduced-motion preferences keep the dashes static.
+Removing connections cleans unreferenced anchors, including implicit removals from
+node/branch deletion and terminal Choices. In the editor, hovering a connection
+reveals a Remove connection button; removal requires confirmation, including
+keyboard deletion. Dragging from an AI agent to an executable node automatically
+inserts a normal, uniquely named Choice at their midpoint and connects
+agent → Choice → destination, opening its configuration panel. Connecting to an
+existing Choice keeps the direct link. These edits still require explicit Save.
+TypeScript and Go dev compilation passed for dynamic handles; visual interaction,
+save/reload and touch behavior still await human validation.
 
 Authoring includes terminal Choice output, explicit Terminal output mapping and
 per-Fork-branch worktree isolation, enabled by default. Saving a draft is separate

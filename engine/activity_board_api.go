@@ -14,6 +14,10 @@ import (
 )
 
 func (a *app) activityBoardRoutes(m *http.ServeMux) {
+	if a.store != nil {
+		a.sqlActivityBoardRoutes(m)
+		return
+	}
 	m.HandleFunc("GET /api/activity-board/config", a.boardGetConfig)
 	m.HandleFunc("PATCH /api/activity-board/config", a.boardPatchConfig)
 	m.HandleFunc("POST /api/activity-board/discover", a.boardDiscover)
@@ -31,6 +35,10 @@ func boardFail(w http.ResponseWriter, code int, text string) {
 	respond(w, code, map[string]string{"error": text, "code": "activity_board_" + strconv.Itoa(code)})
 }
 func (a *app) boardAvailableProject(id string) bool {
+	if a.store != nil {
+		p, err := a.store.readProjectMeta(a.ctx, id)
+		return err == nil && !p.Removed
+	}
 	p := a.state.project(id)
 	return p != nil && !p.Removed
 }
@@ -226,6 +234,9 @@ type boardConnectionInput struct {
 }
 
 func (a *app) boardInputConnection(in boardConnectionInput, allowRetained ...bool) (activityBoardConnection, string, error) {
+	if a.store != nil {
+		return a.sqlBoardInputConnection(in, len(allowRetained) > 0 && allowRetained[0])
+	}
 	c := activityBoardConnection{ID: in.ConnectionID, Name: in.Name, Provider: in.Provider, ProjectID: in.ProjectID, Scope: in.Scope, Mappings: in.Mappings}
 	if in.ConnectionID != "" {
 		a.mu.Lock()

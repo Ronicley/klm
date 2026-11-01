@@ -156,8 +156,12 @@ func (a *app) beginMCPOAuth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.mu.Lock()
-	connection, exists := a.state.MCPConnections[r.PathValue("connectionID")]
+	connection, exists, readErr := a.mcpConnectionLocked(r.Context(), r.PathValue("connectionID"))
 	a.mu.Unlock()
+	if readErr != nil {
+		sqlHTTPError(w, readErr)
+		return
+	}
 	if !exists || connection.Config.Auth != "oauth" {
 		fail(w, 400, "Select an OAuth connection.")
 		return
@@ -286,7 +290,11 @@ func (a *app) completeMCPOAuth(w http.ResponseWriter, r *http.Request) {
 	defer a.libraryMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	connection, exists := a.state.MCPConnections[tx.ConnectionID]
+	connection, exists, readErr := a.mcpConnectionLocked(r.Context(), tx.ConnectionID)
+	if readErr != nil {
+		sqlHTTPError(w, readErr)
+		return
+	}
 	if !exists || connection.Revision != tx.Revision || connection.CredentialID != tx.CredentialID {
 		fail(w, 409, "Connection changed during OAuth. Authenticate again.")
 		return
@@ -295,16 +303,35 @@ func (a *app) completeMCPOAuth(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		id = newID()
 	}
-	if err := a.commitLocked(func(d *diskState) {
-		if d.MCPCredentials == nil {
-			d.MCPCredentials = map[string][]byte{}
-		}
-		d.MCPCredentials[id] = blob
-		c := d.MCPConnections[connection.ID]
-		c.CredentialID = id
-		d.MCPConnections[c.ID] = c
-	}); err != nil {
-		fail(w, 503, err.Error())
+	var persistErr error
+	if a.store != nil {
+		persistErr = a.writeSQLLocked(r.Context(), func(st *sqliteSessionTx) error {
+			var current MCPConnection
+			if err := decodeSQLiteRecord(st.ctx, st.tx, "mcp_connections", connection.ID, 8<<20, &current); err != nil {
+				return err
+			}
+			if current.Revision != tx.Revision || current.CredentialID != tx.CredentialID {
+				return controlError(409, "Connection changed during OAuth. Authenticate again.")
+			}
+			if err := st.putRoot("mcp_credentials", id, blob); err != nil {
+				return err
+			}
+			current.CredentialID = id
+			return st.putRoot("mcp_connections", current.ID, current)
+		})
+	} else {
+		persistErr = a.commitLocked(func(d *diskState) {
+			if d.MCPCredentials == nil {
+				d.MCPCredentials = map[string][]byte{}
+			}
+			d.MCPCredentials[id] = blob
+			c := d.MCPConnections[connection.ID]
+			c.CredentialID = id
+			d.MCPConnections[c.ID] = c
+		})
+	}
+	if persistErr != nil {
+		sqlHTTPError(w, persistErr)
 		return
 	}
 	if tx.ReturnURL != "" {
@@ -330,18 +357,34 @@ func (a *app) disconnectMCPOAuth(w http.ResponseWriter, r *http.Request) {
 	a.oauthMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	c, exists := a.state.MCPConnections[r.PathValue("connectionID")]
+	c, exists, readErr := a.mcpConnectionLocked(r.Context(), r.PathValue("connectionID"))
+	if readErr != nil {
+		sqlHTTPError(w, readErr)
+		return
+	}
 	if !exists {
 		fail(w, 404, "Connection not found.")
 		return
 	}
-	if err := a.commitLocked(func(d *diskState) {
-		disconnectMCPCredentials(d, c.ID, c.CredentialID)
-		c.CredentialID = ""
-		c.Revision = newID()
-		d.MCPConnections[c.ID] = c
-	}); err != nil {
-		fail(w, 503, err.Error())
+	var persistErr error
+	if a.store != nil {
+		persistErr = a.writeSQLLocked(r.Context(), func(st *sqliteSessionTx) error {
+			if err := st.disconnectMCPCredentials(c.ID, c.CredentialID); err != nil {
+				return err
+			}
+			c.CredentialID, c.Revision = "", newID()
+			return st.putRoot("mcp_connections", c.ID, c)
+		})
+	} else {
+		persistErr = a.commitLocked(func(d *diskState) {
+			disconnectMCPCredentials(d, c.ID, c.CredentialID)
+			c.CredentialID = ""
+			c.Revision = newID()
+			d.MCPConnections[c.ID] = c
+		})
+	}
+	if persistErr != nil {
+		sqlHTTPError(w, persistErr)
 		return
 	}
 	respond(w, 200, publicMCPConnection(c))
@@ -406,6 +449,24 @@ func (a *app) mcpHTTPSecrets(ctx context.Context, c MCPConnectionSnapshot) (mcpC
 			return credential, err
 		}
 		a.mu.Lock()
+		if a.store != nil {
+			err = a.writeSQLLocked(ctx, func(st *sqliteSessionTx) error {
+				var exists bool
+				if err := st.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM data_mcp_credentials WHERE id=?)`, c.CredentialID).Scan(&exists); err != nil {
+					return err
+				}
+				if !exists {
+					return errors.New("OAuth credentials disconnected during refresh.")
+				}
+				return st.putRoot("mcp_credentials", c.CredentialID, blob)
+			})
+			a.mu.Unlock()
+			if err != nil {
+				return credential, err
+			}
+			credential.Bearer = credential.Token.AccessToken
+			return credential, nil
+		}
 		if _, exists := a.state.MCPCredentials[c.CredentialID]; !exists {
 			a.mu.Unlock()
 			return credential, errors.New("OAuth credentials disconnected during refresh.")

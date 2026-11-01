@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -69,7 +70,11 @@ func (p *adapter) mcpElicit(ctx context.Context, c MCPConnectionSnapshot, req *m
 	answer := make(chan *mcp.ElicitResult, 1)
 	// Reuse pending-question storage and graph-owner projection. Only the explicit
 	// elicitation endpoint can reply; native/general-agent question tools cannot.
-	reqQuestion := QuestionRequest{SourceID: source, Elicitation: question, Items: []QuestionItem{{ID: "elicitation", Text: params.Message, Options: []QuestionOption{{Label: "Accept"}, {Label: "Decline"}}}}}
+	origin := "unknown"
+	if p.harness == "pi" {
+		origin = ""
+	} // The Pi gateway has an exact serial root call.
+	reqQuestion := QuestionRequest{SourceID: source, analyticsOrigin: origin, Elicitation: question, Items: []QuestionItem{{ID: "elicitation", Text: params.Message, Options: []QuestionOption{{Label: "Accept"}, {Label: "Decline"}}}}}
 	err := p.requestQuestion(reqQuestion, func([][]string, bool) error { return errors.New("Use the MCP elicitation form.") })
 	if err != nil {
 		return cancelled, err
@@ -179,6 +184,48 @@ func (a *app) answerMCPElicitation(w http.ResponseWriter, r *http.Request) {
 	a.mu.Unlock()
 	err := pending.elicitReply(&mcp.ElicitResult{Action: body.Action, Content: body.Content})
 	a.mu.Lock()
+	if a.store != nil {
+		if err != nil {
+			pending.busy = false
+			a.mu.Unlock()
+			fail(w, 409, "Elicitation expired before the reply was delivered.")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = a.persistSQLLocked(ctx, func(st *sqliteSessionTx) error {
+			if err := st.analyticsWait(t, qid, false, true, true); err != nil {
+				return err
+			}
+			key, err := st.requestKey("pending_questions", id, qid)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if key != "" {
+				if err := st.deleteRecord("pending_questions", key); err != nil {
+					return err
+				}
+			}
+			s, err := st.sessionMeta(id)
+			if err != nil {
+				return err
+			}
+			s.UpdatedAt = now()
+			return st.putSessionMeta(s)
+		})
+		cancel()
+		if err == nil {
+			delete(t.questions, qid)
+		} else {
+			pending.busy = false
+		}
+		a.mu.Unlock()
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		a.respondSQLSession(w, r, id, 200)
+		return
+	}
 	defer a.mu.Unlock()
 	if err != nil {
 		pending.busy = false
@@ -187,6 +234,7 @@ func (a *app) answerMCPElicitation(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(t.questions, qid)
 	if err := a.commitLocked(func(d *diskState) {
+		analyticsWait(d, t, qid, false, true)
 		s := d.session(id)
 		s.Questions = slices.DeleteFunc(s.Questions, func(q QuestionRequest) bool { return q.ID == qid })
 		s.UpdatedAt = now()

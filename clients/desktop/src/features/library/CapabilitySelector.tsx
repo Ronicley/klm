@@ -4,6 +4,7 @@ import { Input } from '../../design-system/Input';
 import { Toggle } from '../../design-system/Toggle';
 import { getLibrary, selectionOf, type CapabilitySelection, type LibraryInventory } from './api';
 import './library.css';
+import { LibrarySkillsPaging } from './LibrarySkillsPaging';
 
 export function CapabilitySelector({ value, onChange, harness, general = false, disabled = false }: {
   value: CapabilitySelection; onChange: (selection: CapabilitySelection) => void; harness?: string; general?: boolean; disabled?: boolean;
@@ -12,11 +13,13 @@ export function CapabilitySelector({ value, onChange, harness, general = false, 
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [search, setSearch] = useState('');
+  const [remoteSearch, setRemoteSearch] = useState('');
+  useEffect(() => { const timer = setTimeout(() => setRemoteSearch(search), 200); return () => clearTimeout(timer); }, [search]);
   useEffect(() => {
     const controller = new AbortController();
-    getLibrary(controller.signal).then(setInventory, reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Could not load Library.'); });
+    getLibrary(controller.signal,remoteSearch).then(value => { if (!controller.signal.aborted) setInventory(value); }, reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Could not load Library.'); });
     return () => controller.abort();
-  }, [attempt]);
+  }, [attempt,remoteSearch]);
   const selection = selectionOf(value);
   const unavailable = !!harness && inventory && !inventory.harnesses[harness]?.managed;
   const matches = (text: string) => text.toLowerCase().includes(search.trim().toLowerCase());
@@ -28,14 +31,15 @@ export function CapabilitySelector({ value, onChange, harness, general = false, 
     {inventory && <>
       <h4>Skills</h4>
       {general && <p className="library-system-skill">skill-library-manager · System managed</p>}
-      {inventory.skills.filter(skill => matches(`${skill.id} ${skill.description}`)).map(skill => <div className="library-selection-row" key={skill.id}>
+      {inventory.skills.filter(skill => matches(`${skill.name} ${skill.id} ${skill.description}`)).map(skill => <div className="library-selection-row" key={skill.id}>
         <Toggle label={skill.name || skill.id} checked={selection.skills.includes(skill.id)} disabled={disabled || (!skill.valid && !selection.skills.includes(skill.id))} onCheckedChange={checked => onChange({ ...selection, skills: checked ? [...selection.skills, skill.id] : selection.skills.filter(id => id !== skill.id) })} />
         <p className={skill.valid ? 'muted' : 'form-error'}>{skill.error || skill.description}</p>
       </div>)}
-      {selection.skills.filter(id => !inventory.skills.some(s => s.id === id)).map(id => <div className="library-selection-row" key={id}><Toggle label={`${id} · Missing`} checked disabled={disabled} onCheckedChange={() => onChange({ ...selection, skills: selection.skills.filter(s => s !== id) })} /></div>)}
+      {selection.skills.filter(id => !inventory.skills.some(s => s.id === id)).map(id => <div className="library-selection-row" key={id}><Toggle label={`${id} · ${inventory.search || inventory.skillsHasMore || inventory.skillsWindowStart ? 'Selected' : 'Missing'}`} checked disabled={disabled} onCheckedChange={() => onChange({ ...selection, skills: selection.skills.filter(s => s !== id) })} /></div>)}
       {!inventory.skills.length && <p className="muted">No user skills installed.</p>}
+      <LibrarySkillsPaging inventory={inventory} onPage={setInventory} />
       <h4>MCP connections</h4>
-      {inventory.connections.filter(c => matches(`${c.name} ${c.catalog?.tools.map(t => t.name).join(' ') ?? ''}`)).map(connection => {
+      {inventory.connections.map(connection => {
         const selected = selection.mcpConnections.find(c => c.connectionId === connection.id);
         const changeTools = (tools: string[]) => onChange({ ...selection, mcpConnections: selection.mcpConnections.map(c => c.connectionId === connection.id ? { ...c, tools } : c) });
         const tools = connection.catalog?.tools ?? [];
@@ -50,7 +54,7 @@ export function CapabilitySelector({ value, onChange, harness, general = false, 
           </details>}
         </div>;
       })}
-      {selection.mcpConnections.filter(c => !inventory.connections.some(i => i.id === c.connectionId)).map(c => <Toggle key={c.connectionId} label={`${c.connectionId} · Missing`} checked disabled={disabled} onCheckedChange={() => onChange({ ...selection, mcpConnections: selection.mcpConnections.filter(s => s.connectionId !== c.connectionId) })} />)}
+      {selection.mcpConnections.filter(c => !inventory.connections.some(i => i.id === c.connectionId)).map(c => <Toggle key={c.connectionId} label={`${c.connectionId} · ${inventory.search ? 'Selected' : 'Missing'}`} checked disabled={disabled} onCheckedChange={() => onChange({ ...selection, mcpConnections: selection.mcpConnections.filter(s => s.connectionId !== c.connectionId) })} />)}
       {!inventory.connections.length && <p className="muted">No MCP connections.</p>}
     </>}
   </div>;

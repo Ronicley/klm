@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useContext, useId } from 'react';
 import { ChevronDown, GitFork, Plus, Trash2, X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
@@ -7,6 +7,8 @@ import { ChoiceOutputEditor } from './ChoiceOutputEditor';
 import { ChoiceOutputPreview } from './ChoiceOutputPreview';
 import { normalizeChoiceName, outputVariables } from './choice';
 import { createForkBranch, forkOutputError, gitBranchNameError, type ForkBranch, type ForkDefinition } from './fork';
+import { forgetDrafts, useEngineDraft } from '../drafts/draftStore';
+import { GraphDraftScope } from './draftScope';
 
 export function ForkNodePanel({ fork, destinations, payloadFields = [], onSave, onClose }: {
   fork: ForkDefinition;
@@ -16,8 +18,9 @@ export function ForkNodePanel({ fork, destinations, payloadFields = [], onSave, 
   onClose: () => void;
 }) {
   const id = useId();
-  const [draft, setDraft] = useState(fork);
-  const [expandedId, setExpandedId] = useState<string | undefined>(fork.branches[0]?.id);
+  const key = useContext(GraphDraftScope);
+  const [draft, setDraft, clearDraft] = useEngineDraft(`${key}.fork`, fork);
+  const [expandedId, setExpandedId] = useEngineDraft<string | null>(`${key}.expanded`, fork.branches[0]?.id ?? null);
   const names = draft.branches.map(branch => branch.name.trim());
   const duplicate = names.some((name, index) => name && names.indexOf(name) !== index);
   const gitBranches = draft.branches.filter(branch => branch.separateWorktree !== false).map(branch => branch.gitBranch).filter(Boolean);
@@ -33,7 +36,7 @@ export function ForkNodePanel({ fork, destinations, payloadFields = [], onSave, 
   }}>
     <form className="graph-choice-form" onSubmit={event => {
       event.preventDefault();
-      if (valid) onSave({ name: draft.name.trim(), branches: draft.branches.map(branch => ({ ...branch, name: branch.name.trim(), outputFields: branch.outputFields.map(field => ({ ...field, name: normalizeChoiceName(field.name, true) })) })) });
+      if (valid) { onSave({ name: draft.name.trim(), branches: draft.branches.map(branch => ({ ...branch, name: branch.name.trim(), outputFields: branch.outputFields.map(field => ({ ...field, name: normalizeChoiceName(field.name, true) })) })) }); clearDraft(draft); }
     }}>
       <div className="graph-agent-panel-header"><h2 id={`${id}-title`}>Fork</h2><IconButton label="Close fork settings" onClick={onClose}><X /></IconButton></div>
       <div className="graph-agent-panel-field"><label htmlFor={`${id}-name`}>Name</label><Input id={`${id}-name`} autoFocus required maxLength={80} value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} /></div>
@@ -50,14 +53,14 @@ export function ForkNodePanel({ fork, destinations, payloadFields = [], onSave, 
           const nameError = branch.name.trim() ? '' : 'Enter a name.';
           const isolated = branch.separateWorktree !== false;
           const gitNameError = isolated ? gitBranchNameError(branch.gitBranch) : '';
-          return <section key={branch.id} className="graph-fork-branch-section">
+          return <GraphDraftScope.Provider key={branch.id} value={`${key}.branch:${branch.id}`}><section className="graph-fork-branch-section">
             <div className="graph-fork-branch-heading">
-              <Button variant="ghost" className="graph-fork-branch-tab" aria-expanded={expanded} aria-controls={`${fieldId}-form`} onClick={() => setExpandedId(expanded ? undefined : branch.id)}>
+              <Button variant="ghost" className="graph-fork-branch-tab" aria-expanded={expanded} aria-controls={`${fieldId}-form`} onClick={() => setExpandedId(expanded ? null : branch.id)}>
                 <GitFork /><span>{branch.name || `Branch ${index + 1}`}</span>{(nameError || outputError || gitNameError) && <span className="graph-fork-incomplete" aria-label="Incomplete branch">!</span>}<ChevronDown className="graph-fork-chevron" />
               </Button>
               <IconButton label={`Remove branch ${branch.name || index + 1}`} disabled={draft.branches.length <= 2} onClick={() => {
                 setDraft(current => ({ ...current, branches: current.branches.filter(item => item.id !== branch.id) }));
-                if (expanded) setExpandedId(undefined);
+                if (expanded) setExpandedId(null);
               }}><Trash2 /></IconButton>
             </div>
             {expanded && <div id={`${fieldId}-form`} className="graph-fork-branch-editor">
@@ -74,12 +77,12 @@ export function ForkNodePanel({ fork, destinations, payloadFields = [], onSave, 
               {outputError && <p className="form-error" role="alert">{outputError}</p>}
               {!outputError && branch.outputFields.length > 0 && <ChoiceOutputPreview context="fork" inputFields={[]} outputFields={branch.outputFields} />}
             </div>}
-          </section>;
+          </section></GraphDraftScope.Provider>;
         })}</div>
         {duplicate && <p className="form-error" role="alert">Each branch needs a unique name.</p>}
         {duplicateGitBranches && <p className="form-error" role="alert">Use a different Git branch for each worktree.</p>}
       </div>
-      <div className="graph-choice-form-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={!valid}>Apply</Button></div>
+      <div className="graph-choice-form-actions"><Button onClick={() => { forgetDrafts(key); onClose(); }}>Cancel</Button><Button type="submit" variant="primary" disabled={!valid}>Apply</Button></div>
     </form>
   </aside>;
 }

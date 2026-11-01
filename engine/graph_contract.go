@@ -169,6 +169,9 @@ func compileGraph(g GraphDefinition, agents []AgentRecord, validateModel func(Ef
 	c := &CompiledGraph{Definition: g, Agents: map[string]EffectiveGraphAgent{}, Connections: map[string]GraphConnection{}, Incoming: map[string][]string{}, Outgoing: map[string][]string{}, Outputs: map[string]CompiledOutput{}}
 	agentByID := map[string]AgentRecord{}
 	for _, a := range agents {
+		if _, duplicate := agentByID[a.ID]; duplicate {
+			return nil, fmt.Errorf("Conflicting graph agent identifier %s.", a.ID)
+		}
 		agentByID[a.ID] = a
 	}
 	choiceSources := map[string][]string{}

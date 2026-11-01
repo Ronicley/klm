@@ -1,0 +1,12 @@
+.delegation-activity { border: 1px solid var(--color-border); border-radius: 12px; padding: 12px; margin: 12px 0; }
+.delegation-activity > header, .delegation-history-dialog > header, .delegation-history-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.delegation-activity > header > span, .delegation-activity > small, .delegation-member small { color: var(--color-muted); font-size: 12px; }
+.delegation-member { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--color-border); }
+.delegation-member > div:first-child { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.delegation-member-actions { display: flex; gap: 6px; }
+.delegation-history-dialog { width: min(860px, calc(100vw - 32px)); height: min(740px, calc(100dvh - 32px)); max-height: calc(100dvh - 32px); padding: 16px; }
+.delegation-history-dialog[open] { display: flex; flex-direction: column; gap: 12px; }
+.delegation-history-dialog > header { flex: none; }
+.delegation-history-dialog h2 { font-size: 16px; margin: 0; }
+.delegation-history-dialog .chat-history { flex: 1; min-height: 0; }
+.delegation-output { flex: 1; min-height: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }

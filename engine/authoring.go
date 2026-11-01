@@ -100,9 +100,22 @@ type Viewport struct {
 	Y    float64 `json:"y"`
 	Zoom float64 `json:"zoom"`
 }
+type GraphHandle struct {
+	ID   string  `json:"id"`
+	Type string  `json:"type"`
+	Side string  `json:"side"`
+	Left float64 `json:"left"`
+	Top  float64 `json:"top"`
+}
+type GraphConnectionLayout struct {
+	SourceHandle string `json:"sourceHandle"`
+	TargetHandle string `json:"targetHandle"`
+}
 type GraphLayout struct {
-	Positions map[string]Point `json:"positions"`
-	Viewport  *Viewport        `json:"viewport,omitempty"`
+	Positions   map[string]Point                 `json:"positions"`
+	Viewport    *Viewport                        `json:"viewport,omitempty"`
+	Handles     map[string][]GraphHandle         `json:"handles,omitempty"`
+	Connections map[string]GraphConnectionLayout `json:"connections,omitempty"`
 }
 type GraphRecord struct {
 	ID         string          `json:"id"`
@@ -145,6 +158,18 @@ func validAuthoringID(id string) bool {
 func revision(data []byte) string { hash := sha256.Sum256(data); return hex.EncodeToString(hash[:]) }
 
 func (a *app) authoringProject(w http.ResponseWriter, r *http.Request) (Project, bool) {
+	if a.store != nil {
+		p, err := a.store.readProjectMeta(r.Context(), r.PathValue("id"))
+		if err != nil {
+			sqlHTTPError(w, err)
+			return Project{}, false
+		}
+		if p.Removed {
+			fail(w, 404, "Project not found.")
+			return Project{}, false
+		}
+		return p, true
+	}
 	a.mu.Lock()
 	p := a.state.project(r.PathValue("id"))
 	if p == nil || p.Removed {
@@ -327,8 +352,9 @@ func loadAuthoring(p Project) (AuthoringCatalog, error) {
 				err = errors.New("Invalid filename identifier.")
 			}
 			if err == nil && kind == "agents" {
-				agent := AgentDefinition{Enabled: true}
-				err = toml.NewDecoder(bytes.NewReader(b)).DisallowUnknownFields().Decode(&agent)
+				document, parseErr := readAgentDocument(b)
+				agent := document.AgentDefinition
+				err = parseErr
 				if err == nil && authoringSlug(agent.Name) != id {
 					err = errors.New("Agent name and filename identifier differ.")
 				}
@@ -355,6 +381,7 @@ func loadAuthoring(p Project) (AuthoringCatalog, error) {
 					if le == nil {
 						le = json.Unmarshal(lb, &layout)
 						if le == nil {
+							discardInvalidGraphHandles(&layout)
 							le = validateLayout(layout)
 						}
 					}
@@ -394,6 +421,20 @@ func (a *app) authoring(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "Cannot read project configuration: "+err.Error())
 		return
 	}
+	if a.store != nil {
+		scan, err := a.scanAgentCatalogLocked(r.Context(), p.ID)
+		if err != nil {
+			agentHTTPError(w, err)
+			return
+		}
+		for _, diagnostic := range scan.Diagnostics {
+			c.Errors = append(c.Errors, diagnostic.Message)
+		}
+		// Compatibility surface remains complete for graph editors. New agent
+		// management/pickers use the bounded /api/agents pages and exact detail.
+		respond(w, 200, map[string]any{"agents": scan.Agents, "graphs": c.Graphs, "errors": c.Errors, "diagnostics": scan.Diagnostics, "complete": scan.Complete, "revision": scan.Revision})
+		return
+	}
 	respond(w, 200, c)
 }
 func (a *app) projectModels(w http.ResponseWriter, r *http.Request) {
@@ -404,7 +445,7 @@ func (a *app) projectModels(w http.ResponseWriter, r *http.Request) {
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(55 * time.Second))
 	c, err := a.catalog(r.Context(), Session{ProjectID: p.ID, Harness: r.PathValue("harness")}, p.Folder, r.URL.Query().Get("refresh") == "true")
 	if err != nil {
-		fail(w, 502, "Could not load harness models. Check the harness configuration and retry.")
+		fail(w, 502, modelCatalogLoadError)
 		return
 	}
 	respond(w, 200, c)
@@ -434,6 +475,10 @@ func catalogForMutation(p Project) (AuthoringCatalog, error) {
 	return c, err
 }
 func (a *app) saveAgent(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.saveCatalogAgent(w, r)
+		return
+	}
 	p, ok := a.authoringProject(w, r)
 	if !ok {
 		return
@@ -478,6 +523,13 @@ func (a *app) saveAgent(w http.ResponseWriter, r *http.Request) {
 	oldID := r.PathValue("item")
 	a.mu.Lock()
 	recoveringLibrary := len(a.state.LibraryDeletions) > 0
+	if a.store != nil {
+		if err := a.store.readers.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM data_library_deletions)`).Scan(&recoveringLibrary); err != nil {
+			a.mu.Unlock()
+			sqlHTTPError(w, err)
+			return
+		}
+	}
 	a.mu.Unlock()
 	if recoveringLibrary {
 		fail(w, 409, "A library deletion needs recovery before editing agents.")
@@ -508,6 +560,9 @@ func (a *app) saveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b, err := toml.Marshal(d)
+	if old != nil {
+		b, err = marshalExistingAgentDocument(p, oldID, d)
+	}
 	if err != nil {
 		fail(w, 400, err.Error())
 		return
@@ -545,6 +600,10 @@ func (a *app) saveAgent(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, AgentRecord{d, id, revision(b), refs})
 }
 func (a *app) deleteAgent(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.deleteCatalogAgent(w, r)
+		return
+	}
 	p, ok := a.authoringProject(w, r)
 	if !ok {
 		return
@@ -723,8 +782,80 @@ func validateLayout(l GraphLayout) error {
 	if v := l.Viewport; v != nil && (!finite(v.X) || !finite(v.Y) || !finite(v.Zoom) || v.Zoom <= 0 || v.Zoom > 10) {
 		return errors.New("Invalid viewport.")
 	}
+	return validateGraphHandles(l)
+}
+
+func validateGraphHandles(l GraphLayout) error {
+	bad := func() error { return errors.New("Invalid graph connection layout.") }
+	transient := func(id string) bool { return id == "dyn-src" || id == "dyn-tgt" }
+	lookup := map[string]map[string]GraphHandle{}
+	for node, handles := range l.Handles {
+		if node == "" {
+			return bad()
+		}
+		lookup[node] = map[string]GraphHandle{}
+		for _, h := range handles {
+			if h.ID == "" || transient(h.ID) || (h.Type != "source" && h.Type != "target") || math.IsNaN(h.Left) || math.IsNaN(h.Top) || h.Left < 0 || h.Left > 100 || h.Top < 0 || h.Top > 100 {
+				return bad()
+			}
+			if _, exists := lookup[node][h.ID]; exists {
+				return bad()
+			}
+			switch h.Side {
+			case "left":
+				if h.Left != 0 {
+					return bad()
+				}
+			case "right":
+				if h.Left != 100 {
+					return bad()
+				}
+			case "top":
+				if h.Top != 0 {
+					return bad()
+				}
+			case "bottom":
+				if h.Top != 100 {
+					return bad()
+				}
+			default:
+				return bad()
+			}
+			lookup[node][h.ID] = h
+		}
+	}
+	for key, c := range l.Connections {
+		var logical []string
+		if json.Unmarshal([]byte(key), &logical) != nil || len(logical) != 3 || logical[0] == "" || logical[1] == "" || logical[2] == "" || c.SourceHandle == "" || c.TargetHandle == "" || transient(c.SourceHandle) || transient(c.TargetHandle) {
+			return bad()
+		}
+		if h, exists := lookup[logical[0]][c.SourceHandle]; exists {
+			if h.Type != "source" {
+				return bad()
+			}
+		} else if c.SourceHandle != logical[1] {
+			return bad()
+		}
+		if h, exists := lookup[logical[2]][c.TargetHandle]; exists {
+			if h.Type != "target" {
+				return bad()
+			}
+		} else if c.TargetHandle != "input" && c.TargetHandle != "sources" && c.TargetHandle != "branches" {
+			return bad()
+		}
+	}
 	return nil
 }
+
+// Geometry is optional presentation data: damaged metadata must not invalidate
+// executable topology or otherwise valid saved node positions on read.
+func discardInvalidGraphHandles(l *GraphLayout) {
+	if validateGraphHandles(*l) != nil {
+		l.Handles = nil
+		l.Connections = nil
+	}
+}
+
 func (a *app) createGraphDraft(w http.ResponseWriter, r *http.Request) {
 	p, ok := a.authoringProject(w, r)
 	if !ok {
@@ -771,6 +902,7 @@ func (a *app) saveGraph(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Definition GraphDefinition `json:"definition"`
 		Revision   string          `json:"revision"`
+		Layout     *GraphLayout    `json:"layout,omitempty"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -782,7 +914,7 @@ func (a *app) saveGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	a.authoringMu.Lock()
 	defer a.authoringMu.Unlock()
-	c, err := catalogForMutation(p)
+	c, err := a.graphAuthoringLocked(r.Context(), p)
 	if err != nil {
 		fail(w, 409, err.Error())
 		return
@@ -790,6 +922,12 @@ func (a *app) saveGraph(w http.ResponseWriter, r *http.Request) {
 	if err = validateGraph(body.Definition, c.Agents); err != nil {
 		fail(w, 400, err.Error())
 		return
+	}
+	if body.Layout != nil {
+		if err = validateLayout(*body.Layout); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
 	}
 	// Check override compatibility using the same real catalogs as agent registration.
 	for _, n := range body.Definition.Nodes {
@@ -837,6 +975,13 @@ func (a *app) saveGraph(w http.ResponseWriter, r *http.Request) {
 	} else if err != nil {
 		fail(w, 500, err.Error())
 		return
+	}
+	if body.Layout != nil {
+		layout, err = json.MarshalIndent(body.Layout, "", "  ")
+		if err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
 	}
 	b, err := yaml.Marshal(body.Definition)
 	if err != nil {
@@ -952,12 +1097,23 @@ func (a *app) saveGraphLayout(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, err.Error())
 		return
 	}
-	if _, err := readConfig(p, layoutFile(id)); err != nil {
-		if _, ge := readConfig(p, graphFile(id)); ge != nil {
-			fail(w, 404, "Graph or draft not found.")
+	// Position/viewport autosave cannot replace committed endpoint geometry.
+	// Only explicit graph Save commits topology and its geometry together.
+	var saved GraphLayout
+	if data, err := readConfig(p, layoutFile(id)); err == nil {
+		if err = json.Unmarshal(data, &saved); err != nil {
+			fail(w, 409, "Layout changed or is unreadable. Reload before saving.")
 			return
 		}
+		discardInvalidGraphHandles(&saved)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		fail(w, 500, err.Error())
+		return
+	} else if _, ge := readConfig(p, graphFile(id)); ge != nil {
+		fail(w, 404, "Graph or draft not found.")
+		return
 	}
+	l.Handles, l.Connections = saved.Handles, saved.Connections
 	b, _ := json.MarshalIndent(l, "", "  ")
 	if err := writeConfig(p, layoutFile(id), b); err != nil {
 		fail(w, 500, err.Error())

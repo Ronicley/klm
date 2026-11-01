@@ -21,7 +21,7 @@ const (
 	maxWebhookPayloadBytes   = 25 << 20
 	maxWebhookRetainedBytes  = 256 << 20
 	maxWebhookRetainedEvents = 10000
-	maxWebhookConnections   = 1000
+	maxWebhookConnections    = 1000
 	maxProjectWebhooks       = 100
 	webhookBatchSize         = 100
 )
@@ -458,6 +458,10 @@ func (a *app) webhookConnectionLocked(w http.ResponseWriter, r *http.Request) (W
 }
 
 func (a *app) listWebhooks(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.listSQLWebhooks(w, r)
+		return
+	}
 	limit, cursor, err := parseWebhookPage(r, "connections")
 	if err != nil {
 		fail(w, 400, err.Error())
@@ -501,6 +505,10 @@ func (a *app) listWebhooks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listWebhookEvents(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.listSQLWebhookEvents(w, r)
+		return
+	}
 	limit, cursor, err := parseWebhookPage(r, "events")
 	if err != nil {
 		fail(w, 400, err.Error())
@@ -534,6 +542,10 @@ func (a *app) listWebhookEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) getWebhookEvent(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.getSQLWebhookEvent(w, r)
+		return
+	}
 	a.mu.Lock()
 	if _, ok := a.webhookConnectionLocked(w, r); !ok {
 		a.mu.Unlock()
@@ -554,6 +566,10 @@ func (a *app) getWebhookEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listWebhookReleases(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.listSQLWebhookReleases(w, r)
+		return
+	}
 	limit, _, err := parseWebhookPage(r, "releases")
 	if err != nil {
 		fail(w, 400, err.Error())

@@ -1,13 +1,16 @@
-import { useId, useState } from 'react';
+import { useContext, useId } from 'react';
 import { Input } from '../../design-system/Input';
 import { Textarea } from '../../design-system/Textarea';
 import { previewOutput, type OutputContext, type ChoiceOutputField, type ChoicePayloadField } from './choice';
+import { useEngineDraft } from '../drafts/draftStore';
+import { GraphDraftScope } from './draftScope';
 
 export function ChoiceOutputPreview({ inputFields, outputFields, context = 'choice' }: { inputFields: ChoicePayloadField[]; outputFields: ChoiceOutputField[]; context?: OutputContext }) {
   const id = useId();
-  const [task, setTask] = useState('');
-  const [commandResult, setCommandResult] = useState('');
-  const [inputText, setInputText] = useState(() => JSON.stringify(Object.fromEntries(inputFields.filter(field => field.required).map(field => [field.name.trim(), ''])), null, 2));
+  const key = `${useContext(GraphDraftScope)}.preview`;
+  const [task, setTask] = useEngineDraft(`${key}.task`, '');
+  const [commandResult, setCommandResult] = useEngineDraft(`${key}.result`, '');
+  const [inputText, setInputText] = useEngineDraft(`${key}.input`, () => JSON.stringify(Object.fromEntries(inputFields.filter(field => field.required).map(field => [field.name.trim(), ''])), null, 2));
   let result: ReturnType<typeof previewOutput>;
   try { result = previewOutput(context, inputFields, outputFields, JSON.parse(inputText), task, context === 'terminal' ? commandResult : undefined); }
   catch { result = { output: null, error: 'Enter valid JSON for input values.' }; }

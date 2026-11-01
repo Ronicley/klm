@@ -8,6 +8,7 @@ import { IS_MOBILE_HOST, returnToHosts } from '../../platform';
 import { animateSortPositions, captureSortPositions, type SortPositions } from '../sortAnimation';
 import klmIcon from './klm-icon.png';
 import { topicArchived } from '../workspace/topics';
+import { EngineSwitcher } from '../engines/EngineSwitcher';
 
 function projectRuntimeState(project: Project, sessions: Session[]) {
   let state = 'off';
@@ -108,6 +109,6 @@ export function ProjectRail({ projects, sessions, activeId, onSelect, onEdit, on
     {dragging && dropBefore === '' ? <span className="project-drop-placeholder" aria-hidden="true" /> : null}
     </div>
     <IconButton label={adding ? 'Choosing project directory' : 'Add project'} className="add-project-button" disabled={adding} onClick={onAdd}><Plus /></IconButton>
-    <div className="project-rail-footer"><ThemePicker /><IconButton label="Settings" onClick={onSettings}><Settings /></IconButton>{IS_MOBILE_HOST && <IconButton label="Back to hosts" data-klm-host-navigation onClick={returnToHosts}><LogOut /></IconButton>}</div>
+    <div className="project-rail-footer"><ThemePicker /><EngineSwitcher rail /><IconButton label="Settings" onClick={onSettings}><Settings /></IconButton>{IS_MOBILE_HOST && <IconButton label="Back to hosts" data-klm-host-navigation onClick={returnToHosts}><LogOut /></IconButton>}</div>
   </nav>;
 }

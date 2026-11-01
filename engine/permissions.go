@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,23 +11,24 @@ import (
 )
 
 type Permission struct {
-	mcpTool     bool           // Adapter-confirmed MCP identity; never inferred from tool arguments.
-	ID          string         `json:"id"`
-	Harness     string         `json:"harness"`
-	Kind        string         `json:"kind"`
-	Title       string         `json:"title"`
-	Description string         `json:"description"`
-	Patterns    []string       `json:"patterns"`
-	Details     map[string]any `json:"details,omitempty"`
-	Command     string         `json:"command,omitempty"`
-	Path        string         `json:"path,omitempty"`
-	ScopeLabel  string         `json:"scopeLabel,omitempty"`
-	Dangerous   bool           `json:"dangerous,omitempty"`
-	Decisions   []string       `json:"decisions"`
-	AllowLabel  string         `json:"allowLabel,omitempty"`
-	CreatedAt   string         `json:"createdAt"`
-	Resolving   bool           `json:"resolving,omitempty"`
-	SourceID    string         `json:"-"`
+	analyticsOrigin string         // Internal native origin, never projected as UI ownership.
+	mcpTool         bool           // Adapter-confirmed MCP identity; never inferred from tool arguments.
+	ID              string         `json:"id"`
+	Harness         string         `json:"harness"`
+	Kind            string         `json:"kind"`
+	Title           string         `json:"title"`
+	Description     string         `json:"description"`
+	Patterns        []string       `json:"patterns"`
+	Details         map[string]any `json:"details,omitempty"`
+	Command         string         `json:"command,omitempty"`
+	Path            string         `json:"path,omitempty"`
+	ScopeLabel      string         `json:"scopeLabel,omitempty"`
+	Dangerous       bool           `json:"dangerous,omitempty"`
+	Decisions       []string       `json:"decisions"`
+	AllowLabel      string         `json:"allowLabel,omitempty"`
+	CreatedAt       string         `json:"createdAt"`
+	Resolving       bool           `json:"resolving,omitempty"`
+	SourceID        string         `json:"-"`
 }
 
 type permissionGrant struct {
@@ -113,6 +115,17 @@ func (p *adapter) requestPermission(req Permission, scope map[string]any, reply 
 			return nil
 		}
 	}
+	if a.store != nil {
+		decision, reason, err := p.requestSQLPermissionLocked(&req, key, ruleHarness, ruleKind, ruleKey, facts.decision, reply)
+		a.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		if decision != "" {
+			return p.replyAutomaticPermission(req, decision, reason, reply)
+		}
+		return nil
+	}
 	s := a.state.session(p.id)
 	if s == nil {
 		a.mu.Unlock()
@@ -124,7 +137,7 @@ func (p *adapter) requestPermission(req Permission, scope map[string]any, reply 
 	}
 	decision := ""
 	reason := "saved rule"
-	if s.YOLO {
+	if a.state.sessionYOLO(s) {
 		reason = "YOLO mode"
 		decision = "deny"
 		if slices.Contains(req.Decisions, "once") {
@@ -149,6 +162,7 @@ func (p *adapter) requestPermission(req Permission, scope map[string]any, reply 
 		return p.replyAutomaticPermission(req, facts.decision, "workspace policy", reply)
 	}
 	err := a.commitLocked(func(d *diskState) {
+		p.analyticsWaitStart(d, req.ID, req.analyticsOrigin)
 		s := d.session(p.id)
 		s.Permissions = append(s.Permissions, req)
 		s.UpdatedAt = now()
@@ -157,7 +171,13 @@ func (p *adapter) requestPermission(req Permission, scope map[string]any, reply 
 		if p.turn.approvals == nil {
 			p.turn.approvals = map[string]*pendingApproval{}
 		}
-		p.turn.approvals[req.ID] = &pendingApproval{request: req, key: key, reply: reply, ruleKey: ruleKey, ruleKind: ruleKind, ruleHarness: ruleHarness}
+		accountedReply := func(allow bool) error {
+			if err := reply(allow); err != nil {
+				return err
+			}
+			return p.analyticsWaitEnd(req.ID)
+		}
+		p.turn.approvals[req.ID] = &pendingApproval{request: req, key: key, reply: accountedReply, ruleKey: ruleKey, ruleKind: ruleKind, ruleHarness: ruleHarness}
 	}
 	a.mu.Unlock()
 	return err
@@ -167,12 +187,38 @@ func (p *adapter) dismissPermission(sourceID string) error {
 	a := p.app
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.store != nil {
+		for id, pending := range p.turn.approvals {
+			if pending.request.SourceID != sourceID {
+				continue
+			}
+			err := p.sqlAnalyticsWrite(func(st *sqliteSessionTx) error {
+				if err := st.analyticsWait(p.turn, id, false, true, true); err != nil {
+					return err
+				}
+				key, err := st.requestKey("pending_permissions", p.id, id)
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				return st.deleteRecord("pending_permissions", key)
+			})
+			if err == nil {
+				delete(p.turn.approvals, id)
+			}
+			return err
+		}
+		return nil
+	}
 	for id, pending := range p.turn.approvals {
 		if pending.request.SourceID != sourceID {
 			continue
 		}
 		delete(p.turn.approvals, id)
 		return a.commitLocked(func(d *diskState) {
+			analyticsWait(d, p.turn, id, false, true)
 			s := d.session(p.id)
 			s.Permissions = slices.DeleteFunc(s.Permissions, func(req Permission) bool { return req.ID == id })
 			s.UpdatedAt = now()
@@ -191,6 +237,10 @@ func (a *app) permissionDecision(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := a.replyConversationPermission(id, r.PathValue("permissionID"), body.Decision, nil, nil); err != nil {
 		failSessionControl(w, err)
+		return
+	}
+	if a.store != nil {
+		a.respondSQLSession(w, r, id, 200)
 		return
 	}
 	a.mu.Lock()
@@ -213,6 +263,9 @@ func permissionDecisionScope(decision string) string {
 }
 
 func (a *app) replyConversationPermission(id, requestID, decision string, origin *SpawnOrigin, validateLocked func() error) error {
+	if a.store != nil {
+		return a.replySQLPermission(id, requestID, decision, origin, validateLocked)
+	}
 	resolveRelated := false
 	defer func() {
 		if resolveRelated {

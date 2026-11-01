@@ -16,12 +16,15 @@ $config = Join-Path $root 'dist\tauri-release.json'
 [IO.File]::WriteAllText($config, (@{ version = $Version } | ConvertTo-Json))
 
 # Build desktop first: Tauri downloads the NSIS compiler reused by the engine build.
+$previousDesktopVersion = $env:VITE_DESKTOP_VERSION
+$env:VITE_DESKTOP_VERSION = $Version
 Push-Location $desktop
 try {
     & npm.cmd run desktop:build -- --config $config -- --locked
     if ($LASTEXITCODE -ne 0) { throw 'Desktop installer build failed.' }
 } finally {
     Pop-Location
+    $env:VITE_DESKTOP_VERSION = $previousDesktopVersion
 }
 & (Join-Path $PSScriptRoot 'build-engine.ps1') -Version $Version
 

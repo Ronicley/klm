@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -16,8 +14,13 @@ import (
 var codexLibraryVersions sync.Map
 
 func validateCodexLibraryBinary(b binary) error {
-	if runtime.GOOS != "windows" {
-		return errors.New("Managed Codex Library execution is validated on Windows only.")
+	release, err := b.use()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := validateManagedChatPlatform(); err != nil {
+		return err
 	}
 	info, err := os.Stat(b.path)
 	if err != nil {
@@ -32,10 +35,9 @@ func validateCodexLibraryBinary(b binary) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, b.path, append(append([]string{}, b.args...), "--version")...)
-	configureProcess(cmd)
-	output, err := cmd.Output()
-	valid := err == nil && strings.TrimSpace(string(output)) == "codex-cli 0.153.4"
+	output, err := probeOutput(ctx, b.node, b.path, append(append([]string{}, b.args...), "--version")...)
+	recipe, _ := harnessRecipeFor("codex")
+	valid := err == nil && strings.TrimSpace(output) == "codex-cli "+recipe.Version
 	if err == nil {
 		codexLibraryVersions.Store(key, valid)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -405,6 +406,22 @@ func (p *adapter) replyAutomaticPermission(req Permission, decision, reason stri
 	a := p.app
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.store != nil {
+		return p.sqlAnalyticsWrite(func(st *sqliteSessionTx) error {
+			entry := event("status", "Automatic permission decision: "+decision+" ("+reason+")")
+			entry.Title, entry.Status, entry.ConsultationID = req.Title, "completed", p.turn.consultationID
+			entry.Data = map[string]any{"permission": req.Kind, "decision": decision, "automatic": true, "scope": req.ScopeLabel, "reason": reason}
+			if _, err := st.appendEvent(p.id, entry); err != nil {
+				return err
+			}
+			s, err := st.sessionMeta(p.id)
+			if err != nil {
+				return err
+			}
+			s.UpdatedAt = now()
+			return st.putSessionMeta(s)
+		})
+	}
 	return a.commitLocked(func(d *diskState) {
 		s := d.session(p.id)
 		entry := event("status", "Automatic permission decision: "+decision+" ("+reason+")")
@@ -431,6 +448,10 @@ func (a *app) updatePermissionSettings(w http.ResponseWriter, r *http.Request) {
 		failSessionControl(w, err)
 		return
 	}
+	if a.store != nil {
+		a.respondSQLSession(w, r, id, 200)
+		return
+	}
 	a.mu.Lock()
 	response := a.currentSessionUpdateLocked(id)
 	a.mu.Unlock()
@@ -438,6 +459,41 @@ func (a *app) updatePermissionSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) permissionRules(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		limit, err := sqlPageLimit(r, 100)
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		items := []permissionGrant{}
+		next := ""
+		more := false
+		err = a.store.readSnapshot(r.Context(), func(tx *sql.Tx) error {
+			ids, err := sqliteQueryIDs(r.Context(), tx, `SELECT id FROM data_permission_grants g WHERE id>? AND NOT EXISTS(SELECT 1 FROM permission_reply_intents i WHERE i.grant_id=g.id) ORDER BY id LIMIT ?`, r.URL.Query().Get("after"), limit+1)
+			if err != nil {
+				return err
+			}
+			more = len(ids) > limit
+			if more {
+				ids = ids[:limit]
+			}
+			for _, id := range ids {
+				var grant permissionGrant
+				if err := decodeSQLiteRecord(r.Context(), tx, "permission_grants", id, 64<<10, &grant); err != nil {
+					return err
+				}
+				items = append(items, grant)
+				next = id
+			}
+			return nil
+		})
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		respond(w, 200, map[string]any{"items": items, "hasMore": more, "nextAfter": next})
+		return
+	}
 	a.mu.Lock()
 	response := slices.Clone(a.state.Grants)
 	a.mu.Unlock()
@@ -447,6 +503,10 @@ func (a *app) permissionRules(w http.ResponseWriter, r *http.Request) {
 // Apply new project/global decisions to cards already waiting elsewhere too.
 // Deliver callbacks outside app.mu; inactive turns and in-flight replies are skipped.
 func (a *app) resolveRememberedPermissions() {
+	if a.store != nil {
+		a.resolveSQLPermissions()
+		return
+	}
 	type resolution struct {
 		sessionID, requestID, decision, reason string
 		turn                                   *turn
@@ -464,7 +524,7 @@ func (a *app) resolveRememberedPermissions() {
 				continue
 			}
 			decision, reason := rememberedPermission(a.state.Grants, s, pending.ruleHarness, pending.ruleKind, pending.ruleKey), "saved rule"
-			if s.YOLO {
+			if a.state.sessionYOLO(s) {
 				decision, reason = "allow", "YOLO mode"
 			}
 			if decision == "" || decision == "allow" && !slices.Contains(pending.request.Decisions, "once") {
@@ -500,6 +560,17 @@ func (a *app) resolveRememberedPermissions() {
 }
 
 func (a *app) deletePermissionRule(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.mu.Lock()
+		err := a.writeSQLLocked(r.Context(), func(st *sqliteSessionTx) error { return st.deleteRecord("permission_grants", r.PathValue("ruleID")) })
+		a.mu.Unlock()
+		if err != nil {
+			sqlHTTPError(w, err)
+			return
+		}
+		respond(w, 200, map[string]bool{"deleted": true})
+		return
+	}
 	a.mu.Lock()
 	if err := a.commitLocked(func(d *diskState) {
 		d.Grants = slices.DeleteFunc(d.Grants, func(grant permissionGrant) bool { return grant.ID == r.PathValue("ruleID") })

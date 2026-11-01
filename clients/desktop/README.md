@@ -19,14 +19,24 @@ For the native client, use `npm run desktop:dev`; Rust/MSVC/WebView2 prerequisit
 are required. `npm run desktop:build` builds frontend, Rust and a per-user NSIS
 installer in `src-tauri/target/release/bundle/nsis`. No engine is bundled or started.
 
-`src/platform.ts` resolves fetch and SSE to `http://localhost:7331` inside Tauri and
-to the browser page's hostname on port 7331. Settings can persist a different HTTP(S)
-engine URL for that frontend; connecting reloads the page so requests and streams
-switch together. IP literals without a port use 7331; explicit ports are preserved,
+`src/platform.ts` resolves native fetch/SSE from the desktop's versioned saved-engine
+registry. A genuinely absent registry imports the existing resolved URL/credential
+once; the default is localhost on 7331 (17331 in development). One endpoint remains
+immutable for the life of the page. The avatar between Theme and Settings selects,
+adds, edits or removes saved engines; selection reloads the entire UI after the
+confirmed draft flush. Names/icons are local to this desktop; inactive entries
+are not monitored. Settings uses that same management flow.
+
+Browser/Focus/mobile retain their separate legacy URL selection: page hostname
+on 7331 (17331 in development), or their own saved endpoint. They do not use the
+desktop registry, credential manager or DPAPI drafts. IP literals without a port
+use 7331; explicit ports are preserved,
 including 80/443. Domains receive no added port. Without a scheme, IPs use HTTP
 and domains use HTTPS. IPv6 supports `[IP]:port` and bare compressed literals.
 For Cloudflare Tunnels, enter e.g. `klmengine.codemob.com.br`; changing the
-subdomain needs no engine allowlist update. `VITE_ENGINE_URL` remains a development override. The production
+subdomain needs no engine allowlist update. On desktop `VITE_ENGINE_URL` is only the
+initial seed when no registry exists, not an override of a saved selection. On
+browser/mobile it remains a fixed development override. The production
 desktop CSP permits HTTP(S) connections so the configured endpoint also works in the
 packaged client.
 `npm run build` / `npm run preview` remain available for browser development.
@@ -62,6 +72,35 @@ Persisted data is shared through the engine. Unsent drafts, localStorage and Web
 state are per-client and are not transferred by Focus. HTTP LAN pages use a
 `getRandomValues`-based UUID fallback; unavailable browser clipboard APIs retain
 the existing manual-copy recovery. Native directory dialogs still open on the engine PC.
+
+## Saved native engines and protected drafts
+
+- One active engine; switching never stops its agents/graphs/automations and never
+  aggregates inventories from saved engines.
+- Offline, unauthorized, loading and empty-selection screens keep connection
+  management available outside the workspace/auth gates.
+- Before changing selection, the desktop freezes new actions and waits for local
+  operations that can still change state/drafts. Cancel switch cancels only that
+  transition wait. Recording/pickers require explicit completion/cancellation.
+- Entity drafts use endpoint + confirmed database identity. Connection drafts use
+  a separate CurrentUser DPAPI document with null database identity, keyed by
+  runtime endpoint for Add and saved registration ID for Edit/Pair again. Codes,
+  secret inputs and native credentials never enter the public registry or logs.
+- Pairing a candidate does not replace the active auth generation/credential. Use
+  saved access retries a saved native credential without consuming another code.
+  Known pre-dispatch failures keep an unconsumed code usable; uncertain pairing
+  is not automatically replayed.
+- Remove forgets only the selected endpoint's native credential/metadata and keeps
+  protected drafts. It does not revoke the remote device or remove server data.
+  A failure after local credential deletion can still require re-pairing; no
+  rollback of an already-performed local step is claimed.
+- Invalid registry recovery is explicit: restore validated JSON, or preserve the
+  exact original in the protected connection document and start an empty list.
+  Existing invalid data is never silently replaced by localhost/an empty record.
+
+Source/coverage/check evidence: `../../MULTI_ENGINE_SWITCHING_IMPLEMENTATION_PROGRESS.md`
+and `../../MULTI_ENGINE_DRAFTS_COVERAGE.md`. Native runtime acceptance is pending;
+see `../../MULTI_ENGINE_DEV_VALIDATION.md` for the isolated tester procedure.
 
 ## Structure
 

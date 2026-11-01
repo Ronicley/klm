@@ -1,0 +1,7 @@
+.client-connection { min-height: 100dvh; display: grid; place-items: center; padding: 24px; background: var(--color-canvas); color: var(--color-text); }
+.client-connection-card { width: min(100%, 440px); padding: 28px; border: 1px solid var(--color-border); border-radius: 16px; background: var(--color-surface); }
+.client-connection-card h1 { margin: 0 0 24px; font-size: 22px; }
+.client-connection-card .settings-field { display: grid; gap: 8px; }
+.connected-device-list { margin-top: 16px; }
+.connected-device { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--color-border); }
+.connected-device .muted { margin-top: 4px; font-size: 12px; }

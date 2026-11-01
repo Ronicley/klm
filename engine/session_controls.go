@@ -46,6 +46,12 @@ func sessionLabels(d *diskState, s *Session, title, folder *string) (string, str
 }
 
 func (a *app) renameMoveSessionLocked(id string, title, folder *string) error {
+	if a.store != nil {
+		if folder != nil {
+			return controlError(400, "Topic membership cannot be changed.")
+		}
+		return a.writeSQLLocked(a.ctx, func(st *sqliteSessionTx) error { return st.patchSessionLabels(id, title, nil, nil, nil) })
+	}
 	name, group, err := sessionLabels(&a.state, a.state.session(id), title, folder)
 	if err != nil {
 		return err
@@ -90,6 +96,12 @@ func applySessionLabels(d *diskState, id, title, group string, archived *bool, o
 }
 
 func (a *app) archiveSessionLocked(id string, archived bool, folder *string, origin *SpawnOrigin) error {
+	if a.store != nil {
+		if folder != nil {
+			return controlError(400, "Topic membership cannot be changed.")
+		}
+		return a.writeSQLLocked(a.ctx, func(st *sqliteSessionTx) error { return st.patchSessionLabels(id, nil, nil, &archived, origin) })
+	}
 	s := a.state.session(id)
 	if err := sessionArchiveLabels(&a.state, s, &archived, folder); err != nil {
 		return err
@@ -107,6 +119,15 @@ func (a *app) archiveSessionLocked(id string, archived bool, folder *string, ori
 // Catalog discovery never holds app.mu; validate the complete resultant pair,
 // then recheck all inputs under the lock before a single durable mutation.
 func (a *app) changeSessionSettings(ctx context.Context, id string, model, effort *string, yolo *bool) error {
+	if a.store != nil {
+		return a.changeSQLSettings(ctx, id, model, effort, yolo)
+	}
+	a.mu.Lock()
+	automated := a.state.activeAutomation(id) != nil
+	a.mu.Unlock()
+	if automated {
+		return controlError(409, "Automation run settings are read-only until the run ends.")
+	}
 	if model == nil && effort == nil && yolo == nil {
 		return controlError(400, "Supply at least one setting.")
 	}
@@ -189,6 +210,15 @@ func (a *app) changeSessionSettings(ctx context.Context, id string, model, effor
 }
 
 func (a *app) changeConversationGraph(ctx context.Context, id, graphID string) error {
+	if a.store != nil {
+		return a.changeSQLGraphSelection(ctx, id, graphID)
+	}
+	a.mu.Lock()
+	automated := a.state.activeAutomation(id) != nil
+	a.mu.Unlock()
+	if automated {
+		return controlError(409, "Automation run settings are read-only until the run ends.")
+	}
 	if graphID != "" && !validAuthoringID(graphID) {
 		return controlError(400, "Invalid graph identifier.")
 	}

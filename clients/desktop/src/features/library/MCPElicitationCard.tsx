@@ -5,6 +5,8 @@ import { Select } from '../../design-system/Select';
 import { request, type QuestionRequest, type SessionResponse } from '../../engine';
 import { IS_MOBILE_HOST } from '../../platform';
 import './library.css';
+import { bindDraftDiscard, draftRecord, flushDrafts, useEngineDraft } from '../drafts/draftStore';
+import { beginLocalActivity } from '../engines/localActivities';
 
 type Field = { type?: string; title?: string; description?: string; format?: string; enum?: unknown[]; enumNames?: string[]; oneOf?: { const: string; title?: string }[]; default?: unknown; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; items?: Field };
 const fieldOptions = (field: Field) => field.oneOf?.map(value => ({ value: value.const, label: value.title ?? value.const })) ?? field.enum?.map((value, i) => ({ value: String(value), label: field.enumNames?.[i] ?? String(value) })) ?? [];
@@ -13,14 +15,18 @@ export function MCPElicitationCard({ question, sessionId, origin, onResolved }: 
   const elicitation = question.elicitation!;
   const properties = (elicitation.schema?.properties ?? {}) as Record<string, Field>;
   const required = (elicitation.schema?.required ?? []) as string[];
-  const [values, setValues] = useState<Record<string, unknown>>(() => Object.fromEntries(Object.entries(properties).filter(([, field]) => field.default !== undefined).map(([name, field]) => [name, field.default])));
+  const key = `form.elicitation:${sessionId}:${question.id}:${JSON.stringify(elicitation.schema ?? {})}`;
+  const forgetDrafts = bindDraftDiscard();
+  const [values, setValues] = useEngineDraft<Record<string, unknown>>(key, () => Object.fromEntries(Object.entries(properties).filter(([, field]) => field.default !== undefined).map(([name, field]) => [name, field.default])), false, draftRecord);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const update = (name: string, value: unknown) => setValues(current => ({ ...current, [name]: value }));
   async function reply(action: 'accept' | 'decline' | 'cancel') {
     if (busy) return;
+    const finished = beginLocalActivity('Delivering elicitation response');
     setBusy(true); setError('');
     try {
+      await flushDrafts();
       const content: Record<string, unknown> = {};
       if (action === 'accept' && elicitation.mode === 'form') for (const [name, field] of Object.entries(properties)) {
         const value = values[name];
@@ -28,7 +34,8 @@ export function MCPElicitationCard({ question, sessionId, origin, onResolved }: 
         content[name] = field.type === 'number' || field.type === 'integer' ? Number(value) : value;
       }
       onResolved(await request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/questions/${encodeURIComponent(question.id)}/elicitation`, 'POST', { action, ...(action === 'accept' && elicitation.mode === 'form' ? { content } : {}) }));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not deliver elicitation response.'); } finally { setBusy(false); }
+      forgetDrafts(key);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not deliver elicitation response.'); } finally { setBusy(false); finished(); }
   }
   return <form className="permission-card question-card" aria-label="MCP elicitation" onSubmit={event => { event.preventDefault(); void reply('accept'); }}>
     <div className="permission-heading"><strong>{elicitation.connectionName}</strong><span>Your input</span></div>

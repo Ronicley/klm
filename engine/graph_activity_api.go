@@ -23,6 +23,10 @@ type graphActivityDetail struct {
 
 // Activity is fetched on demand, scoped to the owning conversation and captured run.
 func (a *app) getGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
+	if a.store != nil {
+		a.getSQLGraphNodeActivity(w, r)
+		return
+	}
 	a.mu.Lock()
 	s := a.state.session(r.PathValue("id"))
 	run := a.state.graphRun(r.PathValue("runId"))

@@ -6,7 +6,7 @@ import { RadioGroup } from '../../design-system/RadioGroup';
 import { SearchSelect } from '../../design-system/SearchSelect';
 import { Slider } from '../../design-system/Slider';
 import { HarnessIcon } from '../chat/HarnessIcon';
-import type { Agent } from '../agents/demo';
+import type { Agent } from '../agents/types';
 import { useAgentModels } from '../agents/catalog';
 import type { Harness } from '../../engine';
 import { effortLabel, resolveAgentNode, type AgentNodeOverrides } from './agent-node';

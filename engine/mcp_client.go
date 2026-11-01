@@ -516,6 +516,19 @@ func slicesContains(values []string, value string) bool {
 func (p *adapter) capabilityWarning(message string) error {
 	p.app.mu.Lock()
 	defer p.app.mu.Unlock()
+	if p.app.store != nil {
+		return p.sqlAnalyticsWrite(func(st *sqliteSessionTx) error {
+			if _, err := st.appendEvent(p.id, event("status", "Library: "+message)); err != nil {
+				return err
+			}
+			s, err := st.sessionMeta(p.id)
+			if err != nil {
+				return err
+			}
+			s.UpdatedAt = now()
+			return st.putSessionMeta(s)
+		})
+	}
 	return p.app.commitLocked(func(d *diskState) {
 		s := d.session(p.id)
 		s.Events = append(s.Events, event("status", "Library: "+message))
@@ -608,6 +621,11 @@ func (p *adapter) callExternalMCP(ctx context.Context, name string, raw json.Raw
 	}
 	var result *mcp.CallToolResult
 	var err error
+	if child := p.turn.delegationChild; child != nil {
+		p.app.mu.Lock()
+		child.uncertainMCP = append(child.uncertainMCP, DelegationUncertainCall{SessionID: p.id, CallID: callID, Tool: name, Reason: "MCP response has not been received."})
+		p.app.mu.Unlock()
+	}
 	if route.operation == "call" {
 		result, err = live.session.CallTool(ctx, &mcp.CallToolParams{Name: route.original, Arguments: arguments})
 	} else {
@@ -623,6 +641,20 @@ func (p *adapter) callExternalMCP(ctx context.Context, name string, raw json.Raw
 		if err == nil {
 			encoded, _ := json.Marshal(value)
 			result = &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}, StructuredContent: value}
+		}
+	}
+	if child := p.turn.delegationChild; child != nil {
+		var protocolError *jsonrpc.Error
+		var notSent *mcpNotSentError
+		if err == nil || errors.As(err, &notSent) || errors.As(err, &protocolError) {
+			p.app.mu.Lock()
+			for i, pending := range child.uncertainMCP {
+				if pending.CallID == callID {
+					child.uncertainMCP = append(child.uncertainMCP[:i], child.uncertainMCP[i+1:]...)
+					break
+				}
+			}
+			p.app.mu.Unlock()
 		}
 	}
 	if p.graphNode() {

@@ -32,6 +32,14 @@ func sameProjectFolder(left, right string) bool {
 // Caller holds app.mu. Restoration keeps identity and visual folders; sessions
 // and history remain untouched, as in the existing manual registration flow.
 func (a *app) registerProjectLocked(p Project, previous *Project) (Project, error) {
+	if a.store != nil {
+		id := ""
+		if previous != nil {
+			id = previous.ID
+		}
+		result, _, err := a.registerSQLProjectLocked(a.ctx, p, false, id)
+		return result, err
+	}
 	if previous != nil {
 		p.ID, p.Folders, p.ArchivedFolders = previous.ID, previous.Folders, previous.ArchivedFolders
 		p.Topics = previous.Topics
@@ -52,6 +60,9 @@ func (a *app) registerProjectLocked(p Project, previous *Project) (Project, erro
 // Caller holds app.mu across both duplicate detection and registration. Unlike
 // manual registration, the general tool never edits an active matching project.
 func (a *app) addProjectLocked(p Project) (Project, string, error) {
+	if a.store != nil {
+		return a.registerSQLProjectLocked(a.ctx, p, true, "")
+	}
 	var previous *Project
 	ids := []string{}
 	for i := range a.state.Projects {
