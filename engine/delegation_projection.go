@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 )
 
 type DelegationActions struct {
@@ -78,6 +79,7 @@ type DelegationChildView struct {
 	Effort              string                     `json:"effort"`
 	AgentID             string                     `json:"agentId,omitempty"`
 	AgentName           string                     `json:"agentName,omitempty"`
+	LatestActivity      string                     `json:"latestActivity,omitempty"`
 	ExecutionState      DelegationInvocationState  `json:"executionState"`
 	Outcome             DelegationOutcome          `json:"outcome,omitempty"`
 	TaskOutcome         string                     `json:"taskOutcome,omitempty"`
@@ -252,6 +254,12 @@ func (a *app) readDelegationMembers(ctx context.Context, ownerID, batchID string
 			if item.Capture.Source != nil {
 				entry.AgentID, entry.AgentName = item.Capture.Source.Source.ID, item.Capture.Source.Name
 			}
+			if !entry.Terminal {
+				entry.LatestActivity, err = st.delegationLatestActivity(item)
+				if err != nil {
+					return err
+				}
+			}
 			if item.State == DelegationInvocationTerminal {
 				entry.ResultReference = &DelegationResultReference{InvocationID: item.ID, Digest: delegationOutputDigest(item.Result), TotalBytes: int64(len(item.Result))}
 			}
@@ -265,4 +273,27 @@ func (a *app) readDelegationMembers(ctx context.Context, ownerID, batchID string
 		return tx.QueryRowContext(ctx, `SELECT value FROM store_meta WHERE key='revision'`).Scan(&page.Revision)
 	})
 	return page, err
+}
+
+// Read only the latest invocation's activity preview, without opening its history
+// or hydrating command/tool payloads for collapsed children.
+func (st *sqliteSessionTx) delegationLatestActivity(item DelegationInvocationRecord) (string, error) {
+	var kind, title, preview string
+	err := st.tx.QueryRowContext(st.ctx, `SELECT d.kind,coalesce(json_extract(CAST(g.header AS TEXT),'$.title'),json_extract(CAST(e.header AS TEXT),'$.title'),''),coalesce(g.text_preview,e.preview,'') FROM data_session_events d LEFT JOIN event_content_publications p ON p.event_key=d.id LEFT JOIN event_content_generations g ON g.id=p.generation_id LEFT JOIN event_stream_state e ON e.event_id=d.id WHERE d.owner_id=? AND d.position>=? AND d.kind IN ('reasoning','command','mcp','tool','assistant','error') ORDER BY d.position DESC LIMIT 1`, item.ChildSessionID, item.EventStart).Scan(&kind, &title, &preview)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	label := strings.TrimSpace(title)
+	if label == "" || label == "Command" {
+		if line := strings.TrimSpace(strings.SplitN(preview, "\n", 2)[0]); line != "" {
+			label = line
+		}
+	}
+	if label == "" {
+		label = kind
+	}
+	return boundedText(label, 160), nil
 }

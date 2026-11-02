@@ -1327,9 +1327,15 @@ metadata. Existing v1 artifacts retain their original contract. Child admission
 and Choice reservation exclude each other; Choice acceptance follows all-child
 join, owned drainage and confirmed result delivery in the same activation/workspace.
 
-The shared UI presents factual batch progress, outcomes, settings, reuse, bounded
-output and read-only child histories, plus owning-chat request cards. Isolated
-Playwright validation exercised actual frontend/backend and installed Pi, OpenCode
+The shared UI presents children as compact native-style rows: robot icon, session
+title, saved-agent name when present, and latest activity, with a text shimmer while
+active and the outcome after settlement. Activity previews update without loading
+unopened child histories. Clicking a row opens the existing read-only child tab
+(or the client's child view); contexts without child navigation retain a history
+dialog. Model, effort and status appear in the child view, and pending requests
+remain in owning-chat cards. This compact presentation awaits human validation.
+
+Earlier isolated Playwright validation exercised actual frontend/backend and installed Pi, OpenCode
 and new Codex parent/child adapters against a deterministic local model provider.
 Core evidence covers creation/overrides/source refresh, two-child consolidation,
 Pi reuse and owner question replies under YOLO, graph Save/selection, Focus controls
