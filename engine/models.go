@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -158,6 +159,7 @@ func (a *app) discoverCatalog(ctx context.Context, s Session, cwd string) (*Mode
 	b, installed := a.binaries[s.Harness]
 	a.mu.Unlock()
 	if !installed {
+		log.Printf("[DEBUG_AGENT] catalog harness=%q installed=false", s.Harness)
 		return nil, errors.New("Harness is not installed.")
 	}
 	var catalog *ModelCatalog
@@ -473,7 +475,18 @@ func (b *limitedOutput) Write(p []byte) (int, error) {
 }
 
 // Short-lived authenticated loopback server used only for catalog/config reads.
-func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, error) {
+func openCodeCatalog(ctx context.Context, b binary, cwd string) (result *ModelCatalog, resultErr error) {
+	debugID := newID()
+	debugStarted := time.Now()
+	debugStage := "start"
+	log.Printf("[DEBUG_AGENT] catalog id=%s harness=opencode v1=%t stage=%s", debugID, b.openCodeV1, debugStage)
+	defer func() {
+		models, providers := 0, 0
+		if result != nil {
+			models, providers = len(result.Models), len(result.ConnectedProviders)
+		}
+		log.Printf("[DEBUG_AGENT] catalog id=%s stage=%s elapsed_ms=%d models=%d providers=%d error=%v", debugID, debugStage, time.Since(debugStarted).Milliseconds(), models, providers, resultErr)
+	}()
 	if b.openCodeV1 {
 		if err := validateOpenCodeCatalogBinary(b); err != nil {
 			return nil, err
@@ -530,14 +543,19 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 	}
 	cmd.Stderr = &cappedBuffer{}
 	if err = cmd.Start(); err != nil {
+		log.Printf("[DEBUG_AGENT] catalog id=%s start_failed error_type=%T", debugID, err)
 		return nil, errors.New("Could not start OpenCode catalog server.")
 	}
+	debugStage = "await_address"
 	address := make(chan string, 1)
 	done := make(chan struct{})
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 4096), openCodeFrameLimit)
 		for scanner.Scan() {
+			if strings.HasPrefix(strings.TrimSpace(scanner.Text()), openCodeServerPrefix(!h.v1)) {
+				log.Printf("[DEBUG_AGENT] catalog id=%s opposite_protocol_prefix=true", debugID)
+			}
 			if value, ok := strings.CutPrefix(strings.TrimSpace(scanner.Text()), openCodeServerPrefix(h.v1)); ok {
 				select {
 				case address <- value:
@@ -545,7 +563,9 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 				}
 			}
 		}
-		_ = cmd.Wait()
+		scanErr := scanner.Err()
+		waitErr := cmd.Wait()
+		log.Printf("[DEBUG_AGENT] catalog id=%s process_exit error=%v scanner_error=%v", debugID, waitErr, scanErr)
 		close(done)
 	}()
 	defer func() { _ = killTree(cmd.Process); <-done }()
@@ -561,12 +581,15 @@ func openCodeCatalog(ctx context.Context, b binary, cwd string) (*ModelCatalog, 
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+	debugStage = "check_version"
 	if err := h.checkVersion(ctx); err != nil {
 		return nil, err
 	}
 	if h.v1 {
+		debugStage = "v1_catalog"
 		return h.v1Catalog(ctx)
 	}
+	debugStage = "v2_catalog"
 	return h.v2Catalog(ctx)
 }
 
@@ -587,11 +610,30 @@ func (p *adapter) resolvedSelection(model, effort string) error {
 		})
 	}
 	s := p.app.state.session(p.id)
-	if s == nil || (s.ResolvedModel == model && s.ResolvedEffort == effort) {
+	if s == nil {
+		return nil
+	}
+	known := true
+	if p.turn != nil {
+		if x := executionByID(s, p.turn.metricsID); x != nil {
+			known = false
+			for _, value := range x.Models {
+				if value == model {
+					known = true
+				}
+			}
+		}
+	}
+	if s.ResolvedModel == model && s.ResolvedEffort == effort && known {
 		return nil
 	}
 	return p.app.commitLocked(func(d *diskState) {
 		s := d.session(p.id)
+		if p.turn != nil && model != "" && !known {
+			if x := executionByID(s, p.turn.metricsID); x != nil {
+				x.Models = append(x.Models, model)
+			}
+		}
 		s.ResolvedModel = model
 		s.ResolvedEffort = effort
 		s.UpdatedAt = now()

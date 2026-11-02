@@ -182,6 +182,9 @@ func (p *adapter) commitStreamUpdates(updates []streamUpdate) error {
 	}
 	updated := now()
 	record := streamRecord{Revision: revision, Session: p.id, Updated: updated}
+	if p.turn != nil {
+		record.FirstResponse = firstResponseObservation(s, p.turn.metricsID, updated, changes)
+	}
 	changedIDs := make(map[string]bool, len(changes))
 	for _, change := range changes {
 		changedIDs[change.Event.ID] = true
@@ -204,6 +207,7 @@ func (p *adapter) commitStreamUpdates(updates []streamUpdate) error {
 			s.Events[change.Index] = change.Event
 		}
 	}
+	applyResponseObservation(s, record.FirstResponse)
 	s.UpdatedAt = updated
 	a.state.GraphRevision = revision
 	a.appendHistoryChangesLocked(p.id, revision, changes)

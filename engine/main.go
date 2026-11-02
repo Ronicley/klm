@@ -14,6 +14,8 @@ import (
 )
 
 type turn struct {
+	metricsID             string
+	metricsStopReason     string // Protected by app.mu; empty when cancellation has no explicit cause.
 	protocolScope         *protocolContentScope
 	graphDelegation       *graphDelegationBinding
 	delegation            *delegationExecution

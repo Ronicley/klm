@@ -2525,6 +2525,106 @@ execution, a full suite, or an adversarial review.
   and referenced artifacts. [R4 results](../LATENCY_R4_RESULT.md) describe the older
   pre-SQL implementation, not a performance claim for 0.6.0.
 
+## Session metrics API
+
+**2026-11-02 consolidation:** the following contract describes the preserved
+legacy implementation, not an available SQLite feature. Both session metrics
+endpoints return HTTP 501 with SQLite until collection, recovery and reads are
+ported. Upstream `/api/analytics` is unchanged. Source is centralized in `develop`;
+see [consolidation notes](../DEVELOP_CONSOLIDATION.md).
+
+Phase 1–5 slices are implemented; the complete plan and Phase 6 human acceptance
+remain pending. On 2026-10-23 the consolidated Go dev build and TypeScript check
+both exited 0 without diagnostics. Prior compiler failures are historical, not
+current blockers; see [implementation progress](../SESSION_METRICS_IMPLEMENTATION_PROGRESS.md).
+
+### Inventory and execution details
+
+`GET /api/metrics/sessions` returns `scope=main_native_totals`, `period=all_time`,
+UTC `updatedAt`, summary and paginated rows for normal top-level conversations in
+nonremoved projects, including independent spawns. KLM Agent, sides, native children
+and graph nodes are excluded. Filters: `projectId`, current `harness`, case-insensitive
+title `search`, `state=working|waiting|idle`, latest
+`outcome=completed|failed|cancelled|interrupted`, and `includeArchived=true`.
+Sort descending by `activity` (default), lifetime `tokens`, `duration` or `executions`,
+with stable ID ties and unknown last. `page` starts at 1; `pageSize` defaults to 25,
+maximum 100. Summary covers all matches before pagination, including separate
+`observedExecutionUsage` and recorded interruption reason counts.
+
+`GET /api/metrics/sessions/{id}/executions` pages recorded turns newest first using
+the same pagination. Details expose normalized accounting/coverage, source,
+protocol/optional version, observation timestamps, optional first-response timing
+and nullable legacy role; no native IDs/paths or raw accounting evidence. Unavailable,
+removed-project/deleted/out-of-scope conversations return 404. Ordinary session
+projections omit execution history.
+
+Records start at actual engine execution entry, before preparation; queued input and
+steering do not add turns. Existing session transactions/journal preserve them through
+restart and remove them with permanent session deletion. Recovery marks open records
+interrupted/partial, retains null `endedAt` and excludes downtime from the observed
+lower-bound duration. No historical backfill or durable duration heartbeat.
+
+Lifetime/status-bar token snapshots are unchanged and separate from execution usage.
+Only Pi has execution reconciliation: validated native ID/path, correlated pre-prompt
+stats baseline and replaced interim/final endpoint. Missing/reset/invalid evidence
+withholds amounts; usable nonterminal amounts remain partial. Input includes cache
+read/write; reasoning remains null. OpenCode V1/V2 are uninstrumented and Codex lacks
+a trustworthy boundary baseline. Pi still uses existing synchronous `proc.Send`:
+baseline/final response waits are 2 s after Send succeeds, not bounded writes or a
+new pipe-deadline requirement.
+
+Unavailable metrics/cost are null, not zero/free. Observed zero remains zero; partial
+sums expose coverage. Lifetime coverage counts sessions; observed usage coverage
+counts complete/partial/unavailable recorded executions, not unknown earlier turns.
+Costs and averages are unavailable even for Pi: no verified runtime monetary
+provenance, price lookup or billing estimate. Observed models are not token allocation.
+Native parent accounting is not proven exclusive; no parent/child consolidated sums.
+
+First-response timing records the first changed nonempty assistant content at engine
+stream commit, journaled with that content before append/Sync/publication. It includes
+preparation/batching, not subsequent persistence/network/render time or native generation;
+reasoning/tools/status do not qualify. Recorded interruptions classify explicit
+Stop/replacement/restart/shutdown/other interruption evidence and can overlap outcome
+counts. Waiting duration, tool intervals and retry relationships remain unavailable.
+Technical completion is not user acceptance; chat Stop does not stop independent graphs.
+
+### Period analytics
+
+```text
+GET /api/metrics/sessions?view=analytics&from=2026-10-01T00:00:00Z&to=2026-11-01T00:00:00Z&timezone=America/Sao_Paulo&bucket=daily
+```
+
+- Required offset-bearing RFC3339 `from` inclusive / `to` exclusive: **[from,to)**,
+  normalized to UTC. Missing/date-only/reversed bounds reject. Limits: 1970–9999,
+  at most five years and 400 buckets.
+- `timezone` defaults to UTC; named IANA area/zone identifiers use embedded timezone
+  data. Unknown zones, host-relative Local and bare offset aliases reject. `bucket`
+  defaults to daily; weekly starts Monday. Local calendar midnights, not fixed UTC
+  durations, account for ordinary 23/25-hour DST days. Unsupported historical
+  normalized/nonadvancing/ambiguous midnight boundaries reject rather than shift.
+- Response: UTC `updatedAt`, `scope=main_recorded_executions`, `analytics` containing
+  normalized period, summary, project/recorded-execution-harness groups, daily/weekly
+  buckets and coverage. Bucket bounds are full calendar UTC bounds; measures clip
+  to the request intersection. Model attribution is unallocated; cost remains null.
+- Starts use `startedAt` in the period; durations clip observed intervals and add
+  parallel execution time; tokens use valid engine `endedAt` in the period, assigned
+  once as `execution_end_approximation`, not native consumption date. Each has its
+  own coverage denominator. Known usage without an end is excluded from dated tokens;
+  `undatedUsageExecutions` spans matching all-time history. No lifetime totals enter.
+- Existing filters select conversations (current harness/state/latest outcome), not
+  historical execution-result/harness cohorts. Grouping uses recorded execution
+  harness. Unknown views and period parameters without analytics mode reject.
+  Period controls never change all-time inventory/details or working/waiting-now.
+
+The shared Dashboard uses visible-surface inventory polling and snapshot-triggered
+analytics refresh, labels stale snapshots on failures and opens existing chats.
+Waiting wins over working; archived history never contributes current activity and
+retained idle runtime is not work. Remaining scope includes safe OpenCode/Codex
+accounting, monetary/model attribution, cost/period rankings, waiting/tool intervals,
+explicit retries, auxiliary-role inventory and verified delegated accounting.
+Real harness/version, persistence/lifecycle, period/timezone and desktop/Focus/mobile
+acceptance remain pending; compilation does not establish runtime behavior.
+
 ## Network and Private Control Boundaries
 
 The public API binds `0.0.0.0:7331`, including LAN clients. It does not restrict

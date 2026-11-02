@@ -73,18 +73,9 @@ func (p *adapter) openCodeGraphConfig() (string, func(), error) {
 		return "", nil, assetErr
 	}
 	if delegationPlugin != "" {
-		plugin = "import delegationPlugin from './delegation-opencode.mjs';\n" + strings.Replace(plugin, "export default async function", "async function policyPlugin", 1) + `
-export default async function(context) {
-  const policy = await policyPlugin(context), delegation = await delegationPlugin(context);
-  const hooks = { ...policy, ...delegation };
-  for (const key of Object.keys(policy)) if (typeof policy[key] === 'function' && typeof delegation[key] === 'function') {
-    hooks[key] = async (...args) => {
-      if (key === 'config') { await policy[key](...args); await delegation[key](...args); }
-      else { await delegation[key](...args); await policy[key](...args); }
-    };
-  }
-  return hooks;
-}`
+		plugin = "import { setupV2 as delegationPlugin } from './delegation-opencode.mjs';\n" + plugin
+	} else {
+		plugin = "async function delegationPlugin() {}\n" + plugin
 	}
 	if err := os.WriteFile(pluginPath, []byte(plugin), 0600); err != nil {
 		cleanup()

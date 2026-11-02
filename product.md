@@ -1735,5 +1735,65 @@ Required/Optional is shown as text in this first version; its final presentation
 still needs user validation. Values come from the real project catalog, including
 terminal Choice output, Terminal output and each Fork branch's isolation setting.
 
+## Session Metrics Dashboard
+
+As of the 2026-11-02 consolidation into `develop`, this implementation is preserved
+from the legacy storage version and is not yet adapted to SQLite. Its endpoints
+return HTTP 501 on SQLite rather than presenting empty legacy totals. The source
+contract below remains a porting reference, not current runtime acceptance.
+Upstream analytics remains separate and unchanged.
+
+Phase 1–5 Dashboard slices are implemented through a global project-rail action,
+not the whole approved plan. Normal top-level project conversations, including
+independent spawns, show native lifetime tokens, current working/waiting state,
+recorded engine-turn results and accumulated observed time. Filters, pagination,
+execution details and existing-chat navigation reuse the shared frontend/engine.
+Removed projects and general/side/native-child/graph conversations are outside this
+inventory. Archived history is optional and never contributes current activity;
+waiting takes precedence over working and retained idle runtimes are not working.
+
+New turns have durable start/settlement records, observed effective-model IDs and
+roles. Queued-but-unstarted input and steering do not create extra executions.
+Old turns are not reconstructed. Restart leaves open records interrupted/partial,
+with no invented end or downtime in their observed duration. Metrics live with the
+session and follow permanent deletion. Technical completion is not user acceptance;
+independent graphs retain their lifecycle.
+
+Lifetime/status-bar token snapshots remain unchanged and separate from observed
+execution usage. Pi has identity-bound pre-prompt baseline/endpoint token deltas
+with explicit complete/partial/unavailable coverage. OpenCode V1/V2 execution usage
+is uninstrumented; Codex lacks a trustworthy boundary baseline. After follow-up,
+Pi retains its existing synchronous write transport: only baseline/final response
+waits are bounded after Send succeeds, not writes themselves. Cost and average cost
+remain null for every harness, including Pi; there is no verified runtime monetary
+provenance or billing estimate. Missing data is not zero/free. Native parent totals
+are not verified exclusive of delegation; no parent/child consolidated total or
+per-model token allocation is claimed.
+
+A separate period section shows project and recorded-execution-harness groups and
+daily/weekly calendar tables. Its API uses explicit offset-bearing `[from,to)`
+instants normalized to UTC and a selected IANA timezone (UTC default); weeks start
+Monday. Starts, clipped accumulated durations and tokens assigned once at engine
+end use distinct cohorts/coverage. End-time token attribution is an approximation,
+not consumption timing; undated amounts stay outside dated totals. Period controls
+never filter lifetime inventory/current activity. Unsupported historical midnight
+boundaries are rejected rather than silently shifted.
+
+Execution details also expose the first nonempty assistant engine-emission latency,
+journaled with content, not native generation or client-receipt time. All-time
+recorded interruptions have explicit reason counts. Historical waiting union,
+tool intervals, explicit retry relations, expanded auxiliary/KLM Agent inventory,
+monetary/model allocation, cost/period rankings and verified delegated accounting
+remain pending rather than inferred from incomplete evidence.
+
+On 2026-10-23 one consolidated Go dev build and one TypeScript check both exited 0
+without diagnostics. Prior compiler failures are preserved as historical evidence,
+not current blockers. Phase 6 documentation/compiler work is delivered, but human
+harness/lifecycle/period/timezone and desktop/Focus/mobile acceptance remains pending.
+Exact APIs, null coverage, separate stabilization changes and acceptance route are in
+`engine/README.md` and `SESSION_METRICS_IMPLEMENTATION_PROGRESS.md`; phase notes and
+`SESSION_METRICS_TELEMETRY_CONTRACT.md` retain source evidence. The full scope remains
+in `SESSION_METRICS_DASHBOARD_PLAN.md`; compiler success does not complete that plan.
+
 Further decisions will be made as features are discussed and validated by the
 user. They must not be treated as already approved requirements.

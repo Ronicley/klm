@@ -1,4 +1,4 @@
-import { LogOut, Plus, Settings } from 'lucide-react';
+import { ChartNoAxesCombined, LogOut, Plus, Settings } from 'lucide-react';
 import { Fragment, useLayoutEffect, useRef, useState } from 'react';
 import { IconButton } from '../../design-system/Button';
 import { ProjectActionsMenu } from './ProjectActionsMenu';
@@ -39,11 +39,13 @@ function projectBeforeAt(container: HTMLElement, draggingId: string, clientY: nu
   return '';
 }
 
-export function ProjectRail({ projects, sessions, activeId, onSelect, onEdit, onRemove, onReorder, onAdd, onSettings, onGeneralAgent, generalActive = false, adding = false }: {
+export function ProjectRail({ projects, sessions, activeId, onSelect, onEdit, onRemove, onReorder, onAdd, onSettings, onGeneralAgent, onDashboard, dashboardActive = false, generalActive = false, adding = false }: {
   projects: Project[]; sessions: Session[]; activeId: string; onSelect: (project: Project) => void; onEdit: (project: Project) => void; onAdd: () => void; adding?: boolean;
   onRemove: (project: Project) => Promise<string | null>;
   onReorder: (project: Project, beforeId: string) => Promise<boolean>;
   onSettings: () => void;
+  onDashboard?: () => void;
+  dashboardActive?: boolean;
   onGeneralAgent?: () => void;
   generalActive?: boolean;
 }) {
@@ -111,6 +113,6 @@ export function ProjectRail({ projects, sessions, activeId, onSelect, onEdit, on
     {dragging && dropBefore === '' ? <span className="project-drop-placeholder" aria-hidden="true" /> : null}
     </div>
     <IconButton label={adding ? 'Choosing project directory' : 'Add project'} className="add-project-button" disabled={adding} onClick={onAdd}><Plus /></IconButton>
-    <div className="project-rail-footer"><ThemePicker /><EngineSwitcher rail /><IconButton label="Settings" onClick={onSettings}><Settings /></IconButton>{IS_MOBILE_HOST && <IconButton label="Back to hosts" data-klm-host-navigation onClick={returnToHosts}><LogOut /></IconButton>}</div>
+    <div className="project-rail-footer">{onDashboard && <IconButton label="Dashboard" aria-current={dashboardActive ? 'page' : undefined} className={dashboardActive ? 'is-active' : ''} onClick={onDashboard}><ChartNoAxesCombined /></IconButton>}<ThemePicker /><EngineSwitcher rail /><IconButton label="Settings" onClick={onSettings}><Settings /></IconButton>{IS_MOBILE_HOST && <IconButton label="Back to hosts" data-klm-host-navigation onClick={returnToHosts}><LogOut /></IconButton>}</div>
   </nav>;
 }

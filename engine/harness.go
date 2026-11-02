@@ -214,6 +214,8 @@ func (a *app) execute(t *turn, s Session, native nativeSession, b binary, cwd st
 			s = *a.state.automationSessionView(current)
 		}
 		reasoningStart = len(s.Events)
+		t.metricsID = newID()
+		reservationErr = a.commitLocked(func(d *diskState) { startExecutionMetrics(d.session(s.ID), t.metricsID) })
 	}
 	t.reasoningStart = &reasoningStart
 	if reservationErr == nil {
@@ -562,6 +564,19 @@ func (p *adapter) finishTurnStateLocked(err error) error {
 			s.Status = "error"
 			last = event("error", "Harness exited without reporting a completed turn.")
 		}
+		outcome, reason := "completed", ""
+		switch {
+		case t.ctx.Err() != nil:
+			outcome, reason = "cancelled", t.metricsStopReason
+			if p.app.closing {
+				outcome, reason = "interrupted", "engine_shutdown"
+			} else if t.restartMessageID != "" {
+				reason = "replacement"
+			}
+		case s.Status == "error":
+			outcome = "failed"
+		}
+		finishExecutionMetrics(s, t.metricsID, outcome, reason)
 		if last.ID != "" {
 			last.ConsultationID = t.consultationID
 			s.Events = append(s.Events, last)

@@ -45,6 +45,7 @@ type Session struct {
 	AgentBinding         *SessionAgentBinding     `json:"agentBinding,omitempty"`
 	AgentConfig          *AgentConfigSummary      `json:"agentConfig,omitempty"`
 	Automation           *AutomationSession       `json:"automation,omitempty"`
+	Metrics              *SessionMetrics          `json:"metrics,omitempty"`
 	Capabilities         ConversationCapabilities `json:"capabilities"`
 	Queue                []QueuedMessage          `json:"queue"`
 	Role                 string                   `json:"role,omitempty"`

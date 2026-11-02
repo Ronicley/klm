@@ -82,6 +82,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/health", a.health)
 	mux.HandleFunc("GET /api/version", a.getVersion)
 	mux.HandleFunc("GET /api/state", a.getState)
+	mux.HandleFunc("GET /api/metrics/sessions", a.sessionMetrics)
+	mux.HandleFunc("GET /api/metrics/sessions/{id}/executions", a.sessionExecutions)
 	mux.HandleFunc("GET /api/opencode/settings", a.getOpenCodeSettings)
 	mux.HandleFunc("PATCH /api/opencode/settings", a.updateOpenCodeSettings)
 	if a.store != nil {
@@ -1400,6 +1402,7 @@ func (a *app) stopSessionLocked(id string, origin *SpawnOrigin) (*turn, error) {
 	// Cancellation must not depend on a successful history/queue write.
 	if t != nil {
 		t.restartMessageID = "" // Explicit Stop cancels a pending Send now continuation.
+		t.metricsStopReason = "stop"
 		t.cancel()
 	}
 	if err := a.commitLocked(func(d *diskState) {

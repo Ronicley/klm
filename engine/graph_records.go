@@ -106,7 +106,7 @@ type GraphChoiceSubmission struct {
 	AcceptedAt  string            `json:"acceptedAt,omitempty"` // only after confirmed settlement
 }
 type GraphActivation struct {
-	ReusedFromActivationID string                 `json:"reusedFromActivationId,omitempty"`
+	ReusedFromActivationID string                 `json:"reusedFromActivationId,omitempty"` // Historical result retained by a retry checkpoint.
 	CurrentTurnID          string                 `json:"currentTurnId,omitempty"`
 	FinishedTurnID         string                 `json:"finishedTurnId,omitempty"`
 	NativeEventStart       int                    `json:"nativeEventStart,omitempty"`
@@ -393,6 +393,7 @@ func (d *diskState) sessionView(id string) *Session {
 		return nil
 	}
 	view := *s
+	view.Metrics = nil // Execution history is paginated through the metrics API.
 	if s.ParentID == "" && s.GraphRunID == "" && s.Role != sessionRoleGeneralAgent {
 		projection := d.graphProjection(id)
 		view.Graph = &projection

@@ -255,23 +255,36 @@ func (p *adapter) runPi(b binary, cwd string, payload submission) (err error) {
 	if err := proc.Send(map[string]any{"id": "klm-capabilities", "type": "get_commands"}); err != nil {
 		return err
 	}
+	accounting := newExecutionAccounting("pi")
+	accounting.HarnessVersion = piAccountingVersion(b)
+	accounting.NativePath = native.Path
+	defer func() {
+		if accounting.Coverage != "complete" && accounting.Reason == "final_not_observed" {
+			accounting.gap("final_not_observed_before_exit", false)
+		}
+		p.saveExecutionAccounting(accounting)
+	}()
 	statsSequence, latestStatsID := 0, ""
+	statsKind := ""
+	baselineResolved := false
 	statsPrefix := "klm-stats-" + newID() + "-"
-	requestStats := func() error {
+	requestStats := func(kind string) error {
 		statsSequence++
 		latestStatsID = statsPrefix + strconv.Itoa(statsSequence)
-		return proc.Send(map[string]any{"id": latestStatsID, "type": "get_session_stats"})
+		statsKind = kind
+		// Keep the existing transport contract for these tiny stats RPCs.
+		// Only the baseline/final response waits are bounded, not Send itself.
+		if err := proc.Send(map[string]any{"id": latestStatsID, "type": "get_session_stats"}); err != nil {
+			latestStatsID = ""
+			return err
+		}
+		return nil
 	}
-	// Optional telemetry gets a bounded final read before releasing the turn.
+	// Optional baseline/final response waits expire after two seconds.
 	statsTimer := time.NewTimer(2 * time.Second)
 	statsTimer.Stop()
 	defer statsTimer.Stop()
 	var statsDeadline <-chan time.Time
-	baselineTimer := time.NewTimer(2 * time.Second)
-	baselineTimer.Stop()
-	defer baselineTimer.Stop()
-	var baselineDeadline <-chan time.Time
-	baselineDone := false
 	ready, stateReceived, prompted, capabilitiesReceived := reused, false, false, false
 	rootStarted := false
 	var childRequests <-chan *piChildRequest
@@ -283,7 +296,7 @@ reading:
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !prompted && ready && stateReceived && capabilitiesReceived && baselineDone {
+		if !prompted && ready && stateReceived && capabilitiesReceived && baselineResolved {
 			if err := p.bridge.waitReady(ctx); err != nil {
 				return err
 			}
@@ -317,10 +330,16 @@ reading:
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-statsDeadline:
+			statsDeadline = nil
+			latestStatsID = "" // Late replies cannot become a baseline or final evidence.
+			if statsKind == "baseline" {
+				baselineResolved = true
+				accounting.gap("baseline_timeout", true)
+				p.saveExecutionAccounting(accounting)
+				continue
+			}
+			accounting.gap("final_timeout", false)
 			return nil
-		case <-baselineDeadline:
-			baselineDone, baselineDeadline = true, nil
-			continue
 		case <-startup:
 			if proc.ingestionInFlight() {
 				timer.Reset(startupTimeout)
@@ -361,8 +380,15 @@ reading:
 					continue
 				}
 				data := object(raw["data"])
-				if truth(raw, "success") && str(raw, "command") == "get_session_stats" &&
-					piSamePath(str(data, "sessionFile"), native.Path) {
+				valid := truth(raw, "success") && str(raw, "command") == "get_session_stats"
+				if valid {
+					accounting.observePi(data, latestStatsID, statsKind == "baseline", statsKind == "final")
+				} else {
+					accounting.gap(statsKind+"_request_failed", statsKind == "baseline")
+				}
+				p.saveExecutionAccounting(accounting)
+				// Preserve the existing lifetime/status-bar normalization and path gate.
+				if valid && piSamePath(str(data, "sessionFile"), native.Path) {
 					var usageErr error
 					if !prompted {
 						usageErr = p.setUsageBaseline(piSessionUsage(data))
@@ -375,11 +401,15 @@ reading:
 						return usageErr
 					}
 				}
-				if !prompted {
-					baselineDone, baselineDeadline = true, nil
-					baselineTimer.Stop()
+				if statsKind == "baseline" {
+					baselineResolved = true
 				}
-				if p.completed {
+				if statsKind == "baseline" || statsKind == "final" {
+					statsTimer.Stop()
+					statsDeadline = nil
+				}
+				latestStatsID = ""
+				if p.completed && statsKind == "final" {
 					return nil
 				}
 				continue
@@ -440,9 +470,14 @@ reading:
 				if children != nil {
 					children.model, children.effort = str(model, "provider")+"/"+str(model, "id"), str(data, "thinkingLevel")
 				}
-				_ = requestStats()
-				baselineTimer.Reset(2 * time.Second)
-				baselineDeadline = baselineTimer.C
+				accounting.NativeID = str(data, "sessionId")
+				if requestStats("baseline") != nil {
+					baselineResolved = true
+					accounting.gap("baseline_request_write_failed", true)
+				} else {
+					statsTimer.Reset(2 * time.Second)
+					statsDeadline = statsTimer.C
+				}
 			case "klm-prompt":
 				if !prompted || str(raw, "command") != "prompt" {
 					return errors.New("Pi returned an unexpected prompt response.")
@@ -482,7 +517,7 @@ reading:
 							return err
 						}
 						p.nativeSettled = true
-						if requestStats() != nil {
+						if requestStats("final") != nil {
 							return nil
 						}
 						statsTimer.Reset(2 * time.Second)
@@ -696,20 +731,20 @@ reading:
 			}
 			if str(raw, "type") == "agent_settled" {
 				p.nativeSettled = true
-				// Usage is optional. A correlated stats response received before
-				// settlement has already been applied; do not delay idle for it.
-				// Keep the bounded final stats read; earlier totals are not final.
+				// Settlement triggers a distinct final request with a bounded
+				// response wait; a mid-turn response is not terminal accounting.
 			}
 			if p.completed {
 				if statsDeadline == nil {
-					if requestStats() != nil {
+					if requestStats("final") != nil {
+						accounting.gap("final_request_write_failed", false)
 						return nil
 					}
 					statsTimer.Reset(2 * time.Second)
 					statsDeadline = statsTimer.C
 				}
 			} else if (str(raw, "type") == "message_end" && str(object(raw["message"]), "role") == "assistant") || str(raw, "type") == "auto_compaction_end" {
-				_ = requestStats()
+				_ = requestStats("interim")
 			}
 		}
 	}

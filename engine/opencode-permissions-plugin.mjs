@@ -31,6 +31,7 @@ export default {
       });
     }
     await graphPlugin(ctx);
+    await delegationPlugin(ctx);
     await ctx.rpc.register({
       id: "klm.policy",
       methods: {

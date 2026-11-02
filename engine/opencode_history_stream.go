@@ -175,6 +175,20 @@ func (h *openCodeHTTP) walkNativeMessages(ctx context.Context, sessionID string,
 }
 
 func (h *openCodeHTTP) nativeMessage(ctx context.Context, sessionID, messageID string) (message map[string]any, release func(), result error) {
+	if !h.v1 {
+		var native map[string]any
+		if err := h.json(ctx, http.MethodGet, "/api/session/"+url.PathEscape(sessionID)+"/message/"+url.PathEscape(messageID), nil, &native); err != nil {
+			return nil, nil, err
+		}
+		message, err := openCodeV2Message(sessionID, native)
+		if err != nil {
+			return nil, nil, err
+		}
+		if str(object(message["info"]), "id") != messageID {
+			return nil, nil, errors.New("OpenCode returned a different history message.")
+		}
+		return message, func() {}, nil
+	}
 	ownerContext := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	response, err := h.request(ctx, http.MethodGet, "/session/"+url.PathEscape(sessionID)+"/message/"+url.PathEscape(messageID), nil)

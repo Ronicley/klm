@@ -1,6 +1,43 @@
 import { createDelegationTransport, delegationMetadata, delegationParentEligible, delegationLeafForbidden } from './delegation-protocol.mjs';
 const config = /*KLM_DELEGATION_CONFIG*/{};
 
+export async function setupV2(context) {
+  if (!config.enabled) return;
+  const eligible = delegationParentEligible(config.parentRole);
+  const transport = eligible ? createDelegationTransport(config) : undefined;
+  if (transport) await transport.ensureReady();
+  const forbidden = name => name === 'task' || name === 'subagent' || !eligible && delegationLeafForbidden(name.replace(/^opencode_/, ''));
+  await context.tool.transform(editor => {
+    for (const tool of editor.list()) if (forbidden(tool.id)) editor.remove(tool.id);
+    if (eligible) editor.add({
+      name: delegationMetadata.name,
+      description: delegationMetadata.description,
+      input: delegationMetadata.schema,
+      async execute(request, ctx) {
+        try {
+          const result = await transport.execute(request, ctx.id, ctx.signal);
+          if (result.isError) {
+            const failure = new Error(JSON.stringify(result)); failure.delegationSettled = true; throw failure;
+          }
+          return { content: JSON.stringify(result) };
+        } catch (error) {
+          if (!error.delegationSettled && !error.delegationInputRejected) void context.session.interrupt({ sessionID: ctx.sessionID, resume: false }).catch(() => {});
+          throw error;
+        }
+      },
+    });
+  });
+  await context.tool.hook('execute.before', async event => {
+    if (forbidden(event.tool)) throw new Error('Native/nested delegation is unavailable.');
+    await transport?.gate(event.tool);
+  });
+  await context.session.hook('context', async event => {
+    transport?.assertCanContinue();
+    await transport?.gate('__model_boundary__');
+    for (const name of Object.keys(event.tools)) if (forbidden(name)) delete event.tools[name];
+  });
+}
+
 // OpenCode 1.18.35 registry::fromPlugin explicitly supports non-Zod raw JSON
 // property definitions. Its Schema.Unknown compatibility boundary preserves args;
 // execute validates them and tool.definition publishes the complete v1 schema.

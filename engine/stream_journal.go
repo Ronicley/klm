@@ -18,14 +18,15 @@ import (
 // Both transaction and legacy stream records share one contiguous revision log.
 // Publication follows Sync; only the checkpoint worker rotates/removes segments.
 type streamRecord struct {
-	Format      int                     `json:"format,omitempty"`
-	Transaction []statePatch            `json:"transaction,omitempty"`
-	Revision    uint64                  `json:"revision"`
-	Session     string                  `json:"session"`
-	Updated     string                  `json:"updated"`
-	Updates     []streamOperation       `json:"updates"`
-	Usage       *SessionUsage           `json:"usage,omitempty"`
-	Analytics   *analyticsUsageMutation `json:"analytics,omitempty"`
+	Format        int                           `json:"format,omitempty"`
+	Transaction   []statePatch                  `json:"transaction,omitempty"`
+	Revision      uint64                        `json:"revision"`
+	Session       string                        `json:"session"`
+	Updated       string                        `json:"updated"`
+	Updates       []streamOperation             `json:"updates"`
+	Usage         *SessionUsage                 `json:"usage,omitempty"`
+	Analytics     *analyticsUsageMutation       `json:"analytics,omitempty"`
+	FirstResponse *executionResponseObservation `json:"firstResponse,omitempty"`
 }
 
 type streamOperation struct {
@@ -138,7 +139,7 @@ func replayJournalFile(path string, state *diskState, transform ...func(*streamR
 				return fmt.Errorf("stream journal revision gap at %d", record.Revision)
 			}
 			if record.Format == 1 {
-				if len(record.Transaction) == 0 || len(record.Updates) != 0 || record.Usage != nil || record.Analytics != nil {
+				if len(record.Transaction) == 0 || len(record.Updates) != 0 || record.Usage != nil || record.Analytics != nil || record.FirstResponse != nil {
 					return errors.New("invalid transaction frame")
 				}
 				for _, clean := range transform {
@@ -175,6 +176,7 @@ func replayJournalFile(path string, state *diskState, transform ...func(*streamR
 						s.Events[change.Index] = change.Event
 					}
 				}
+				applyResponseObservation(s, record.FirstResponse)
 				s.UpdatedAt = record.Updated
 				if record.Usage != nil {
 					s.Usage = record.Usage
