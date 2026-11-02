@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AutoPage } from '../pagination/AutoPage';
 import { ArrowLeft, ExternalLink, ListTodo, RefreshCw, Settings } from 'lucide-react';
 import { Button } from '../../design-system/Button';
 import { Badge } from '../../design-system/Badge';
@@ -28,6 +29,9 @@ function BoardColumn({ phase, projectId, sprintId, config, projects, moving, act
   const [error, setError] = useState('');
   const controller = useRef<AbortController | null>(null);
   const flight = useRef(false);
+  const snapshot = useRef<BoardPage | undefined>(undefined);
+  const identity = `${projectId}/${phase.id}/${sprintId}`;
+  const previousIdentity = useRef(identity);
   useEffect(() => {
     const target = element.current;
     if (!target) return;
@@ -40,13 +44,20 @@ function BoardColumn({ phase, projectId, sprintId, config, projects, moving, act
     flight.current = true; setBusy(true); setError('');
     const signal = controller.current?.signal;
     try {
-      const next = await boardItems(projectId, phase.id, cursor, signal, sprintId);
-      if (!signal?.aborted) setPage(previous => cursor && previous ? { ...next, items: [...previous.items, ...next.items] } : next);
+      let next = await boardItems(projectId, phase.id, cursor, signal, sprintId);
+      const items = [...next.items]; const boundary = snapshot.current?.items.at(-1)?.key;
+      while (!cursor && boundary && next.hasMore && next.nextCursor && !items.some(item => item.key === boundary)) {
+        const after = next.nextCursor; next = await boardItems(projectId, phase.id, after, signal, sprintId);
+        if (next.hasMore && next.nextCursor === after) throw new Error('Task pagination did not advance. Retry.');
+        items.push(...next.items);
+      }
+      if (!signal?.aborted) { const result = { ...next, items: [...new Map([...(cursor ? snapshot.current?.items ?? [] : []), ...items].map(item => [item.key, item])).values()] }; snapshot.current = result; setPage(result); }
     } catch (e) { if (!signal?.aborted) { setError(boardError(e)); if (e instanceof EngineRequestError && e.status === 409) setPage(undefined); } }
     finally { if (!signal?.aborted) { flight.current = false; setBusy(false); } }
   }, [projectId, phase.id, sprintId]);
   useEffect(() => {
     if (!visible || !active) return;
+    if (previousIdentity.current !== identity) { snapshot.current = undefined; setPage(undefined); previousIdentity.current = identity; }
     controller.current = new AbortController(); flight.current = false;
     void load();
     return () => controller.current?.abort();
@@ -68,7 +79,7 @@ function BoardColumn({ phase, projectId, sprintId, config, projects, moving, act
       {error && <p className="form-error" role="alert">{error}<Button size="sm" disabled={busy} onClick={() => void load()}>Reload column</Button></p>}
       {busy && <p role="status" className="muted">Loading…</p>}
       {visible && page && !page.items.length && !busy && <p className="muted">No matching tasks</p>}
-      {page?.hasMore && <Button disabled={busy} onClick={() => void load(page.nextCursor)}>Load more</Button>}
+      <AutoPage hasMore={!!page?.hasMore && active} cursor={`${projectId}/${phase.id}/${sprintId}/${page?.nextCursor}`} busy={busy} error={error} onLoad={() => void load(page?.nextCursor)} onRetry={() => void load()} />
     </div>
   </section>;
 }

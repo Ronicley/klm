@@ -48,6 +48,18 @@ mistaken for unavailable content. Topic/Library search applies to the requested
 engine/project scope before pagination. Background execution does not depend on
 open clients or subscriptions.
 
+Interactive histories and paged lists request up to 25 items per page and load
+additional pages near the relevant scroll edge, without ordinary pagination
+buttons. A history item is a persisted event, including reasoning and tools;
+rendered work groups need not occupy 25 rows. Chat history opens at the newest
+tail and pages in both directions, keeping its bounded 200-event window and
+preserving the reading anchor. Streaming follows only at the real tail. Session
+and topic lists accumulate metadata instead of dropping earlier pages after four
+loads. Closed pickers and collapsed lists do not trigger automatic pagination;
+errors retain explicit Retry recovery. Large single-event content still uses
+its separate byte/chunk contract. Implementation and pending manual checks are
+recorded in `AUTOMATIC_PAGINATION_FIX_PROGRESS.md`.
+
 On the first upgrade, exact existing `state.json`, `stream.sealed`, `stream.journal`,
 `client-auth.json` and `engine-access.json` bytes are preserved under
 `<engine-data-dir>/legacy-backups/<migration-id>/`, with an absence/hash manifest.

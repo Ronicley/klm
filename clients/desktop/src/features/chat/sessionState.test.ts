@@ -99,4 +99,19 @@ describe('session transport', () => {
     expect(next[0].history?.startIndex).toBe(0);
     expect(next[0].history?.revision).toBe(2);
   });
+
+  it('moves a bounded window in both directions without joining a gap', () => {
+    const events = Array.from({ length: 200 }, (_, index) => message(String(index + 25)));
+    const initial = mergeSessions([], [reset(events, 25)], true);
+    const older = { sessionId: summary.id, revision: 1, startIndex: 0, endIndex: 25, total: 250, events: Array.from({ length: 25 }, (_, index) => message(String(index))), hasMore: false, direction: 'before' as const };
+    const before = prependHistory(initial, older);
+    expect(before[0].events).toHaveLength(200);
+    expect(before[0].history).toMatchObject({ startIndex: 0, hasNewer: true, afterCursor: '199' });
+    const newer = { ...older, startIndex: 200, endIndex: 225, events: events.slice(-25), direction: 'after' as const };
+    const after = prependHistory(before, newer);
+    expect(after[0].history).toMatchObject({ startIndex: 25, nextCursor: '25', afterCursor: '224', hasNewer: true });
+    expect(after[0].events.map(event => event.id)).toEqual(events.map(event => event.id));
+    const gap = { ...newer, startIndex: 230, endIndex: 255 };
+    expect(prependHistory(after, gap)[0]).toBe(after[0]);
+  });
 });

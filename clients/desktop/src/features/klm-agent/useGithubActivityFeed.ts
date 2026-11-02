@@ -99,7 +99,7 @@ export function useGithubActivityFeed(category: string, search: string, projects
     catch { setPreferenceError('Preferences could not be saved.'); }
     window.dispatchEvent(new CustomEvent(preferencesChanged, { detail: next }));
   };
-  const params = new URLSearchParams({ category, q: queryText, limit: '50' });
+  const params = new URLSearchParams({ category, q: queryText, limit: '25' });
   for (const item of catalog?.items ?? []) if (!(overrides[item.id] ?? item.defaultEnabled)) params.append('exclude', item.id);
   const query = params.toString();
   useEffect(() => {

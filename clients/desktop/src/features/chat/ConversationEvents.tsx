@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { FileCode2, FilePenLine, MessagesSquare, Plug, Search, SquareTerminal, Wrench, type LucideIcon } from 'lucide-react';
 import { AgentWork, type AgentWorkActivity, type AgentWorkItemStatus, type AgentWorkStatus, type AgentWorkThought, type AgentWorkTone } from '../../design-system/AgentWork';
 import { Button } from '../../design-system/Button';
@@ -195,9 +195,11 @@ export function EventSequence({ events, status, updatedAt, renderEvent, showActi
   const lastItem = items.at(-1);
   const responding = lastItem?.kind === 'event' && lastItem.event.type === 'assistant';
   return <>
-    {items.map(item => item.kind === 'work'
-      ? <ConversationWork key={`work/${item.id}`} item={item} />
-      : <Fragment key={item.event.id}>{item.event.content ? <EventContent event={item.event} /> : renderEvent ? renderEvent(item.event) : <SessionEvent event={item.event} />}</Fragment>)}
+    {items.map(item => {
+      if (item.kind === 'work') return <div key={`work/${item.id}`} data-history-anchor={item.id}><ConversationWork item={item} /></div>;
+      const content = item.event.content ? <EventContent event={item.event} /> : renderEvent ? renderEvent(item.event) : <SessionEvent event={item.event} />;
+      return content == null ? null : <div key={item.event.id} data-history-anchor={item.event.id}>{content}</div>;
+    })}
     {showActiveWork && status === 'running' && !hasActiveWork && !responding ? <ActiveWorkPlaceholder startedAt={activeWorkStartedAt} /> : null}
   </>;
 }

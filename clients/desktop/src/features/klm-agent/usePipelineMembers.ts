@@ -25,7 +25,7 @@ export function usePipelineMembers(post: GithubActivityItem, query: string, view
     const more = explicit && request.more && !!previous?.page.nextCursor && previous.composition === composition;
     const high = explicit ? request.high : previous?.high ?? request.high;
     const params = new URLSearchParams(query);
-    params.set('cardId', post.id); params.set('view', view); params.set('limit', '20'); params.set('high', high);
+    params.set('cardId', post.id); params.set('view', view); params.set('limit', '25'); params.set('high', high);
     void (async () => {
       try {
         let page = await getActivityPage(params.toString(), more ? previous?.page.nextCursor : undefined, controller.signal);

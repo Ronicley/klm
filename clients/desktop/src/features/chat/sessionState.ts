@@ -53,14 +53,14 @@ export function mergeSessions(current: Session[], incoming: (SessionSummary | Se
       // An expired journal can contain edits outside this page. Discard older
       // cached pages on reset; ordinary reconnect resumes by per-session cursor.
       events = (page.events ?? []).map(event => reconcileEvent(previousById.get(event.id), event, update.revision));
-      history = { revision: update.revision, startIndex: page.startIndex, total: page.total, nextCursor: page.nextCursor, hasMore: page.hasMore, hasNewer: page.hasNewer };
+      history = { revision: update.revision, startIndex: page.startIndex, total: page.total, nextCursor: page.nextCursor, afterCursor: page.afterCursor, hasMore: page.hasMore, hasNewer: page.hasNewer };
       if (update.windowRefresh && previous?.history && page.startIndex <= previous.history.startIndex + previous.events.length && page.endIndex >= previous.history.startIndex) {
         const start = Math.max(Math.min(previous.history.startIndex, page.startIndex), Math.max(previous.history.startIndex + previous.events.length, page.endIndex) - 200);
         const end = Math.max(previous.history.startIndex + previous.events.length, page.endIndex);
         const window = new Map(previous.events.map((event, index) => [previous.history!.startIndex + index, event]));
         (page.events ?? []).forEach((event, index) => window.set(page.startIndex + index, reconcileEvent(window.get(page.startIndex + index), event, page.revision)));
         events = Array.from({ length: end - start }, (_, index) => window.get(start + index)).filter((event): event is EngineEvent => !!event);
-        history = { ...history, startIndex: start, nextCursor: start > 0 ? String(start) : undefined, hasMore: start > 0, hasNewer: end < page.total };
+        history = { ...history, startIndex: start, nextCursor: start > 0 ? String(start) : undefined, afterCursor: end > start ? String(end - 1) : undefined, hasMore: start > 0, hasNewer: end < page.total };
       }
     } else if (update && history && compareRevision(update.revision, history.revision) >= 0) {
       let nextEvents = events;
@@ -80,7 +80,7 @@ export function mergeSessions(current: Session[], incoming: (SessionSummary | Se
         }
       }
       events = nextEvents;
-      if (live === true && (update.revision !== history.revision || update.total !== history.total)) history = { ...history, revision: update.revision, total: update.total };
+      if (live === true && (update.revision !== history.revision || update.total !== history.total)) history = { ...history, revision: update.revision, total: update.total, afterCursor: events.length ? String(history.startIndex + events.length - 1) : undefined, hasNewer: history.startIndex + events.length < update.total };
     }
     const next = {
       ...previous, ...base, events, history,
@@ -97,11 +97,20 @@ export function mergeSessions(current: Session[], incoming: (SessionSummary | Se
 export function prependHistory(sessions: Session[], page: EventPage): Session[] {
   return sessions.map(session => {
     const history = session.history;
-    if (session.id !== page.sessionId || !history || page.endIndex !== history.startIndex) return session;
+    if (session.id !== page.sessionId || !history || page.endIndex < history.startIndex || page.startIndex > history.startIndex + session.events.length || !page.events?.length) return session;
+    const end = Math.max(history.startIndex + session.events.length, page.endIndex);
+    const beginning = Math.min(history.startIndex, page.startIndex);
+    const start = page.direction === 'after' ? Math.max(beginning, end - 200) : beginning;
+    const stop = page.direction === 'after' ? end : Math.min(end, start + 200);
+    const window = new Map(session.events.map((event, index) => [history.startIndex + index, event]));
+    page.events.forEach((event, index) => window.set(page.startIndex + index, reconcileEvent(window.get(page.startIndex + index), event, page.revision)));
+    const events = Array.from({ length: stop - start }, (_, index) => window.get(start + index));
+    if (events.some(event => !event)) return session;
+    const total = Math.max(history.total, page.total);
     return {
       ...session,
-      events: [...(page.events ?? []).map(event => reconcileEvent(undefined, event, page.revision)), ...session.events].slice(0, 200),
-      history: { ...history, startIndex: page.startIndex, nextCursor: page.nextCursor, hasMore: page.hasMore, hasNewer: page.startIndex + Math.min(200, (page.events?.length ?? 0) + session.events.length) < history.total },
+      events: events as EngineEvent[],
+      history: { ...history, startIndex: start, total, nextCursor: start > 0 ? String(start) : undefined, afterCursor: String(stop - 1), hasMore: start > 0, hasNewer: stop < total },
     };
   });
 }

@@ -67,7 +67,11 @@ type DelegationRequestView struct {
 }
 
 // At most four live children, each with bounded pending requests; page by ID.
-func (a *app) readDelegationRequests(ctx context.Context, owner, after string) ([]DelegationRequestView, bool, error) {
+func (a *app) readDelegationRequests(ctx context.Context, owner, after string, limits ...int) ([]DelegationRequestView, bool, error) {
+	limit := 50
+	if len(limits) > 0 {
+		limit = limits[0]
+	}
 	items := []DelegationRequestView{}
 	more := false
 	err := a.store.readSnapshot(ctx, func(tx *sql.Tx) error {
@@ -77,7 +81,7 @@ func (a *app) readDelegationRequests(ctx context.Context, owner, after string) (
 		}
 		rows, err := tx.QueryContext(ctx, `SELECT kind,id,child,batch,invocation FROM (
  SELECT 'permission' kind,p.id,p.owner_id child,i.x_batchId batch,i.id invocation,p.record_id request FROM data_pending_permissions p JOIN data_delegation_invocations i ON i.x_childSessionId=p.owner_id JOIN data_delegation_batches b ON b.id=i.x_batchId WHERE b.x_ownerConversationId=? AND i.x_state<>'terminal'
- UNION ALL SELECT 'question',p.id,p.owner_id,i.x_batchId,i.id,p.record_id FROM data_pending_questions p JOIN data_delegation_invocations i ON i.x_childSessionId=p.owner_id JOIN data_delegation_batches b ON b.id=i.x_batchId WHERE b.x_ownerConversationId=? AND i.x_state<>'terminal') WHERE id>? ORDER BY id LIMIT 51`, owner, owner, after)
+ UNION ALL SELECT 'question',p.id,p.owner_id,i.x_batchId,i.id,p.record_id FROM data_pending_questions p JOIN data_delegation_invocations i ON i.x_childSessionId=p.owner_id JOIN data_delegation_batches b ON b.id=i.x_batchId WHERE b.x_ownerConversationId=? AND i.x_state<>'terminal') WHERE id>? ORDER BY id LIMIT ?`, owner, owner, after, limit+1)
 		if err != nil {
 			return err
 		}
@@ -94,9 +98,9 @@ func (a *app) readDelegationRequests(ctx context.Context, owner, after string) (
 		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 			return err
 		}
-		more = len(refs) > 50
+		more = len(refs) > limit
 		if more {
-			refs = refs[:50]
+			refs = refs[:limit]
 		}
 		for _, v := range refs {
 			table := "pending_permissions"
@@ -119,7 +123,12 @@ func (a *app) readDelegationRequests(ctx context.Context, owner, after string) (
 }
 
 func (a *app) delegationRequestsHTTP(w http.ResponseWriter, r *http.Request) {
-	items, more, err := a.readDelegationRequests(r.Context(), r.PathValue("id"), r.URL.Query().Get("afterId"))
+	limit, err := sqlPageLimit(r, 50)
+	if err != nil {
+		sqlHTTPError(w, err)
+		return
+	}
+	items, more, err := a.readDelegationRequests(r.Context(), r.PathValue("id"), r.URL.Query().Get("afterId"), limit)
 	if err != nil {
 		sqlHTTPError(w, err)
 		return

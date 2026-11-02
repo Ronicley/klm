@@ -361,6 +361,11 @@ func (a *app) projectSQLTopics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) respondSQLSession(w http.ResponseWriter, r *http.Request, id string, status int) {
+	pendingLimit, parseErr := sqlPageLimit(r, 100)
+	if parseErr != nil {
+		sqlHTTPError(w, parseErr)
+		return
+	}
 	var s Session
 	var delegation *DelegationSessionStatus
 	var topic *sqlTopicView
@@ -394,15 +399,15 @@ func (a *app) respondSQLSession(w http.ResponseWriter, r *http.Request, id strin
 		if topic != nil && s.Role == sessionRoleSideAgent {
 			s.TopicID = topic.ID
 		}
-		s.Queue, more["queue"], err = readSQLChildren[QueuedMessage](r.Context(), tx, "queued_messages", id, 32, 4<<20)
+		s.Queue, more["queue"], err = readSQLChildren[QueuedMessage](r.Context(), tx, "queued_messages", id, min(32, pendingLimit), 4<<20)
 		if err != nil {
 			return err
 		}
-		s.Permissions, more["permissions"], err = readSQLChildren[Permission](r.Context(), tx, "pending_permissions", id, 100, 2<<20)
+		s.Permissions, more["permissions"], err = readSQLChildren[Permission](r.Context(), tx, "pending_permissions", id, pendingLimit, 2<<20)
 		if err != nil {
 			return err
 		}
-		s.Questions, more["questions"], err = readSQLChildren[QuestionRequest](r.Context(), tx, "pending_questions", id, 100, 2<<20)
+		s.Questions, more["questions"], err = readSQLChildren[QuestionRequest](r.Context(), tx, "pending_questions", id, pendingLimit, 2<<20)
 		if err != nil {
 			return err
 		}
@@ -511,6 +516,11 @@ func (a *app) getSQLSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) sqlPendingPage(w http.ResponseWriter, r *http.Request) {
+	limit, err := sqlPageLimit(r, 100)
+	if err != nil {
+		sqlHTTPError(w, err)
+		return
+	}
 	tables := map[string]string{"queue": "queued_messages", "permissions": "pending_permissions", "questions": "pending_questions"}
 	table := tables[r.URL.Query().Get("kind")]
 	if table == "" {
@@ -520,14 +530,14 @@ func (a *app) sqlPendingPage(w http.ResponseWriter, r *http.Request) {
 	items := []json.RawMessage{}
 	next := ""
 	more := false
-	err := a.store.readSnapshot(r.Context(), func(tx *sql.Tx) error {
+	err = a.store.readSnapshot(r.Context(), func(tx *sql.Tx) error {
 		var after int64 = -1
 		if id := r.URL.Query().Get("afterId"); id != "" {
 			if err := tx.QueryRowContext(r.Context(), `SELECT position FROM data_`+table+` WHERE owner_id=? AND record_id=? ORDER BY position DESC LIMIT 1`, r.PathValue("id"), id).Scan(&after); err != nil {
 				return controlError(409, "Pending requests changed. Reload this conversation.")
 			}
 		}
-		rows, err := tx.QueryContext(r.Context(), `SELECT id,record_id,payload_bytes FROM data_`+table+` WHERE owner_id=? AND position>? ORDER BY position LIMIT 101`, r.PathValue("id"), after)
+		rows, err := tx.QueryContext(r.Context(), `SELECT id,record_id,payload_bytes FROM data_`+table+` WHERE owner_id=? AND position>? ORDER BY position LIMIT ?`, r.PathValue("id"), after, limit+1)
 		if err != nil {
 			return err
 		}
@@ -552,7 +562,7 @@ func (a *app) sqlPendingPage(w http.ResponseWriter, r *http.Request) {
 			return controlError(413, "Pending request exceeds the response size limit.")
 		}
 		for i, ref := range refs {
-			if i == 100 || ref.size > remaining {
+			if i == limit || ref.size > remaining {
 				more = true
 				break
 			}

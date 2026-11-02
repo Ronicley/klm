@@ -579,6 +579,11 @@ func (a *app) deleteSQLAutomation(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, map[string]bool{"deleted": true})
 }
 func (a *app) listSQLAutomationRuns(w http.ResponseWriter, r *http.Request) {
+	limit, err := sqlPageLimit(r, 50)
+	if err != nil {
+		sqlHTTPError(w, err)
+		return
+	}
 	offset, err := sqlOffset(r)
 	if err != nil {
 		sqlHTTPError(w, err)
@@ -592,7 +597,7 @@ func (a *app) listSQLAutomationRuns(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(st.ctx, `SELECT r.id,s.id,s.x_title FROM data_automation_runs r JOIN data_sessions s ON s.id=r.session_id WHERE r.x_automationId=? ORDER BY r.position DESC,r.id LIMIT 51 OFFSET ?`, v.ID, offset)
+		rows, err := tx.QueryContext(st.ctx, `SELECT r.id,s.id,s.x_title FROM data_automation_runs r JOIN data_sessions s ON s.id=r.session_id WHERE r.x_automationId=? ORDER BY r.position DESC,r.id LIMIT ? OFFSET ?`, v.ID, limit+1, offset)
 		if err != nil {
 			return err
 		}
@@ -602,7 +607,7 @@ func (a *app) listSQLAutomationRuns(w http.ResponseWriter, r *http.Request) {
 			if err := rows.Scan(&id, &session, &title); err != nil {
 				return err
 			}
-			if len(items) == 50 {
+			if len(items) == limit {
 				more = true
 				break
 			}

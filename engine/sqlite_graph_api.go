@@ -46,6 +46,11 @@ func (a *app) getSQLGraphRun(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, result)
 }
 func (a *app) getSQLConversationGraph(w http.ResponseWriter, r *http.Request) {
+	limit, err := sqlPageLimit(r, 50)
+	if err != nil {
+		sqlHTTPError(w, err)
+		return
+	}
 	offset, err := sqlOffset(r)
 	if err != nil {
 		sqlHTTPError(w, err)
@@ -104,7 +109,7 @@ func (a *app) getSQLConversationGraph(w http.ResponseWriter, r *http.Request) {
 		rows, err := tx.QueryContext(st.ctx, `SELECT kind,id,activation,node,session FROM (
 		 SELECT 'permission' AS kind,p.id,a.id AS activation,a.x_nodeId AS node,a.session_id AS session,p.position FROM data_pending_permissions p JOIN data_graph_activations a ON a.session_id=p.owner_id WHERE a.x_runId=? AND a.status IN ('reserved','running','waiting_user','sealing')
 		 UNION ALL SELECT 'question',p.id,a.id,a.x_nodeId,a.session_id,p.position FROM data_pending_questions p JOIN data_graph_activations a ON a.session_id=p.owner_id WHERE a.x_runId=? AND a.status IN ('reserved','running','waiting_user','sealing')
-		 ) ORDER BY activation,kind,position,id LIMIT 51 OFFSET ?`, id, id, offset)
+		 ) ORDER BY activation,kind,position,id LIMIT ? OFFSET ?`, id, id, limit+1, offset)
 		if err != nil {
 			return err
 		}
@@ -121,9 +126,9 @@ func (a *app) getSQLConversationGraph(w http.ResponseWriter, r *http.Request) {
 		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 			return err
 		}
-		more := len(refs) > 50
+		more := len(refs) > limit
 		if more {
-			refs = refs[:50]
+			refs = refs[:limit]
 		}
 		items := []GraphRequestProjection{}
 		bytes := 0
@@ -177,6 +182,19 @@ func (a *app) sqlGraphContentHTTP(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, value)
 }
 func (a *app) getSQLGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
+	limit, err := sqlPageLimit(r, 50)
+	if err != nil {
+		sqlHTTPError(w, err)
+		return
+	}
+	eventLimit := 50
+	if raw := r.URL.Query().Get("eventLimit"); raw != "" {
+		eventLimit, err = strconv.Atoi(raw)
+		if err != nil || eventLimit < 1 || eventLimit > 50 {
+			fail(w, 400, "Invalid event limit.")
+			return
+		}
+	}
 	offset, err := sqlOffset(r)
 	if err != nil {
 		sqlHTTPError(w, err)
@@ -210,7 +228,7 @@ func (a *app) getSQLGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 		if !ok || (node.Type != "agent" && node.Type != "join") {
 			return sql.ErrNoRows
 		}
-		rows, err := tx.QueryContext(st.ctx, `SELECT id,x_occurrence,status FROM data_graph_activations WHERE x_runId=? AND x_nodeId=? ORDER BY length(x_occurrence),x_occurrence LIMIT 51 OFFSET ?`, run.ID, nodeID, offset)
+		rows, err := tx.QueryContext(st.ctx, `SELECT id,x_occurrence,status FROM data_graph_activations WHERE x_runId=? AND x_nodeId=? ORDER BY length(x_occurrence),x_occurrence LIMIT ? OFFSET ?`, run.ID, nodeID, limit+1, offset)
 		if err != nil {
 			return err
 		}
@@ -222,7 +240,7 @@ func (a *app) getSQLGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 				rows.Close()
 				return err
 			}
-			if len(items) == 50 {
+			if len(items) == limit {
 				more = true
 				break
 			}
@@ -254,12 +272,12 @@ func (a *app) getSQLGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if r.URL.Query().Get("eventOffset") == "" {
-			eventOffset = max(0, eventCount-50)
+			eventOffset = max(0, eventCount-eventLimit)
 		}
 		rows, err = tx.QueryContext(st.ctx, `SELECT domain,id FROM (
 		 SELECT 'activation_events' AS domain,id,created_at FROM data_activation_events WHERE owner_id=?
 		 UNION ALL SELECT 'session_events',id,created_at FROM data_session_events WHERE owner_id=? AND position>=? AND (? OR position<?)
-		 ) ORDER BY created_at,domain,id LIMIT 51 OFFSET ?`, x.ID, x.SessionID, x.NativeEventStart, graphActivationActive(x.Status), x.NativeEventEnd, eventOffset)
+		 ) ORDER BY created_at,domain,id LIMIT ? OFFSET ?`, x.ID, x.SessionID, x.NativeEventStart, graphActivationActive(x.Status), x.NativeEventEnd, eventLimit+1, eventOffset)
 		if err != nil {
 			return err
 		}
@@ -276,9 +294,9 @@ func (a *app) getSQLGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 			return err
 		}
-		eventMore := len(refs) > 50
+		eventMore := len(refs) > eventLimit
 		if eventMore {
-			refs = refs[:50]
+			refs = refs[:eventLimit]
 		}
 		events := []any{}
 		budget := int64(2 << 20)
@@ -290,7 +308,7 @@ func (a *app) getSQLGraphNodeActivity(w http.ResponseWriter, r *http.Request) {
 			events = append(events, value)
 			budget -= used
 		}
-		result["activation"] = map[string]any{"id": x.ID, "occurrence": sqliteRevision(x.Occurrence), "status": x.Status, "input": x.Input, "submission": x.Submission, "events": events, "error": x.Error, "createdAt": x.CreatedAt, "updatedAt": x.UpdatedAt, "hasMore": eventMore, "nextOffset": eventOffset + len(events), "hasEarlier": eventOffset > 0, "previousOffset": max(0, eventOffset-50), "total": eventCount}
+		result["activation"] = map[string]any{"id": x.ID, "occurrence": sqliteRevision(x.Occurrence), "status": x.Status, "input": x.Input, "submission": x.Submission, "events": events, "error": x.Error, "createdAt": x.CreatedAt, "updatedAt": x.UpdatedAt, "hasMore": eventMore, "offset": eventOffset, "nextOffset": eventOffset + len(events), "hasEarlier": eventOffset > 0, "previousOffset": max(0, eventOffset-eventLimit), "total": eventCount}
 		return nil
 	})
 	if err != nil {
