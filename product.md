@@ -304,9 +304,14 @@ the initial prompt; a run in an existing/linked session sends only its follow-up
 including the first run when an existing session was chosen. Prior objectives or
 classifications in the conversation do not classify the current run.
 
-The initial webhook trigger is GitHub `pull_request/opened`, scoped by the receiving
-project rather than repository. The editor discovers and inserts PR number,
-organization login (empty when absent), and repository name references. Raw payloads
+Webhook automations select one GitHub event/action: `pull_request/opened`,
+`pull_request/ready_for_review`, or `issues` with `opened`, `closed`, `deleted`,
+`edited`, `assigned` or `milestoned`. Missing selection on existing automations
+retains `pull_request/opened`. Triggers are scoped by the receiving project rather
+than repository. Changing activation or the selected event requires the accepted
+queue to drain first. Admission rejects prompt references absent from the accepted
+event, without consuming it. The editor discovers and inserts PR or issue number, organization
+login (empty when absent), and repository name references. Raw payloads
 are not passed to automation agents. Scheduled prompts reject webhook references;
 switching activation preserves the text and requires removing those references.
 Trigger data and automatic prompts are never

@@ -151,6 +151,11 @@ func (a *app) saveAutomation(w http.ResponseWriter, r *http.Request) {
 			fail(w, 409, "Automation changed. Reload before saving.")
 			return
 		}
+		if err := a.state.validateAutomationTriggerEdit(*previous, v); err != nil {
+			a.mu.Unlock()
+			fail(w, 409, err.Error())
+			return
+		}
 		if automationSessionMode(*previous) != "new_per_run" && previous.SessionID != "" && (v.SessionMode != automationSessionMode(*previous) || v.SessionID != previous.SessionID) {
 			a.mu.Unlock()
 			fail(w, 409, "The linked session is fixed. Create another automation to use a different session.")
@@ -306,6 +311,10 @@ func (a *app) saveAutomation(w http.ResponseWriter, r *http.Request) {
 			fail(w, 409, "Automation changed. Reload before saving.")
 			return
 		}
+		if err := a.state.validateAutomationTriggerEdit(*old, v); err != nil {
+			fail(w, 409, err.Error())
+			return
+		}
 		v.ID, v.ProjectID, v.Revision, v.OperationID = old.ID, old.ProjectID, old.Revision+1, old.OperationID
 		v.CreationRequest = old.CreationRequest
 	}
@@ -317,7 +326,7 @@ func (a *app) saveAutomation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v.AfterSequence = a.state.WebhookReceivedSequence
-	if old != nil && old.Enabled && v.Enabled {
+	if old != nil && old.Enabled && v.Enabled && old.Mode == v.Mode && automationWebhookConfig(*old) == automationWebhookConfig(v) {
 		v.AfterSequence = old.AfterSequence
 	}
 	reset := old == nil || !reflect.DeepEqual(old.Schedule, v.Schedule) || old.Mode != v.Mode

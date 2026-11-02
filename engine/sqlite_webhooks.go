@@ -6,9 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -262,44 +260,16 @@ func (s *sqliteStore) releaseWebhookBatch(ctx context.Context, at time.Time) (in
 }
 
 func (st *sqliteSessionTx) enqueueWebhookAutomations(e WebhookStoredEvent) error {
-	if e.Provider != "github" || e.EventType != "pull_request" || e.Action != "opened" {
+	if e.Provider != "github" || !supportedAutomationWebhook(e.EventType, e.Action) {
 		return nil
 	}
 	if err := decodeSQLiteRecord(st.ctx, st.tx, "webhook_payloads", sqliteOwnedKey(e.ID, ""), maxStreamRecordBytes, &e.Payload); err != nil {
 		return err
 	}
-	var payload struct {
-		Number       int64 `json:"number"`
-		Organization struct {
-			Login string `json:"login"`
-		} `json:"organization"`
-		Repository struct {
-			Name  string `json:"name"`
-			Owner struct {
-				Login string `json:"login"`
-				Type  string `json:"type"`
-			} `json:"owner"`
-		} `json:"repository"`
-	}
-	if json.Unmarshal([]byte(e.Payload), &payload) != nil || payload.Number <= 0 {
+	variables := automationWebhookVariables(e)
+	if variables == nil {
 		return nil
 	}
-	org := payload.Organization.Login
-	if org == "" && payload.Repository.Owner.Type == "Organization" {
-		org = payload.Repository.Owner.Login
-	}
-	if len(org) > 200 || len(payload.Repository.Name) > 200 {
-		return nil
-	}
-	if name, ok := cleanLabel(payload.Repository.Name, 200); !ok || name != payload.Repository.Name {
-		return nil
-	}
-	if org != "" {
-		if name, ok := cleanLabel(org, 200); !ok || name != org {
-			return nil
-		}
-	}
-	variables := map[string]string{"pr.number": strconv.FormatInt(payload.Number, 10), "organization.name": org, "repository.name": payload.Repository.Name}
 	after := ""
 	for {
 		var id string
@@ -314,7 +284,7 @@ func (st *sqliteSessionTx) enqueueWebhookAutomations(e WebhookStoredEvent) error
 		if err := decodeSQLiteRecord(st.ctx, st.tx, "automations", id, 1<<20, &a); err != nil {
 			return err
 		}
-		if e.ReceivedSequence > a.AfterSequence {
+		if e.ReceivedSequence > a.AfterSequence && matchesAutomationWebhook(a, e) {
 			var exists bool
 			key := "webhook/" + e.ID
 			if err := st.tx.QueryRowContext(st.ctx, `SELECT EXISTS(SELECT 1 FROM data_automation_triggers WHERE x_automationId=? AND x_key=?)`, a.ID, key).Scan(&exists); err != nil {

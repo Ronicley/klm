@@ -320,9 +320,17 @@ preview uses `POST /api/projects/{id}/automations/preview` with the schedule obj
 `GET/PATCH /api/settings/engine` exposes revisioned `timeZone` (IANA, initially America/Sao_Paulo).
 The same zone drives scheduling and Analytics; persisted instants remain UTC.
 
-Only newly released project-local `github/pull_request/opened` events after the
-automation's creation/reactivation receipt boundary can enqueue it. References are
-`{{pr.number}}`, `{{organization.name}}` and `{{repository.name}}`; no repository
+Each webhook automation selects `webhook: {eventType, action}`: `pull_request` with
+`opened` or `ready_for_review`, or `issues` with `opened`, `closed`, `deleted`,
+`edited`, `assigned` or `milestoned`. An omitted webhook retains `pull_request/opened`
+for existing automations and snapshots. Only matching newly released project-local
+events received after creation, reactivation or a trigger change can enqueue it.
+Activation/event changes return 409 while accepted triggers remain queued, so old
+events cannot execute against a different event's prompt. Admission leaves a trigger
+blocked and unconsumed if its prompt references are absent from the event's variables;
+the queue reports the reason. An explicitly empty organization value is valid.
+References are `{{pr.number}}` for PRs or `{{issue.number}}` for issues, plus
+`{{organization.name}}` and `{{repository.name}}`; no repository
 binding or raw payload is supplied. A durable FIFO is independent of chat messages.
 Parallel runs are webhook-only; schedules always serialize. Pausing rejects new
 automatic triggers while accepted triggers proceed; deletion cancels pending
