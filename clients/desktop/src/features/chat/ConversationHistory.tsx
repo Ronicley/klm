@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { request, type EventPage, type Session, type SessionResponse } from '../../engine';
-import { Button } from '../../design-system/Button';
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { type EventPage, type Session, type SessionResponse } from '../../engine';
+import { followHistory } from '../pagination/pagination';
 import { ConversationEvents } from './ConversationEvents';
 import { HistoryLoader } from './HistoryLoader';
 import { PendingRequestPages } from './PendingRequestPages';
@@ -19,15 +19,21 @@ export function ConversationHistory({ session, subagents, working, label, empty,
 }) {
   const history = useRef<HTMLDivElement>(null);
   const following = useRef(true);
-  const latestRequest = useRef<AbortController | null>(null);
-  const [historyError, setHistoryError] = useState('');
-  useEffect(() => () => latestRequest.current?.abort(), [session.id]);
+  const viewer = useRef({});
+  useLayoutEffect(() => { following.current = !session.history?.hasNewer; if (history.current) history.current.scrollTop = history.current.scrollHeight; }, [session.id]);
   useEffect(() => {
+    const element = history.current;
+    const paging = () => { following.current = false; followHistory(session.id, viewer.current, false); };
+    element?.addEventListener('klm:history-paging', paging);
+    return () => { element?.removeEventListener('klm:history-paging', paging); followHistory(session.id, viewer.current); };
+  }, [session.id]);
+  useLayoutEffect(() => {
     if (following.current && history.current) history.current.scrollTo({ top: history.current.scrollHeight });
   }, [session.updatedAt, session.history?.total, !!session.history, working]);
-  return <div className="chat-history" ref={history} role="log" aria-label={label} aria-live="polite" onScroll={event => {
+  return <div className="chat-history" ref={history} role="log" tabIndex={0} aria-label={label} aria-live="polite" style={{ overflowAnchor: 'none' }} onScroll={event => {
     const element = event.currentTarget;
-    following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
+    following.current = !session.history?.hasNewer && element.scrollHeight - element.scrollTop - element.clientHeight < 24;
+    followHistory(session.id, viewer.current, following.current);
   }}>
     <HistoryLoader key={`history-loader/${session.id}`} session={session} onPage={onHistory} />
     {!session.history && !session.events.length
@@ -35,15 +41,7 @@ export function ConversationHistory({ session, subagents, working, label, empty,
       : session.events.length || working
         ? <ConversationEvents key={`conversation-events/${session.id}`} session={session} subagents={subagents} working={working} onSnapshot={onSnapshot} onEventChange={onEventChange} onAskSide={onAskSide} onOpenSubagent={onOpenSubagent} />
          : empty}
-    {session.history?.hasNewer && <Button size="sm" onClick={() => {
-      latestRequest.current?.abort(); const controller = new AbortController(); latestRequest.current = controller; setHistoryError('');
-      void request<EventPage>(`/api/sessions/${encodeURIComponent(session.id)}/history`, 'GET', undefined, 15000, controller.signal).then(page => {
-        if (controller.signal.aborted) return;
-        following.current = true; onSnapshot({ kind: 'reset', summary: session, revision: page.revision, history: page, changes: [], total: page.total });
-        requestAnimationFrame(() => history.current?.scrollTo({ top: history.current.scrollHeight }));
-      }).catch(error => { if (!controller.signal.aborted) setHistoryError(error instanceof Error ? error.message : 'Could not load latest messages.'); });
-    }}>Latest messages</Button>}
-    {historyError && <p className="form-error" role="alert">{historyError}</p>}
+    <HistoryLoader key={`newer/${session.id}`} session={session} onPage={onHistory} direction="after" />
     {session.role !== 'subagent' && <PendingRequestPages key={`pending/${session.id}`} session={session} onSnapshot={onSnapshot} />}
   </div>;
 }

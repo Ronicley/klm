@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { AutoPage } from '../pagination/AutoPage';
 import { MoreHorizontal, Pause, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
@@ -89,7 +90,7 @@ function AgentManagement({ projectId }: { projectId: string }) {
     {page && !page.complete && <p className="form-error" role="status">Agent catalog is incomplete. Restore access to the reported sources, then refresh.</p>}
     {loading && <p className="muted" role="status">{page ? 'Refreshing agents...' : 'Loading agents...'}</p>}
     {rows.length ? <ul className="agents-list">{rows.map((agent, index) => {
-      const rowKey = `${agent.source.scope}/${agent.source.projectId}/${agent.source.sourceUid}/${agent.id}/${index}`;
+      const rowKey = `${agent.source.scope}/${agent.source.projectId}/${agent.source.sourceUid}/${agent.id}`;
       return <li key={rowKey}><ListTile title={agent.name} description={agent.description} onClick={() => { if (!pending) void open(agent.source, 'edit'); }}
         metadata={<><span>{agentOrigin(agent.source)}</span><span className="agent-model">{agent.model}</span>{agent.effort && <span className="agent-effort">{effortLabel(agent.effort)}</span>}{agent.defaultHarness && <span className="agent-harness"><HarnessIcon harness={agent.defaultHarness} />{agent.defaultHarness}</span>}</>}
         status={!agent.enabled ? <span className="agent-disabled-status">Disabled</span> : !agent.available ? <span className="agent-disabled-status" title={agent.unavailableReason}>{agent.status.replaceAll('_', ' ')}</span> : undefined}
@@ -98,8 +99,7 @@ function AgentManagement({ projectId }: { projectId: string }) {
           <MenuItem role="menuitem" className="agent-delete-action" onClick={() => void open(agent.source, 'delete')}><Trash2 />Delete</MenuItem>
         </Menu>} /></li>;
     })}</ul> : !loading && page && <p className="agents-empty" role="status">{query ? 'No agents found' : offset ? 'No agents on this page' : 'No agents yet'}</p>}
-    <div className="agents-pagination"><Button size="sm" disabled={pending || !page || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>Previous</Button>
-      <span>Page {Math.floor(offset / 50) + 1}</span><Button size="sm" disabled={pending || !page?.hasMore} onClick={() => setOffset(page!.nextOffset)}>Next</Button></div>
+    <AutoPage hasMore={!!page?.hasMore} cursor={`${projectId}/${query}/${page?.nextOffset}`} busy={pending || loading} error={loadError ? String(loadError) : ''} onLoad={() => setOffset(page!.nextOffset)} onRetry={reload} />
     {editing && <AgentEditorDialog key={`${editing === 'new' ? 'new' : `${editing.source.sourceUid}/${editing.revision}`}/${editorReset}`} agent={editing === 'new' ? undefined : editing} agents={[]}
       managed projectId={projectId || undefined} onClose={closeEditor} onReload={editing === 'new' ? undefined : () => discardAndReload(editing)}
       onSave={async (draft, scope, revision) => {

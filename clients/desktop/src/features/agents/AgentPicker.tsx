@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { AutoPage } from '../pagination/AutoPage';
 import { Button } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
 import { ListTile } from '../../design-system/ListTile';
@@ -21,7 +22,7 @@ export function AgentPicker({ projectId, value, onChange, onBusyChange, disabled
     {!!page.error && <Button size="sm" onClick={page.reload}>Retry agents</Button>}
     {page.loading && <p role="status">Loading agents...</p>}
     {busy && <p role="status">Opening agent...</p>}
-    {page.page?.agents.map((agent, index) => <ListTile key={`${agent.source.sourceUid}/${agent.source.projectId}/${index}`} title={agent.name}
+    {page.page?.agents.map(agent => <ListTile key={`${agent.source.sourceUid}/${agent.source.projectId}/${agent.id}`} title={agent.name}
       description={`${agentOrigin(agent.source)} · ${agent.defaultHarness} · ${agent.model} · ${agent.effort || 'Default'}`}
       status={(!agent.available || !agent.enabled) ? <span>Unavailable</span> : value?.source.sourceUid === agent.source.sourceUid ? <span>Selected</span> : undefined}
       onClick={() => {
@@ -34,6 +35,6 @@ export function AgentPicker({ projectId, value, onChange, onBusyChange, disabled
           onChange(full);
         }).catch(error => { if (!next.signal.aborted) setError(error); }).finally(() => { if (!next.signal.aborted) { setBusy(false); onBusyChange?.(false); } });
       }} />)}
-    <div className="agents-pagination"><Button size="sm" disabled={disabled || busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>Previous agents</Button><Button size="sm" disabled={disabled || busy || !page.page?.hasMore} onClick={() => setOffset(page.page!.nextOffset)}>Next agents</Button></div>
+    <AutoPage hasMore={!!page.page?.hasMore && !disabled} cursor={`${projectId}/${query}/${page.page?.nextOffset}`} busy={busy || page.loading} error={page.error ? String(page.error) : ''} onLoad={() => setOffset(page.page!.nextOffset)} onRetry={page.reload} />
   </details>;
 }

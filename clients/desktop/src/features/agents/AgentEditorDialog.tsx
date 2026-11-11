@@ -4,6 +4,7 @@ import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
 import { RadioGroup } from '../../design-system/RadioGroup';
 import { SearchSelect } from '../../design-system/SearchSelect';
+import { AutoPage } from '../pagination/AutoPage';
 import { Slider } from '../../design-system/Slider';
 import { Textarea } from '../../design-system/Textarea';
 import { HarnessIcon } from '../chat/HarnessIcon';
@@ -119,7 +120,8 @@ export function AgentEditorDialog({ agent, agents, projectId: managedProject, ma
         <div className="agent-editor-field agent-editor-wide"><label htmlFor={`${id}-prompt`}>Prompt</label><Textarea id={`${id}-prompt`} required rows={6} value={draft.prompt} onChange={event => setDraft(current => ({ ...current, prompt: event.target.value }))} /></div>
         {(managed || projectId) && <div className="agent-editor-wide"><h3>Library</h3><CapabilitySelector harness={draft.defaultHarness} value={{ skills: draft.skills, mcpConnections: draft.mcpConnections }} onChange={selection => setDraft(current => ({ ...current, ...selection }))} /></div>}
         {!!references.length && <div className="agent-editor-wide"><h3>Graph references</h3><ul className="agent-graph-references">{references.map(reference => <li key={`${reference.projectId}/${reference.id}`}>{reference.name} · {reference.projectName}</li>)}</ul></div>}
-        {referencesMore && agent?.source && <div className="agent-editor-wide"><Button size="sm" disabled={referencesBusy} onClick={() => {
+        {agent?.source && <div className="agent-editor-wide"><AutoPage hasMore={!!referencesMore} cursor={`${agent.source.sourceUid}/${referencesOffset}`} busy={referencesBusy} error={saveError ? String(saveError) : ''} onLoad={() => {
+          if (referencesBusy) return;
           const controller = new AbortController(); referencesController.current = controller;
           setReferencesBusy(true); setSaveError(undefined);
           void getAgent(agent.source!, referencesOffset, controller.signal).then(next => {
@@ -128,7 +130,7 @@ export function AgentEditorDialog({ agent, agents, projectId: managedProject, ma
             setReferences(current => [...current, ...(next.references ?? []).filter(item => !current.some(ref => ref.projectId === item.projectId && ref.id === item.id))]);
             setReferencesMore(next.referencesHasMore); setReferencesOffset(next.referencesNextOffset ?? 0);
           }).catch(error => { if (!controller.signal.aborted) setSaveError(error); }).finally(() => { if (!controller.signal.aborted) setReferencesBusy(false); });
-        }}>{referencesBusy ? 'Loading references...' : 'More references'}</Button></div>}
+        }} /></div>}
       </div>
       <AgentProblemMessage error={saveError} />
       {!!saveError && onReload && <Button disabled={saving} onClick={() => { setSaving(true); forgetDrafts(key); void onReload().catch(setSaveError).finally(() => setSaving(false)); }}>Discard changes and reload</Button>}

@@ -13,7 +13,7 @@ export const emptySelection = (): CapabilitySelection => ({ skills: [], mcpConne
 export const selectionOf = (value?: CapabilitySelection): CapabilitySelection => ({ skills: value?.skills ?? [], mcpConnections: value?.mcpConnections ?? [] });
 export const libraryPath = (id: string) => `/api/library/mcp/${encodeURIComponent(id)}`;
 export const getLibrary = async (signal?: AbortSignal, search = ''): Promise<LibraryInventory> => {
-  const query = `search=${encodeURIComponent(search)}`;
+  const query = `limit=25&search=${encodeURIComponent(search)}`;
   const page = await request<LibraryInventory & { hasMore?: boolean; nextOffset?: number }>(`/api/library?${query}`, 'GET', undefined, 20000, signal);
   // The engine caps the configured connection catalog at 64. Tool selectors need
   // those catalogs only while their Library surface is open; never at bootstrap.

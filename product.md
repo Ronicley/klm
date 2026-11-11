@@ -48,6 +48,18 @@ mistaken for unavailable content. Topic/Library search applies to the requested
 engine/project scope before pagination. Background execution does not depend on
 open clients or subscriptions.
 
+Interactive histories and paged lists request up to 25 items per page and load
+additional pages near the relevant scroll edge, without ordinary pagination
+buttons. A history item is a persisted event, including reasoning and tools;
+rendered work groups need not occupy 25 rows. Chat history opens at the newest
+tail and pages in both directions, keeping its bounded 200-event window and
+preserving the reading anchor. Streaming follows only at the real tail. Session
+and topic lists accumulate metadata instead of dropping earlier pages after four
+loads. Closed pickers and collapsed lists do not trigger automatic pagination;
+errors retain explicit Retry recovery. Large single-event content still uses
+its separate byte/chunk contract. Implementation and pending manual checks are
+recorded in `AUTOMATIC_PAGINATION_FIX_PROGRESS.md`.
+
 On the first upgrade, exact existing `state.json`, `stream.sealed`, `stream.journal`,
 `client-auth.json` and `engine-access.json` bytes are preserved under
 `<engine-data-dir>/legacy-backups/<migration-id>/`, with an absence/hash manifest.
@@ -304,9 +316,14 @@ the initial prompt; a run in an existing/linked session sends only its follow-up
 including the first run when an existing session was chosen. Prior objectives or
 classifications in the conversation do not classify the current run.
 
-The initial webhook trigger is GitHub `pull_request/opened`, scoped by the receiving
-project rather than repository. The editor discovers and inserts PR number,
-organization login (empty when absent), and repository name references. Raw payloads
+Webhook automations select one GitHub event/action: `pull_request/opened`,
+`pull_request/ready_for_review`, or `issues` with `opened`, `closed`, `deleted`,
+`edited`, `assigned` or `milestoned`. Missing selection on existing automations
+retains `pull_request/opened`. Triggers are scoped by the receiving project rather
+than repository. Changing activation or the selected event requires the accepted
+queue to drain first. Admission rejects prompt references absent from the accepted
+event, without consuming it. The editor discovers and inserts PR or issue number, organization
+login (empty when absent), and repository name references. Raw payloads
 are not passed to automation agents. Scheduled prompts reject webhook references;
 switching activation preserves the text and requires removing those references.
 Trigger data and automatic prompts are never
@@ -1322,9 +1339,15 @@ metadata. Existing v1 artifacts retain their original contract. Child admission
 and Choice reservation exclude each other; Choice acceptance follows all-child
 join, owned drainage and confirmed result delivery in the same activation/workspace.
 
-The shared UI presents factual batch progress, outcomes, settings, reuse, bounded
-output and read-only child histories, plus owning-chat request cards. Isolated
-Playwright validation exercised actual frontend/backend and installed Pi, OpenCode
+The shared UI presents children as compact native-style rows: robot icon, session
+title, saved-agent name when present, and latest activity, with a text shimmer while
+active and the outcome after settlement. Activity previews update without loading
+unopened child histories. Clicking a row opens the existing read-only child tab
+(or the client's child view); contexts without child navigation retain a history
+dialog. Model, effort and status appear in the child view, and pending requests
+remain in owning-chat cards. This compact presentation awaits human validation.
+
+Earlier isolated Playwright validation exercised actual frontend/backend and installed Pi, OpenCode
 and new Codex parent/child adapters against a deterministic local model provider.
 Core evidence covers creation/overrides/source refresh, two-child consolidation,
 Pi reuse and owner question replies under YOLO, graph Save/selection, Focus controls

@@ -9,6 +9,8 @@ import type { AgentPage } from './types';
 export function useAgentPage(projectId: string, search: string, offset: number) {
   const identity = `${ENGINE_URL}/${currentEngineIdentity()}/${engineIdentityGeneration()}`;
   const key = JSON.stringify([identity, projectId, search, offset]);
+  const scope = JSON.stringify([identity, projectId, search]);
+  const retained = useRef<{ scope: string; page: AgentPage } | undefined>(undefined);
   const [state, setState] = useState<{ key: string; page?: AgentPage; error?: unknown; loading: boolean }>({ key: '', loading: true });
   const reader = useRef<{ key: string; refresh: () => void } | null>(null);
   const latestKey = useRef(key);
@@ -21,10 +23,19 @@ export function useAgentPage(projectId: string, search: string, offset: number) 
     async function read() {
       inFlight = true; dirty = false;
       const requestController = new AbortController(); controller = requestController;
-      setState(old => ({ key, page: old.key === key ? old.page : undefined, loading: true }));
+      setState(old => ({ key, page: retained.current?.scope === scope ? retained.current.page : old.key === key ? old.page : undefined, loading: true }));
       try {
-        const page = await getAgentPage(projectId, search, offset, requestController.signal);
-        if (current() && !requestController.signal.aborted) setState({ key, page, loading: false });
+        let page = await getAgentPage(projectId, search, 0, requestController.signal);
+        const agents = [...page.agents];
+        const boundary = retained.current?.scope === scope ? retained.current.page.agents.at(-1)?.source.sourceUid : undefined;
+        while (page.hasMore && (page.nextOffset <= offset || !!boundary && !agents.some(agent => agent.source.sourceUid === boundary))) {
+          const cursor = page.nextOffset;
+          page = await getAgentPage(projectId, search, cursor, requestController.signal);
+          if (page.hasMore && page.nextOffset <= cursor) throw new Error('Agent pagination did not advance. Retry.');
+          agents.push(...page.agents);
+        }
+        page = { ...page, agents: [...new Map(agents.map(agent => [`${agent.source.sourceUid}/${agent.source.projectId}/${agent.id}`, agent])).values()] };
+        if (current() && !requestController.signal.aborted) { retained.current = { scope, page }; setState({ key, page, loading: false }); }
       } catch (error) {
         if (current() && !requestController.signal.aborted) setState(old => ({ ...old, key, error, loading: false }));
       } finally {
@@ -51,7 +62,7 @@ export function useAgentPage(projectId: string, search: string, offset: number) 
     const project = projectId ? subscribeScope('project', projectId, refresh) : undefined;
     return () => { global(); project?.(); };
   }, [identity, projectId]);
-  return { page: state.key === key ? state.page : undefined,
+  return { page: state.key === key ? state.page : retained.current?.scope === scope ? retained.current.page : undefined,
     error: state.key === key ? state.error : undefined,
     loading: state.key !== key || state.loading, reload };
 }

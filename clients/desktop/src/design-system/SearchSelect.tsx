@@ -1,10 +1,10 @@
-import { useRef, useState, type KeyboardEvent } from 'react';
+import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Menu, MenuItem } from './Menu';
 
-export function SearchSelect({ id, label, value, options, onChange, placeholder = 'Select an option', searchPlaceholder = 'Search', emptyMessage = 'No results found', disabled = false }: {
+export function SearchSelect({ id, label, value, options, onChange, placeholder = 'Select an option', searchPlaceholder = 'Search', emptyMessage = 'No results found', disabled = false, footer, searchValue, onSearchChange, required = false }: {
   id?: string;
   label: string;
   value: string;
@@ -14,13 +14,17 @@ export function SearchSelect({ id, label, value, options, onChange, placeholder 
   searchPlaceholder?: string;
   emptyMessage?: string;
   disabled?: boolean;
+  footer?: ReactNode;
+  searchValue?: string;
+  onSearchChange?: (value: string) => void;
+  required?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const list = useRef<HTMLDivElement>(null);
   const selected = options.find(option => option.value === value);
-  const query = search.trim().toLowerCase();
-  const matches = options.filter(option => `${option.label} ${option.description ?? ''}`.toLowerCase().includes(query));
+  const query = (searchValue ?? search).trim().toLowerCase();
+  const matches = onSearchChange ? options : options.filter(option => `${option.label} ${option.description ?? ''}`.toLowerCase().includes(query));
 
   function choose(next: string) { onChange(next); setOpen(false); }
 
@@ -44,17 +48,19 @@ export function SearchSelect({ id, label, value, options, onChange, placeholder 
   }
 
   return <div className="search-select">
+    {required && <input aria-label={`${label} selection`} tabIndex={-1} style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }} required value={value} onChange={() => {}} onInvalid={() => setOpen(true)} />}
     <Menu label={label} side="bottom" className="search-select-menu" open={open && !disabled} onOpenChange={next => { setSearch(''); setOpen(next); }}
       trigger={props => <Button {...props} id={id} className="search-select-trigger" disabled={disabled} aria-label={`${label}: ${selected?.label ?? placeholder}`}>
         <span className={!selected ? 'muted' : undefined}>{selected?.label ?? placeholder}</span><ChevronDown />
       </Button>}>
       <div onKeyDown={navigate}>
-        <Input data-menu-autofocus type="search" aria-label={`Search ${label.toLowerCase()}`} placeholder={searchPlaceholder} value={search} onChange={event => setSearch(event.target.value)} />
+        <Input data-menu-autofocus type="search" aria-label={`Search ${label.toLowerCase()}`} placeholder={searchPlaceholder} value={searchValue ?? search} onChange={event => onSearchChange ? onSearchChange(event.target.value) : setSearch(event.target.value)} />
         <div ref={list} className="search-select-options">
           {matches.map(option => <MenuItem key={option.value} selected={option.value === value} onClick={() => choose(option.value)}>
             <span className="search-select-option-text"><span>{option.label}</span>{option.description && <small>{option.description}</small>}</span>{option.value === value && <Check />}
           </MenuItem>)}
           {!matches.length && <p className="search-select-empty" role="status">{emptyMessage}</p>}
+          {footer}
         </div>
       </div>
     </Menu>

@@ -31,8 +31,8 @@ function sessionRuntimeState(session: Session) {
   return { state: 'off', label: 'Runtime stopped' };
 }
 
-export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onRename, onEditTopic, onCreateTopic, onArchiveSession, onArchiveTopic, onMoveSession, onReorderTopic, onClose, onAgents, onGraphs, onProjectSettings, onActivityBoard, hasTaskProvider, paging, onSearchChange }: {
-  paging?: ReactNode; onSearchChange?: (query: string) => void;
+export function WorkspaceSidebar({ project, sessions, activeId, activeSection, collapsed, archivedCollapsed, onCollapsedChange, onArchivedCollapsedChange, onSelect, onNew, onRename, onEditTopic, onCreateTopic, onArchiveSession, onArchiveTopic, onMoveSession, onReorderTopic, onClose, onAgents, onGraphs, onProjectSettings, onActivityBoard, hasTaskProvider, paging, onSearchChange, sessionsComplete = true }: {
+  paging?: ReactNode | ((expanded: boolean) => ReactNode); onSearchChange?: (query: string) => void; sessionsComplete?: boolean;
   project: Project; sessions: Session[]; activeId: string; collapsed: Record<string, boolean>; archivedCollapsed: boolean; onCollapsedChange: Dispatch<SetStateAction<Record<string, boolean>>>; onArchivedCollapsedChange: (collapsed: boolean) => void;
   onSelect: (id: string) => void; onNew: (topic?: Topic) => void; onRename: (session: Session) => void; onEditTopic: (topic: Topic) => void; onCreateTopic: () => void;
   onArchiveSession: (session: Session, archived: boolean) => Promise<boolean>; onArchiveTopic: (topic: Topic, archived: boolean) => Promise<boolean>;
@@ -173,7 +173,7 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
             <MenuItem role="menuitem" disabled={!!busyAction} onClick={() => void runAction(`archive-topic:${group.id}`, () => onArchiveTopic(group.topic!, true), 'Could not archive the topic. Try again.')}><Archive />Archive</MenuItem>
           </Menu></>)}
       </div>
-      {expanded && <div className="session-list">{matches.map(session => sessionRow(session, archived, !!group.topic?.archived))}{!matches.length && (group.topic && !archived && !group.topic.archived && !group.sessions.some(session => !session.archived) ? <Button className="topic-new-session" variant="ghost" size="sm" onClick={() => onNew(group.topic)}><SquarePen />New session</Button> : <p className="empty-workspace">No sessions</p>)}</div>}
+      {expanded && <div className="session-list">{matches.map(session => sessionRow(session, archived, !!group.topic?.archived))}{!matches.length && sessionsComplete && (group.topic && !archived && !group.topic.archived && !group.sessions.some(session => !session.archived) ? <Button className="topic-new-session" variant="ghost" size="sm" onClick={() => onNew(group.topic)}><SquarePen />New session</Button> : <p className="empty-workspace">No sessions</p>)}</div>}
     </section>;
   }
 
@@ -195,7 +195,7 @@ export function WorkspaceSidebar({ project, sessions, activeId, activeSection, c
         {(search !== null || !archivedCollapsed) && <div className="archived-topic-list">{groups.map(group => groupView(group, true))}{!sessions.some(session => session.archived) && !project.topics?.some(topic => topic.archived) && <p className="empty-workspace">No sessions</p>}</div>}
       </div>
       {actionError && <p role="alert" className="form-error sidebar-action-error">{actionError}</p>}
-      {paging}
+      {typeof paging === 'function' ? paging(search !== null || !archivedCollapsed || groups.some(group => collapsed[group.id] === false)) : paging}
     </div>
     {!IS_MOBILE_HOST && <div className="session-rail-resize" role="separator" aria-label="Resize sessions" aria-orientation="vertical" aria-controls={panelId} aria-valuemin={minimumSidebarWidth} aria-valuemax={Math.round(maximumWidth)} aria-valuenow={Math.round(width)} aria-valuetext={`${Math.round(width)} pixels`} tabIndex={0}
       onPointerDown={event => {

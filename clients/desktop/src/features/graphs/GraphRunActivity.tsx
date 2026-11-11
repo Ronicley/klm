@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { AutoPage } from '../pagination/AutoPage';
+import { captureScrollAnchor } from '../pagination/scrollAnchor';
 import { Panel } from '@xyflow/react';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { TabNav } from '../../design-system/TabNav';
-import { Select } from '../../design-system/Select';
+import { SearchSelect } from '../../design-system/SearchSelect';
 import { request, type GraphNodeActivity } from '../../engine';
 import { EventSequence } from '../chat/ConversationEvents';
 import { DelegationActivity } from '../chat/DelegationActivity';
@@ -22,31 +24,87 @@ export function GraphRunActivity({ sessionId, runId, nodeId, nodeName, onClose }
   const [error, setError] = useState('');
   const log = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  const snapshot = useRef<GraphNodeActivity | null>(null);
+  const restore = useRef<(() => void) | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const identity = `${sessionId}/${runId}/${nodeId}/${activationId}`;
+  const previousIdentity = useRef(identity);
+  const direction = useRef<'before' | 'after'>('before');
+  const [navigation, setNavigation] = useState<'before' | 'after'>('before');
+  const [gesture, setGesture] = useState(0);
+  const explicit = useRef(false);
+  const lastGesture = useRef(0);
+  const touchY = useRef(0);
+  function navigate(next: 'before' | 'after') {
+    direction.current = next; setNavigation(next);
+    if (Date.now() - lastGesture.current > 350) { lastGesture.current = Date.now(); explicit.current = true; setGesture(value => value + 1); }
+  }
+  function pageEvents(offset: number | undefined) {
+    if ((snapshot.current?.activation?.events.length ?? 0) >= 200 && log.current && log.current.scrollHeight <= log.current.clientHeight + 1 && !explicit.current) return;
+    explicit.current = false; following.current = false; setEventOffset(offset);
+  }
+  const consumedOffset = useRef<number | undefined>(undefined);
   useEffect(() => {
     const controller = new AbortController();
     let timer: number | undefined;
-    setData(null); setError(''); following.current = true;
+    if (previousIdentity.current !== identity) { snapshot.current = null; setData(null); following.current = true; previousIdentity.current = identity; }
+    setError('');
     async function refresh() {
       let complete = false;
+      setBusy(true);
       try {
-        const query = new URLSearchParams({ offset: String(activationOffset), ...(activationId ? { activationId } : {}), ...(eventOffset === undefined ? {} : { eventOffset: String(eventOffset) }) });
+        const previous = snapshot.current;
+        const old = previous?.activation;
+        const start = consumedOffset.current !== eventOffset ? eventOffset : old && (!following.current || old.hasMore) ? old.offset : undefined;
+        const query = new URLSearchParams({ limit: '25', eventLimit: '25', offset: String(activationOffset), ...(activationId ? { activationId } : {}), ...(start === undefined ? {} : { eventOffset: String(start) }) });
         const result = await request<GraphNodeActivity>(`/api/sessions/${encodeURIComponent(sessionId)}/graph/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/activity?${query}`, 'GET', undefined, 15000, controller.signal);
         complete = !result.runActive;
-        if (!controller.signal.aborted) { setData(result); setError(''); }
+        result.activations = [...new Map([...(previous?.activations ?? []), ...result.activations].map(item => [item.id, item])).values()];
+        if (old && result.activation?.id === old.id) {
+          const next = result.activation;
+          const from = next.offset ?? 0; let end = next.nextOffset ?? from + next.events.length;
+          const oldStart = old.offset ?? 0; const oldEnd = old.nextOffset ?? oldStart + old.events.length;
+          if (from <= oldEnd && end >= oldStart) {
+            // Revalidate the retained range in pages, never turn two disjoint
+            // responses into an apparently contiguous timeline.
+            const events = new Map(old.events.map((item, index) => [oldStart + index, item]));
+            next.events.forEach((item, index) => events.set(from + index, item));
+            while (end < oldEnd && next.hasMore) {
+              query.set('eventOffset', String(end));
+              const page = await request<GraphNodeActivity>(`/api/sessions/${encodeURIComponent(sessionId)}/graph/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/activity?${query}`, 'GET', undefined, 15000, controller.signal);
+              const part = page.activation;
+              if (!part || part.id !== next.id || (part.nextOffset ?? 0) <= end) throw new Error('Graph activity changed. Retry.');
+              part.events.forEach((item, index) => events.set(end + index, item)); end = part.nextOffset!;
+            }
+            let first = Math.min(from, oldStart); let last = Math.max(end, oldEnd);
+            if (from < oldStart) last = Math.min(last, first + 200); else first = Math.max(first, last - 200);
+            next.events = Array.from({ length: last - first }, (_, index) => events.get(first + index)).filter((item): item is NonNullable<typeof item> => !!item);
+            next.offset = first; next.nextOffset = last; next.previousOffset = Math.max(0, first - 25); next.hasEarlier = first > 0; next.hasMore = last < (next.total ?? last);
+          }
+        }
+        if (!controller.signal.aborted) {
+          if (log.current && !following.current) restore.current = captureScrollAnchor(log.current);
+          snapshot.current = result; setData(result); setError('');
+          consumedOffset.current = eventOffset;
+        }
       } catch (cause) {
+        complete = true;
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Could not load node activity.');
       } finally {
+        if (!controller.signal.aborted) setBusy(false);
         if (!controller.signal.aborted && !complete) timer = window.setTimeout(() => void refresh(), 1000);
       }
     }
     void refresh();
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [sessionId, runId, nodeId, activationId, activationOffset, eventOffset]);
+  }, [sessionId, runId, nodeId, activationId, activationOffset, eventOffset, attempt]);
   const activity = data?.activation;
   const active = !!activity && ['reserved', 'running', 'waiting_user', 'sealing'].includes(activity.status);
   const status = activity?.status === 'failed' || activity?.status === 'interrupted' ? 'error' : active ? 'running' : 'idle';
-  useEffect(() => {
-    if (tab === 'run' && following.current && log.current) log.current.scrollTop = log.current.scrollHeight;
+  useLayoutEffect(() => {
+    restore.current?.(); restore.current = undefined;
+    if (tab === 'run' && following.current && !activity?.hasMore && log.current) log.current.scrollTop = log.current.scrollHeight;
   }, [tab, activity]);
 
   return <Panel position="bottom-center" className="graph-run-activity-position nodrag nopan nowheel">
@@ -57,18 +115,16 @@ export function GraphRunActivity({ sessionId, runId, nodeId, nodeName, onClose }
         <span className={`graph-run-status graph-run-status--${active ? 'running' : activity?.status ?? 'pending'}`}>{statusLabels[activity?.status ?? 'reserved'] ?? activity?.status}</span>
         <IconButton label="Close node activity" onClick={onClose}><X /></IconButton>
       </header>
-      {!!data && data.activations.length > 0 && <label className="graph-run-activation-picker">Activation <Select label="Activation" value={activationId} onChange={event => { setActivationId(event.target.value); setEventOffset(undefined); }}>
-        <option value="">Latest</option>
-        {activationId && activity && !data.activations.some(item => item.id === activationId) && <option value={activationId}>#{activity.occurrence} · {statusLabels[activity.status] ?? activity.status}</option>}
-        {data.activations.map(item => <option key={item.id} value={item.id}>#{item.occurrence} · {statusLabels[item.status] ?? item.status}</option>)}
-      </Select></label>}
-      {data && <div>{activationOffset > 0 && <Button size="sm" onClick={() => setActivationOffset(Math.max(0, activationOffset - 50))}>Previous activations</Button>}{data.hasMore && <Button size="sm" onClick={() => setActivationOffset(data.nextOffset ?? activationOffset + 50)}>Next activations</Button>}</div>}
-      {error && <p role="alert" className="form-error graph-run-notice">{error}</p>}
+      {!!data && data.activations.length > 0 && <div className="graph-run-activation-picker">Activation <SearchSelect label="Activation" value={activationId} onChange={value => { setActivationId(value); setEventOffset(undefined); }} options={[{ value: '', label: 'Latest' }, ...data.activations.map(item => ({ value: item.id, label: `#${item.occurrence} · ${statusLabels[item.status] ?? item.status}` }))]} footer={<AutoPage hasMore={!!data.hasMore} cursor={`${identity}/${data.nextOffset}`} busy={busy} error={error} onLoad={() => setActivationOffset(data.nextOffset ?? activationOffset + 25)} onRetry={() => setAttempt(value => value + 1)} />} /></div>}
+      {error && <p role="alert" className="form-error graph-run-notice">{error}<Button size="sm" onClick={() => setAttempt(value => value + 1)}>Retry</Button></p>}
       {!data ? <p className="muted graph-run-notice">{error ? 'Retrying...' : 'Loading activity...'}</p> : !activity ? <p className="muted graph-run-notice">Not started.</p> : tab === 'run' ? <div ref={log} className="graph-run-timeline" role="log" aria-label="Node events" tabIndex={0}
-        onScroll={event => { const element = event.currentTarget; following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24; }}>
-        {activity.hasEarlier && <Button size="sm" onClick={() => setEventOffset(activity.previousOffset)}>Earlier activity</Button>}
+        onWheel={event => navigate(event.deltaY < 0 ? 'before' : 'after')}
+        onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) navigate('before'); else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) navigate('after'); }}
+        onTouchStart={event => { touchY.current = event.touches[0]?.clientY ?? 0; }} onTouchMove={event => { const y = event.touches[0]?.clientY ?? touchY.current; navigate(y > touchY.current ? 'before' : 'after'); touchY.current = y; }}
+        onScroll={event => { const element = event.currentTarget; following.current = !activity.hasMore && element.scrollHeight - element.scrollTop - element.clientHeight < 24; }}>
+        <AutoPage hasMore={!!activity.hasEarlier && (activity.events.length < 200 || navigation === 'before')} cursor={`${identity}/before/${activity.offset}/${gesture}`} busy={busy} error={error} onLoad={() => pageEvents(activity.previousOffset)} onRetry={() => setAttempt(value => value + 1)} />
         <div className="conversation-events"><EventSequence events={activity.events} status={status} updatedAt={activity.updatedAt} showActiveWork={active} activeWorkStartedAt={activity.createdAt} renderEvent={event => event.type === 'subagent' && event.data?.managed ? event.data.kind === 'batch' ? <DelegationActivity ownerId={sessionId} batchId={String(event.data.batchId)} basePath={`/api/sessions/${encodeURIComponent(sessionId)}/graph/runs/${encodeURIComponent(runId)}/activations/${encodeURIComponent(activity.id)}/delegation`} revision={String(event.data.revision ?? '')} /> : null : <SessionEvent event={event} />} /></div>
-        {activity.hasMore && <Button size="sm" onClick={() => setEventOffset(activity.nextOffset)}>Later activity</Button>}{eventOffset !== undefined && <Button size="sm" onClick={() => setEventOffset(undefined)}>Latest activity</Button>}
+        <AutoPage hasMore={!!activity.hasMore && (activity.events.length < 200 || navigation === 'after')} cursor={`${identity}/after/${activity.nextOffset}/${gesture}`} busy={busy} error={error} onLoad={() => pageEvents(activity.nextOffset)} onRetry={() => setAttempt(value => value + 1)} />
         {activity.error && <p className="form-error">{activity.error}</p>}
       </div> : <div className="graph-run-payload" role="region" aria-label={tab === 'input' ? 'Input payload' : 'Output payload'} tabIndex={0}>
         {tab === 'input' ? <>

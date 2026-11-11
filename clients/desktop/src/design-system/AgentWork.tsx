@@ -65,12 +65,12 @@ function ActivityRow({ activity }: { activity: AgentWorkActivity }) {
       {activity.diff ? <span className="agent-work__diff"><ins>+{activity.diff.added}</ins><del>-{activity.diff.removed}</del></span> : activity.details ? <Icon glyph={ChevronDown} size={10} /> : null}
     </>;
   return activity.details ? (
-    <li className="agent-work__activity-item">
+    <li className="agent-work__activity-item" data-work-id={activity.id}>
       <LazyDisclosure className="agent-work__activity-disclosure" details={activity.details}>
         <summary className="agent-work__activity">{row}</summary>
       </LazyDisclosure>
     </li>
-  ) : <li className="agent-work__activity">{row}</li>;
+  ) : <li className="agent-work__activity" data-work-id={activity.id}>{row}</li>;
 }
 
 export function AgentWork({ status, durationLabel, label, thoughts = [], activities = [], streamedResponse, className, ...props }: AgentWorkProps) {
@@ -116,7 +116,7 @@ export function AgentWork({ status, durationLabel, label, thoughts = [], activit
         <div className="agent-work__details" id={detailsId}>
           <div className={`agent-work__items${itemCount > 5 ? ' agent-work__items--scrollable' : ''}`} ref={itemsRef}>
             {thoughts.map(thought => (
-              <div className="agent-work__thought" key={thought.id}>
+              <div className="agent-work__thought" key={thought.id} data-work-id={thought.id}>
                 {thought.details ? <LazyDisclosure className="agent-work__thought-disclosure" details={thought.details}>
                   <summary className="agent-work__thought-row"><Icon glyph={Clock3} size={12} /><span className="agent-work__thought-copy"><strong>Thought:</strong> {(thought.preview ?? thought.text) || 'Thinking...'}{thought.durationLabel ? ` · ${thought.durationLabel}` : ''}</span><Icon glyph={ChevronDown} size={10} /></summary>
                 </LazyDisclosure> : <div className="agent-work__thought-row"><Icon glyph={Clock3} size={12} /><span><strong>Thought:</strong> {thought.text || 'Thinking...'}{thought.durationLabel ? ` · ${thought.durationLabel}` : ''}</span></div>}

@@ -6,13 +6,13 @@ export const agentMutationPath = (source: AgentSource) => source.scope === 'glob
   : `/api/projects/${encodeURIComponent(source.projectId!)}/agents/${encodeURIComponent(source.id)}`;
 
 export function getAgentPage(projectId: string, search: string, offset: number, signal?: AbortSignal) {
-  const query = new URLSearchParams({ search, offset: String(offset), limit: '50' });
+  const query = new URLSearchParams({ search, offset: String(offset), limit: '25' });
   if (projectId) query.set('projectId', projectId);
   return request<AgentPage>(`/api/agents?${query}`, 'GET', undefined, 15000, signal);
 }
 
 export function getAgent(source: AgentSource, offset = 0, signal?: AbortSignal) {
-  const query = new URLSearchParams({ sourceUid: source.sourceUid, offset: String(offset), limit: '50' });
+  const query = new URLSearchParams({ sourceUid: source.sourceUid, offset: String(offset), limit: '25' });
   if (source.scope === 'project') query.set('projectId', source.projectId!);
   return request<CatalogAgent>(`/api/agents/${encodeURIComponent(source.id)}?${query}`, 'GET', undefined, 15000, signal);
 }
