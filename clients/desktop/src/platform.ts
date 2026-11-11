@@ -152,6 +152,6 @@ export async function showPermissionAlert(body: string, tag: string) {
     } catch (error) { console.warn('Permission alert audio unavailable:', error); }
   }
   if (notificationPermission() !== 'granted') return;
-  const notification = new Notification('Permission required', { body, tag, silent: true });
+  const notification = new Notification('Response required', { body, tag, silent: true });
   notification.onclick = () => { window.focus(); notification.close(); };
 }

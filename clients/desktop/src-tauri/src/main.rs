@@ -44,7 +44,7 @@ fn notify_permission(app: tauri::AppHandle, body: String) -> Result<(), String> 
         return Ok(());
     }
     app.notification().builder()
-        .title("Permission required")
+        .title("Response required")
         .body(body.chars().take(300).collect::<String>())
         .sound("Default")
         .show().map_err(|error| error.to_string())

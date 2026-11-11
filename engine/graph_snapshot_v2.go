@@ -209,6 +209,9 @@ func (a *app) captureGraphSnapshotV2(ctx context.Context, projectID, graphID str
 		if err == nil {
 			external, err = a.captureCapabilities(ctx, config.Selection, config.Harness)
 		}
+		if err == nil {
+			err = validateFrozenExternalCapture(config, external)
+		}
 		if err != nil {
 			source := row.Source
 			addDiagnostic(AgentDiagnostic{Code: "agent_capture_unavailable", Message: err.Error(), Source: &source})

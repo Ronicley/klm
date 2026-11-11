@@ -622,6 +622,8 @@ func (a *app) sqlEventContent(w http.ResponseWriter, r *http.Request) {
 // handler is converted, SQL ownership never falls through into the JSON backend.
 func sqlRouteAvailable(pattern string) bool {
 	switch pattern {
+	case "GET /api/activity/requests":
+		return true
 	case "POST /api/sessions/{id}/content-downloads", "POST /api/sessions/{id}/export-downloads", "GET /api/content-downloads/{ticket}":
 		return true
 	case "GET /api/analytics":

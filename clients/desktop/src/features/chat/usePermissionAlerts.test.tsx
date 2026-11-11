@@ -1,13 +1,23 @@
 import { StrictMode } from 'react';
 import { act, fireEvent, renderHook } from '@testing-library/react';
-import { afterEach, expect, it, vi } from 'vitest';
-import type { PermissionRequest, Project, Session } from '../../engine';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { request } from '../../engine';
 import { usePermissionAlerts } from './usePermissionAlerts';
 
+const live = vi.hoisted(() => ({ listener: undefined as (() => void) | undefined, unsubscribe: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ isTauri: () => false, invoke: vi.fn() }));
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+vi.mock('../../engine', () => ({ request: vi.fn() }));
+vi.mock('./scopedConnection', () => ({ subscribeScope: (_kind: string, _id: string, listener: () => void) => { live.listener = listener; return live.unsubscribe; } }));
 
-it('alerts new parent and graph permissions only without focus, once across reconciliation', async () => {
+const alert = (id: string, kind = 'permission', origin = '') => ({ id, kind, projectName: 'Project', sessionTitle: 'Chat', origin });
+const page = (items: ReturnType<typeof alert>[], nextAfterId = '', engineId = 'engine') => ({ engineId, items, hasMore: !!nextAfterId, nextAfterId });
+async function invalidate() {
+  await act(async () => { live.listener?.(); await vi.advanceTimersByTimeAsync(750); });
+}
+beforeEach(() => { vi.useFakeTimers(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
+
+it('alerts new questions and permissions in hidden clients without loading chats, once across reconciliation', async () => {
   const sound = vi.fn();
   vi.stubGlobal('AudioContext', class {
     state = 'running'; currentTime = 0; destination = {};
@@ -18,56 +28,75 @@ it('alerts new parent and graph permissions only without focus, once across reco
   vi.stubGlobal('Notification', Object.assign(notify, { permission: 'granted' }));
   vi.stubGlobal('isSecureContext', true);
   const focused = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
-  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
-  const permission = (id: string): PermissionRequest => ({ id, harness: 'pi', kind: 'command', title: 'Run command', description: '', patterns: [], decisions: ['once', 'reject'], createdAt: '' });
-  const project: Project = { id: 'p', name: 'Project', folder: '', icon: '', folders: [], archivedFolders: ['Archive'] };
-  const session: Session = { id: 'parent', projectId: 'p', title: 'Chat', workspace: 'Ungrouped', harness: 'pi', status: 'running', events: [], createdAt: '', updatedAt: '' };
-  const hook = renderHook(({ sessions, loaded }) => usePermissionAlerts(sessions, [project], loaded), {
-    initialProps: { sessions: [session], loaded: false },
-    wrapper: StrictMode,
-  });
-  await act(async () => { fireEvent.pointerDown(window); });
-  const initial = { ...session, permissions: [permission('old')] };
-  hook.rerender({ sessions: [initial], loaded: true });
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+  let items = [alert('old')];
+  vi.mocked(request).mockImplementation(async () => page(items));
+  const hook = renderHook(({ loaded }) => usePermissionAlerts(loaded, 'engine'), { initialProps: { loaded: false }, wrapper: StrictMode });
+  expect(request).not.toHaveBeenCalled();
+  await act(async () => { fireEvent.pointerDown(window); hook.rerender({ loaded: true }); });
   expect(notify).not.toHaveBeenCalled();
 
   focused.mockReturnValue(true);
-  const foreground = { ...initial, permissions: [...initial.permissions, permission('focused')] };
-  hook.rerender({ sessions: [foreground], loaded: true });
+  visibility.mockReturnValue('visible');
+  items = [...items, alert('focused')];
+  await invalidate();
   expect(notify).not.toHaveBeenCalled();
-  expect(sound).not.toHaveBeenCalled();
 
-  focused.mockReturnValue(false);
-  const background = { ...foreground, permissions: [...foreground.permissions, permission('new')] };
-  hook.rerender({ sessions: [background], loaded: true });
-  expect(notify).toHaveBeenCalledTimes(1);
-  expect(sound).toHaveBeenCalledTimes(1);
-  expect(notify).toHaveBeenLastCalledWith('Permission required', expect.objectContaining({ body: 'Project · Chat · Run command', silent: true }));
-  hook.rerender({ sessions: [session], loaded: true });
-  hook.rerender({ sessions: [background], loaded: true });
-  expect(notify).toHaveBeenCalledTimes(1);
-
-  const graph: Session = { ...background, graph: { sessionId: session.id, revision: 1, selectedGraphId: 'g', run: null, requests: [
-    { kind: 'permission', sessionId: 'node-session', requestId: 'new', nodeName: 'Builder', runId: 'run', graphId: 'g', nodeId: 'node', activationId: 'activation', permission: permission('new') },
-    { kind: 'question', sessionId: 'node-session', requestId: 'question', nodeName: 'Builder', runId: 'run', graphId: 'g', nodeId: 'node', activationId: 'activation' },
-  ] } };
-  hook.rerender({ sessions: [graph], loaded: true });
+  visibility.mockReturnValue('hidden');
+  items = [...items, alert('question', 'question', 'Planner'), alert('permission', 'permission', 'Builder')];
+  await invalidate();
   expect(notify).toHaveBeenCalledTimes(2);
   expect(sound).toHaveBeenCalledTimes(2);
-  expect(notify).toHaveBeenLastCalledWith('Permission required', expect.objectContaining({ body: 'Project · Chat · Builder · Run command' }));
-
-  hook.rerender({ sessions: [graph,
-    { ...session, id: 'archived', archived: true, permissions: [permission('archive')] },
-    { ...session, id: 'folder', workspace: 'Archive', permissions: [permission('folder')] },
-    { ...session, id: 'side', role: 'side_agent', parentId: session.id, permissions: [permission('side')] },
-    { ...session, id: 'resolving', permissions: [{ ...permission('resolving'), resolving: true }] },
-  ], loaded: true });
+  expect(notify).toHaveBeenCalledWith('Response required', expect.objectContaining({ body: 'Project · Chat · Planner · Question received', silent: true }));
+  expect(notify).toHaveBeenLastCalledWith('Response required', expect.objectContaining({ body: 'Project · Chat · Builder · Permission required' }));
+  const previous = items;
+  items = [];
+  await invalidate();
+  items = previous;
+  await invalidate();
   expect(notify).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(request).mock.calls.every(([path]) => path.startsWith('/api/activity/requests'))).toBe(true);
+  hook.unmount();
+  expect(live.unsubscribe).toHaveBeenCalled();
+});
 
-  // A hidden tab is background even if the browser still reports document focus.
-  focused.mockReturnValue(true);
-  visibility.mockReturnValue('hidden');
-  hook.rerender({ sessions: [graph, { ...session, id: 'other-parent', permissions: [permission('other')] }], loaded: true });
-  expect(notify).toHaveBeenCalledTimes(3);
-  expect(sound).toHaveBeenCalledTimes(3);
+it('baselines every pending page and finds new requests on later pages', async () => {
+  const notify = vi.fn(function () { return { close: vi.fn() }; });
+  vi.stubGlobal('Notification', Object.assign(notify, { permission: 'granted' }));
+  vi.stubGlobal('isSecureContext', true);
+  vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+  let later = [alert('old-second-page')];
+  vi.mocked(request).mockImplementation(async path => path.includes('afterId=') ? page(later) : page([alert('old-first-page')], 'old-first-page'));
+  const hook = renderHook(() => usePermissionAlerts(true, 'engine'));
+  await act(async () => {});
+  expect(request).toHaveBeenCalledWith('/api/activity/requests?afterId=old-first-page', 'GET', undefined, 15000, expect.any(AbortSignal));
+  expect(notify).not.toHaveBeenCalled();
+  later = [...later, alert('new-question', 'question')];
+  await invalidate();
+  expect(notify).toHaveBeenCalledTimes(1);
+  await invalidate();
+  expect(notify).toHaveBeenCalledTimes(1);
+  hook.unmount();
+});
+
+it('keeps fallback reads active while hidden and discards responses from another engine', async () => {
+  const notify = vi.fn(function () { return { close: vi.fn() }; });
+  vi.stubGlobal('Notification', Object.assign(notify, { permission: 'granted' }));
+  vi.stubGlobal('isSecureContext', true);
+  vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+  let response = page([]);
+  vi.mocked(request).mockImplementation(async () => response);
+  const hook = renderHook(({ identity }) => usePermissionAlerts(true, identity), { initialProps: { identity: 'engine' } });
+  await act(async () => {});
+  response = page([alert('other-engine')], '', 'other');
+  await act(async () => { await vi.advanceTimersByTimeAsync(30750); });
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(notify).not.toHaveBeenCalled();
+  await act(async () => { hook.rerender({ identity: 'other' }); });
+  expect(notify).not.toHaveBeenCalled();
+  response = page([alert('other-engine'), alert('new')], '', 'other');
+  await invalidate();
+  expect(notify).toHaveBeenCalledTimes(1);
+  hook.unmount();
 });

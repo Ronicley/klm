@@ -1,10 +1,13 @@
 import { useEffect, useRef } from 'react';
-import type { Project, Session } from '../../engine';
+import { request } from '../../engine';
 import { IS_DESKTOP, IS_MOBILE_HOST, preparePermissionAudio, showPermissionAlert } from '../../platform';
+import { subscribeScope } from './scopedConnection';
 
-export function usePermissionAlerts(sessions: Session[], projects: Project[], loaded: boolean) {
-  const seen = useRef(new Set<string>());
-  const initialized = useRef(false);
+type RequestAlert = { id: string; kind: 'permission' | 'question'; projectName: string; sessionTitle: string; origin: string };
+type AlertPage = { engineId: string; items: RequestAlert[]; hasMore: boolean; nextAfterId: string };
+
+export function usePermissionAlerts(loaded: boolean, engineIdentity: string) {
+  const state = useRef({ identity: engineIdentity, initialized: false, seen: new Set<string>() });
 
   useEffect(() => {
     if (IS_DESKTOP || IS_MOBILE_HOST) return;
@@ -19,24 +22,46 @@ export function usePermissionAlerts(sessions: Session[], projects: Project[], lo
 
   useEffect(() => {
     if (!loaded || IS_MOBILE_HOST) return;
-    for (const session of sessions) {
-      if (session.parentId || session.role === 'graph_node' || session.role === 'subagent' || session.role === 'side_agent') continue;
-      const project = projects.find(item => item.id === session.projectId);
-      const muted = session.archived || project?.archivedFolders.includes(session.workspace);
-      const requests = [
-        ...(session.permissions ?? []).map(permission => ({ sessionId: session.id, permission, origin: '' })),
-        ...(session.graph?.requests ?? []).flatMap(item => item.kind === 'permission' && item.permission
-          ? [{ sessionId: item.sessionId, permission: { ...item.permission, id: item.requestId }, origin: item.nodeName }] : []),
-      ];
-      for (const { sessionId, permission, origin } of requests) {
-        const key = JSON.stringify([sessionId, permission.id]);
-        if (seen.current.has(key)) continue;
-        seen.current.add(key);
-        if (!initialized.current || muted || permission.resolving) continue;
-        const body = [project?.name, session.title, origin, permission.title || 'Permission required'].filter(Boolean).join(' · ').slice(0, 300);
-        void showPermissionAlert(body, key).catch(error => console.warn('Permission notification unavailable:', error));
+    if (state.current.identity !== engineIdentity) state.current = { identity: engineIdentity, initialized: false, seen: new Set() };
+    const alerts = state.current;
+    const controller = new AbortController();
+    let refreshing = false;
+    let refreshAgain = false;
+    let queued: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      queued ??= setTimeout(() => { queued = undefined; void refresh(); }, 750);
+    };
+    async function refresh() {
+      if (refreshing) { refreshAgain = true; return; }
+      refreshing = true;
+      try {
+        let after = '';
+        do {
+          const page = await request<AlertPage>(`/api/activity/requests${after ? `?afterId=${encodeURIComponent(after)}` : ''}`, 'GET', undefined, 15000, controller.signal);
+          if (controller.signal.aborted || page.engineId !== engineIdentity) return;
+          for (const item of page.items) {
+            if (alerts.seen.has(item.id)) continue;
+            alerts.seen.add(item.id);
+            if (!alerts.initialized) continue;
+            const label = item.kind === 'question' ? 'Question received' : 'Permission required';
+            const body = [item.projectName, item.sessionTitle, item.origin, label].filter(Boolean).join(' · ').slice(0, 300);
+            void showPermissionAlert(body, item.id).catch(error => console.warn('Request notification unavailable:', error));
+          }
+          if (page.hasMore && (!page.nextAfterId || page.nextAfterId === after)) throw new Error('Invalid request alert cursor.');
+          after = page.hasMore ? page.nextAfterId : '';
+        } while (after);
+        alerts.initialized = true;
+      } catch (error) {
+        if (!controller.signal.aborted) console.warn('Request alerts unavailable:', error);
+      } finally {
+        refreshing = false;
+        if (refreshAgain && !controller.signal.aborted) { refreshAgain = false; schedule(); }
       }
     }
-    initialized.current = true;
-  }, [sessions, projects, loaded]);
+    // Alerts keep their own compact subscription when hidden UI scopes stop loading.
+    const unsubscribe = subscribeScope('global', '', schedule);
+    const timer = window.setInterval(schedule, 30000);
+    void refresh();
+    return () => { controller.abort(); clearTimeout(queued); window.clearInterval(timer); unsubscribe(); };
+  }, [loaded, engineIdentity]);
 }

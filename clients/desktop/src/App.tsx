@@ -141,7 +141,7 @@ export function App() {
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const [loaded, setLoaded] = useState(false);
-  usePermissionAlerts(sessions, projects, loaded);
+  usePermissionAlerts(loaded, engineIdentity);
   const [pageVisible, setPageVisible] = useState(!document.hidden);
   const [generalChatVisible, setGeneralChatVisible] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');

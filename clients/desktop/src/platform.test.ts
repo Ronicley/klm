@@ -17,6 +17,12 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.clearAllMocks(); });
 
+it('sends desktop request alerts through the native Windows notification command', async () => {
+  const platform = await import('./platform');
+  await platform.showPermissionAlert('Chat · Question received', 'question:1');
+  expect(native.invoke).toHaveBeenCalledWith('notify_permission', { body: 'Chat · Question received' });
+});
+
 it.each([
   ['https://KLMENGINE.codemob.com.br:443/Engine/', 'https://klmengine.codemob.com.br/Engine'],
   ['http://LOCALHOST:17331/prefix/', 'http://localhost:17331/prefix'],

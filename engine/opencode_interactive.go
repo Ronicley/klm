@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -697,7 +698,8 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 			} `json:"output"`
 		}
 		if err := h.json(ctx, http.MethodPost, "/api/rpc/klm.policy/inventory", map[string]any{"input": map[string]any{}}, &inventory); err != nil {
-			return failed(errors.New("OpenCode did not activate the owned KLM permission plugin."))
+			log.Printf("OpenCode permission inventory failed: %v", err)
+			return failed(fmt.Errorf("OpenCode did not activate the owned KLM permission plugin: %w", err))
 		}
 		ids = inventory.Output.Tools
 	}

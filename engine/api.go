@@ -91,6 +91,7 @@ func (a *app) routes() http.Handler {
 		mux.HandleFunc("POST /api/sessions/{id}/export-downloads", a.createSessionExportDownload)
 		mux.HandleFunc("GET /api/content-downloads/{ticket}", a.consumeContentDownload)
 		mux.HandleFunc("GET /api/activity/sessions", a.sqlSessionActivity)
+		mux.HandleFunc("GET /api/activity/requests", a.sqlRequestAlerts)
 		mux.HandleFunc("GET /api/projects/{id}/sessions", a.projectSQLSessions)
 		mux.HandleFunc("GET /api/projects/{id}/topics", a.projectSQLTopics)
 		mux.HandleFunc("GET /api/projects/{id}/topics/{topicId}", a.getSQLTopic)
