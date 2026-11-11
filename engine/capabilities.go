@@ -110,8 +110,7 @@ func (a *app) captureCapabilities(ctx context.Context, selection CapabilitySelec
 	if err := normalizeSelection(&selection); err != nil {
 		return nil, err
 	}
-	legacyOpenCode := harness == "opencode" && !a.binaries["opencode"].openCodeV1
-	if !managedLibraryHarness(harness) || legacyOpenCode {
+	if !managedLibraryHarness(harness) {
 		if !selectionEmpty(selection) {
 			return nil, fmt.Errorf("Managed library capabilities are unavailable for %s; exclusivity has not been validated. Selection remains saved.", harness)
 		}
@@ -261,8 +260,12 @@ func (p *adapter) prepareCapabilities(s Session) error {
 			}
 		}
 	}
-	if snapshot != nil && s.Harness == "opencode" && !p.app.binaries["opencode"].openCodeV1 {
-		return errors.New("This graph captured an OpenCode V1 Library profile. Select V1 and restart the engine, or start a new graph run without Library selections for V2.")
+	if snapshot != nil && s.Harness == "opencode" {
+		if b, installed := p.app.binarySnapshot()["opencode"]; installed {
+			if err := validateOpenCodeLibraryBinary(b); err != nil {
+				return err
+			}
+		}
 	}
 	if snapshot != nil {
 		// Clone before runtime availability diagnostics: graph snapshots never mutate.

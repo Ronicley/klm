@@ -31,6 +31,9 @@ func validateOpenCodeLibraryBinary(b binary) error {
 	if err := validateManagedChatPlatform(); err != nil {
 		return err
 	}
+	if !b.openCodeV1 {
+		return validateOpenCodeV2LibraryBinary(b)
+	}
 	return validateOpenCodeCatalogBinary(b)
 }
 
@@ -279,6 +282,11 @@ func openCodeLibraryInstructions(home, configRoot string, ancestors, configured 
 			break
 		}
 	}
+	err := resolveOpenCodeInstructionPaths(home, ancestors, configured, add)
+	return result, err
+}
+
+func resolveOpenCodeInstructionPaths(home string, ancestors, configured []string, add func(string)) error {
 	for _, raw := range configured {
 		if strings.HasPrefix(raw, "https://") || strings.HasPrefix(raw, "http://") {
 			add(raw)
@@ -301,7 +309,7 @@ func openCodeLibraryInstructions(home, configRoot string, ancestors, configured 
 			}
 			matches, err := doublestar.FilepathGlob(pattern, options...)
 			if err != nil {
-				return nil, errors.New("Cannot resolve native OpenCode instruction paths for managed execution.")
+				return errors.New("Cannot resolve native OpenCode instruction paths for managed execution.")
 			}
 			for _, path := range matches {
 				if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
@@ -310,7 +318,7 @@ func openCodeLibraryInstructions(home, configRoot string, ancestors, configured 
 			}
 		}
 	}
-	return result, nil
+	return nil
 }
 
 // Native permission pattern order is significant. Preserve it through JSONC
@@ -501,7 +509,7 @@ func rewriteOpenCodeFileReferences(value any, dir string) any {
 
 // Remote config-bearing authentication and system policy are not silently
 // overridden. The ordinary provider auth file and native history stay in place.
-func inspectOpenCodeLibrarySources(ctx context.Context) error {
+func inspectOpenCodeLibrarySources(ctx context.Context, v2 bool) error {
 	dataRoot := filepath.Join(configHome("XDG_DATA_HOME", ".local", "share"), "opencode")
 	authPath := filepath.Join(dataRoot, "auth.json")
 	if data, err := os.ReadFile(authPath); err == nil {
@@ -550,10 +558,10 @@ func inspectOpenCodeLibrarySources(ctx context.Context) error {
 	if !ok {
 		return errors.New("Managed OpenCode requires Node with node:sqlite to inspect configuration-bearing account metadata.")
 	}
-	const script = `const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1],{readOnly:true});const tables=db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='account_state'").all();const row=tables.length?db.prepare('SELECT active_org_id FROM account_state WHERE active_org_id IS NOT NULL LIMIT 1').get():null;db.close();process.stdout.write(row?'remote':'local');`
+	const script = `const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1],{readOnly:true});const has=name=>!!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name);const row=has('account_state')?db.prepare('SELECT active_org_id FROM account_state WHERE active_org_id IS NOT NULL LIMIT 1').get():null;const remote=process.argv[2]==='true'&&has('credential')?db.prepare("SELECT 1 FROM credential WHERE active=1 AND (integration_id LIKE 'http:%' OR integration_id LIKE 'https:%') LIMIT 1").get():null;db.close();process.stdout.write(row||remote?'remote':'local');`
 	check, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(check, node, "-e", script, db)
+	cmd := exec.CommandContext(check, node, "-e", script, db, fmt.Sprint(v2))
 	configureProcess(cmd)
 	output, err := cmd.Output()
 	if err != nil {
@@ -570,7 +578,7 @@ func (p *adapter) configureOpenCodeLibrary(config map[string]any, dir string) ([
 	if err != nil {
 		return nil, err
 	}
-	if err := inspectOpenCodeLibrarySources(p.turn.ctx); err != nil {
+	if err := inspectOpenCodeLibrarySources(p.turn.ctx, false); err != nil {
 		return nil, err
 	}
 	for key := range config {

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { AutoPage } from '../pagination/AutoPage';
 import { AlertCircle, ArrowLeft, ArrowUpRight, CalendarClock, Check, ChevronRight, GitPullRequest, Pause, Play, Plus, Search, Trash2, Zap } from 'lucide-react';
 import { Button } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
@@ -35,13 +36,30 @@ export function AutomationsSettings({ project, sessions, onOpenSession, onBusyCh
   const requestSequence = useRef(0);
   const [listOffset, setListOffset] = useState(0);
   const [loadingList, setLoadingList] = useState(false);
+  const listing = useRef(false);
+  const listDirty = useRef(false);
+  const reloadList = useRef<() => void>(() => {});
   async function load() {
+    if (listing.current) { listDirty.current = true; return; }
+    listing.current = true;
     const sequence = ++requestSequence.current;
     setLoadingList(true);
-    try { const [value, topics] = await Promise.all([request<AutomationList>(`${automationPath(project.id)}?offset=${listOffset}`), request<{ items: import('../../engine').Topic[] }>(`/api/projects/${encodeURIComponent(project.id)}/topics?limit=200`)]); if (sequence === requestSequence.current) { setList({ ...value, topics: topics.items }); setLoadError(''); } }
+    try {
+      let value = await request<AutomationList>(`${automationPath(project.id)}?limit=25&offset=0`);
+      const items = [...value.items];
+      while (value.hasMore && (value.nextOffset ?? items.length) <= listOffset) {
+        const offset = value.nextOffset ?? items.length;
+        value = await request<AutomationList>(`${automationPath(project.id)}?limit=25&offset=${offset}`);
+        if (value.hasMore && (value.nextOffset ?? offset) <= offset) throw new Error('Automation pagination did not advance. Retry.');
+        items.push(...value.items);
+      }
+      const topics = await request<{ items: import('../../engine').Topic[] }>(`/api/projects/${encodeURIComponent(project.id)}/topics?limit=25`);
+      if (sequence === requestSequence.current) { setList({ ...value, items: [...new Map(items.map(item => [item.automation.id, item])).values()], topics: topics.items }); setLoadError(''); }
+    }
     catch (error) { if (sequence === requestSequence.current) setLoadError(failure(error)); }
-    finally { if (sequence === requestSequence.current) setLoadingList(false); }
+    finally { listing.current = false; if (sequence === requestSequence.current) setLoadingList(false); if (listDirty.current) { listDirty.current = false; reloadList.current(); } }
   }
+  reloadList.current = () => { void load(); };
   useEffect(() => {
     if (!busy && (!editing || !list)) void load();
     const timer = window.setInterval(() => { if (!document.hidden && !busy && !editing) { setClock(Date.now()); void load(); } }, 15000);
@@ -119,7 +137,7 @@ export function AutomationsSettings({ project, sessions, onOpenSession, onBusyCh
           </article>)}
         </div>}
       </div>
-      <div>{listOffset > 0 && <Button size="sm" disabled={loadingList} onClick={() => setListOffset(0)}>First automations</Button>}{list.hasMore && <Button size="sm" disabled={loadingList} onClick={() => setListOffset(list.nextOffset ?? listOffset + list.items.length)}>Next automations</Button>}</div>
+      <AutoPage hasMore={!!list.hasMore} cursor={`${project.id}/${list.nextOffset}`} busy={loadingList || busy} error={loadError} onLoad={() => setListOffset(list.nextOffset ?? list.items.length)} onRetry={() => void load()} />
       {!!list.items.length && <p className="automation-timezone"><CalendarClock aria-hidden="true" />Schedule time zone · {list.timeZone}</p>}
     </>}
     {selected && editing && list && <AutomationEditor key={`${selected.id}/${selected.revision}`} initial={selected} project={project} sessions={sessions} topics={list.topics} zone={list.timeZone} busy={busy} onSave={save} onCancel={() => { setEditing(false); setError(''); if (!selected.id) setSelected(undefined); }} />}
@@ -145,17 +163,20 @@ function AutomationSessionHistory({ projectId, automationId, onOpenSession }: { 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
+  const boundary = useRef('');
   useEffect(() => {
     const controller = new AbortController(); let inFlight = false;
     async function refresh() {
       if (inFlight) return; inFlight = true; setLoading(true);
       try {
-        const items: AutomationRunLink[] = []; let hasMore = true;
-        for (let pageIndex = 0; pageIndex < pages && hasMore; pageIndex++) {
-          const page = await request<{ items: AutomationRunLink[]; hasMore: boolean }>(`${automationPath(projectId, automationId)}/runs?offset=${items.length}`, 'GET', undefined, 15000, controller.signal);
+        const items: AutomationRunLink[] = []; let hasMore = true; let offset = 0;
+        for (let pageIndex = 0; hasMore && (pageIndex < pages || !!boundary.current && !items.some(item => item.runId === boundary.current)); pageIndex++) {
+          const page = await request<{ items: AutomationRunLink[]; hasMore: boolean; nextOffset: number }>(`${automationPath(projectId, automationId)}/runs?limit=25&offset=${offset}`, 'GET', undefined, 15000, controller.signal);
+          if (page.hasMore && page.nextOffset <= offset) throw new Error('Run pagination did not advance. Retry.');
+          offset = page.nextOffset;
           items.push(...page.items); hasMore = page.hasMore;
         }
-        if (!controller.signal.aborted) { setHistory(items); setMore(hasMore); setError(''); }
+        if (!controller.signal.aborted) { boundary.current = items.at(-1)?.runId ?? ''; setHistory([...new Map(items.map(item => [item.runId, item])).values()]); setMore(hasMore); setError(''); }
       } catch (error) { if (!controller.signal.aborted) setError(failure(error)); }
       finally { inFlight = false; if (!controller.signal.aborted) setLoading(false); }
     }
@@ -167,6 +188,6 @@ function AutomationSessionHistory({ projectId, automationId, onOpenSession }: { 
     {error && <div className="form-error" role="alert">{error}<Button size="sm" onClick={() => setAttempt(n => n + 1)}>Retry</Button></div>}
     {!history.length && !error && <p className="muted" role="status">{loading ? 'Loading…' : 'No sessions yet.'}</p>}
     <div className="automation-history">{history.map(session => <Button key={session.runId} variant="ghost" onClick={() => onOpenSession(session.sessionId)}><span>{session.title}</span><ArrowUpRight aria-hidden="true" /></Button>)}</div>
-    {more && <Button size="sm" disabled={loading} onClick={() => setPages(current => current + 1)}>{loading ? 'Loading…' : 'Load more'}</Button>}
+    <AutoPage hasMore={more} cursor={`${projectId}/${automationId}/${history.at(-1)?.runId}`} busy={loading} error={error} onLoad={() => setPages(current => Math.max(current, Math.ceil(history.length / 25)) + 1)} onRetry={() => setAttempt(value => value + 1)} />
   </>;
 }

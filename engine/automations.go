@@ -1,12 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -42,6 +40,7 @@ type Automation struct {
 	Name               string                 `json:"name"`
 	Prompt             string                 `json:"prompt"`
 	Mode               string                 `json:"mode"`
+	Webhook            *AutomationWebhook     `json:"webhook,omitempty"`
 	Enabled            bool                   `json:"enabled"`
 	Parallel           bool                   `json:"parallel"`
 	Harness            string                 `json:"harness"`
@@ -174,7 +173,7 @@ func (d *diskState) automationGraphAllowed(sessionID, graphID string) bool {
 }
 
 var automationReference = regexp.MustCompile(`\{\{[^{}]*\}\}`)
-var automationVariables = []string{"{{pr.number}}", "{{organization.name}}", "{{repository.name}}"}
+var automationVariables = []string{"{{pr.number}}", "{{issue.number}}", "{{organization.name}}", "{{repository.name}}"}
 
 func validateAutomationConfig(v *Automation) error {
 	name, ok := cleanLabel(v.Name, 200)
@@ -204,6 +203,11 @@ func validateAutomationConfig(v *Automation) error {
 	}
 	if v.Mode != "webhook" && v.Mode != "schedule" {
 		return errors.New("Choose webhook or schedule.")
+	}
+	if v.Mode == "webhook" {
+		if err := validateAutomationWebhook(*v); err != nil {
+			return err
+		}
 	}
 	if v.Mode == "schedule" {
 		v.Parallel = false
@@ -242,12 +246,25 @@ func validateAutomationPrompt(prompt, mode string) error {
 			return fmt.Errorf("Unknown prompt reference: %s", ref)
 		}
 		if mode == "schedule" {
-			return errors.New("Scheduled automations cannot use webhook references. Remove PR, organization and repository references from the task prompt.")
+			return errors.New("Scheduled automations cannot use webhook references. Remove PR, issue, organization and repository references from the task prompt.")
 		}
 	}
 	remaining := automationReference.ReplaceAllString(prompt, "")
 	if strings.Contains(remaining, "{{") || strings.Contains(remaining, "}}") {
 		return errors.New("Malformed prompt reference.")
+	}
+	return nil
+}
+
+func validateAutomationRunPrompt(prompt, mode string, variables map[string]string) error {
+	if err := validateAutomationPrompt(prompt, mode); err != nil {
+		return err
+	}
+	for _, ref := range automationReference.FindAllString(prompt, -1) {
+		key := strings.TrimSuffix(strings.TrimPrefix(ref, "{{"), "}}")
+		if _, available := variables[key]; !available {
+			return fmt.Errorf("The queued event cannot provide %s. Update the task prompt.", ref)
+		}
 	}
 	return nil
 }
@@ -376,43 +393,12 @@ func enqueueAutomation(d *diskState, v Automation, key, source, at string, vars 
 }
 
 func automationWebhook(d *diskState, e WebhookStoredEvent) {
-	if e.Provider != "github" || e.EventType != "pull_request" || e.Action != "opened" {
+	vars := automationWebhookVariables(e)
+	if vars == nil {
 		return
 	}
-	var payload struct {
-		Number       int64 `json:"number"`
-		Organization struct {
-			Login string `json:"login"`
-		} `json:"organization"`
-		Repository struct {
-			Name  string `json:"name"`
-			Owner struct {
-				Login string `json:"login"`
-				Type  string `json:"type"`
-			} `json:"owner"`
-		} `json:"repository"`
-	}
-	if json.Unmarshal([]byte(e.Payload), &payload) != nil || payload.Number <= 0 {
-		return
-	}
-	org := payload.Organization.Login
-	if org == "" && payload.Repository.Owner.Type == "Organization" {
-		org = payload.Repository.Owner.Login
-	}
-	if len(org) > 200 || len(payload.Repository.Name) > 200 {
-		return
-	}
-	if label, ok := cleanLabel(payload.Repository.Name, 200); !ok || label != payload.Repository.Name {
-		return
-	}
-	if org != "" {
-		if label, ok := cleanLabel(org, 200); !ok || label != org {
-			return
-		}
-	}
-	vars := map[string]string{"pr.number": strconv.FormatInt(payload.Number, 10), "organization.name": org, "repository.name": payload.Repository.Name}
 	for _, v := range d.Automations {
-		if !v.Deleted && v.Enabled && v.Mode == "webhook" && v.ProjectID == e.ProjectID && e.ReceivedSequence > v.AfterSequence {
+		if !v.Deleted && v.Enabled && v.Mode == "webhook" && v.ProjectID == e.ProjectID && e.ReceivedSequence > v.AfterSequence && matchesAutomationWebhook(v, e) {
 			enqueueAutomation(d, v, "webhook/"+e.ID, "webhook", e.ReceivedAt, vars, nil)
 		}
 	}

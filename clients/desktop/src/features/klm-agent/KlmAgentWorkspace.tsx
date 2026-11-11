@@ -1,5 +1,6 @@
 import { useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ActivityPagingContext } from './activityPaging';
+import { AutoPage } from '../pagination/AutoPage';
 import { createPortal } from 'react-dom';
 import { ArrowLeftRight, ArrowUp, ArrowUpRight, BarChart3, ChevronDown, Home, Maximize2, MessageSquare, Minimize2, Minus, PanelLeft, PanelsTopLeft, Radio, Search, Settings2, RefreshCw, X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
@@ -164,9 +165,8 @@ export function HappeningNow({ projects, sessions, overlaySessionId, onOpenOverl
         </div>;
       })}
       {!activeSessions.length && <p className="activity-happening-empty">No active sessions.</p>}
+      <AutoPage hasMore={paging.hasMore && (showAll || floating || activeSessions.length <= 3)} cursor={paging.cursor ?? activeSessions.length} busy={paging.busy} error={paging.error} onLoad={paging.next} onRetry={paging.latest} />
     </div>
-    {paging.older && <Button size="sm" variant="ghost" onClick={paging.latest}>Latest activity</Button>}
-    {paging.hasMore && (showAll || floating || activeSessions.length <= 3) && <Button size="sm" variant="ghost" onClick={paging.next}>More active sessions</Button>}
     {!IS_MOBILE_HOST && !floating && (showAll || activeSessions.length > 3) && <Button variant="ghost" className="activity-show-more" aria-expanded={showAll} aria-controls={listId} onClick={() => {
       setShowAll(value => !value);
       list.current?.scrollTo({ top: 0, left: 0 });
@@ -244,13 +244,13 @@ export function ActivityFeed({ projects, sessions, visible, standalone = false, 
             </Button>}
           </div>
           <div className="activity-posts" aria-label={`${filter} updates`}>
-            {(feed.error || feed.setupError) && <div className="activity-feedback" role="alert">{feed.error || feed.setupError}<Button size="sm" variant="ghost" disabled={feed.busy} onClick={feed.retry}>Retry</Button></div>}
+            {feed.setupError && <div className="activity-feedback" role="alert">{feed.setupError}<Button size="sm" variant="ghost" disabled={feed.busy} onClick={feed.retry}>Retry</Button></div>}
             {feed.preferenceError && !settings && <p className="activity-feedback" role="alert">{feed.preferenceError}</p>}
             {feed.notice && <p className="activity-feedback" role="status">{feed.notice}</p>}
             {feed.items.map(post => <GithubActivityCard key={post.id} post={post} query={feed.query} project={projectsById.get(post.projectId)} now={feed.clock} onUnavailable={feed.unavailable} saved={bookmarks.saved(post)} onBookmark={() => bookmarks.toggle(post)} />)}
             {!feed.loaded && !feed.error && !feed.setupError && <p className="activity-end" role="status">Loading activity…</p>}
             {feed.loaded && !feed.items.length && <div className="activity-empty"><Search aria-hidden="true" /><h3>{search || filter !== 'All' ? 'No matching updates' : 'No updates yet'}</h3>{(search || filter !== 'All') && <Button variant="ghost" onClick={() => { setSearch(''); setFilter('All'); }}>Clear filters</Button>}</div>}
-            {feed.hasMore && <div className="activity-end"><Button variant="ghost" disabled={feed.busy} onClick={feed.loadMore}>{feed.busy ? 'Loading…' : 'Load more'}</Button></div>}
+            <AutoPage hasMore={feed.hasMore} cursor={`${feed.query}/${feed.items.at(-1)?.id}`} busy={feed.busy} error={feed.error} onLoad={feed.loadMore} onRetry={feed.retry} />
             {feed.loaded && !feed.hasMore && feed.items.length > 0 && <p className="activity-end">No more updates</p>}
           </div>
         </div>

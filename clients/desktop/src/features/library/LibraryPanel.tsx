@@ -9,6 +9,7 @@ import { IS_DESKTOP, IS_MOBILE_HOST } from '../../platform';
 import { getLibrary, libraryPath, type DeletionPreview, type LibraryInventory, type MCPConfig, type MCPConnection } from './api';
 import './library.css';
 import { LibrarySkillsPaging } from './LibrarySkillsPaging';
+import { AutoPage } from '../pagination/AutoPage';
 import { bindDraftDiscard, flushDrafts, useEngineDraft } from '../drafts/draftStore';
 import { beginLocalActivity } from '../engines/localActivities';
 
@@ -39,7 +40,7 @@ export function LibraryPanel({ onGeneralAgent }: { onGeneralAgent?: () => void }
     try { await fn(); refresh(); } catch (reason) { setError(failure(reason)); } finally { setBusy(false); finished(); }
   }
   async function preview(kind: string, id: string, name: string) {
-    await action(async () => setDeletion({ kind, id, name, preview: await request<DeletionPreview>(`/api/library/${kind}/${encodeURIComponent(id)}/deletion`) }));
+    await action(async () => setDeletion({ kind, id, name, preview: await request<DeletionPreview>(`/api/library/${kind}/${encodeURIComponent(id)}/deletion?limit=25`) }));
   }
   if (editing) return <ConnectionEditor key={editing === 'new' ? 'new' : editing.id} connection={editing === 'new' ? undefined : editing} onClose={() => setEditing(undefined)} onSaved={() => { setEditing(undefined); refresh(); }} />;
   return <section className="library-panel" aria-labelledby="library-title">
@@ -74,16 +75,11 @@ export function LibraryPanel({ onGeneralAgent }: { onGeneralAgent?: () => void }
     {deletion && <div className="library-confirmation" role="group" aria-label="Confirm library deletion"><h4>Delete {deletion.name}?</h4><p>Remove these saved references. Captured runs and active turns keep their snapshots.</p>
       <ul>{deletion.preview.references.map(ref => <li key={`${ref.kind}/${ref.projectId}/${ref.id}`}>{ref.title} · {ref.kind === 'captured_run' ? 'Captured run (preserved)' : ref.kind === 'global_agent' ? 'Global agent' : ref.kind === 'agent_binding' ? 'Agent-linked session' : ref.kind.replaceAll('_', ' ')}</li>)}</ul>
       {!deletion.preview.references.length && <p>No saved references.</p>}
-      {deletion.preview.hasMore && <Button size="sm" disabled={busy} onClick={() => void action(async () => {
-        const page = await request<DeletionPreview>(`/api/library/${deletion.kind}/${encodeURIComponent(deletion.id)}/deletion?offset=${deletion.preview.nextOffset}`);
+      <AutoPage hasMore={!!deletion.preview.hasMore} cursor={`${deletion.id}/${deletion.preview.nextOffset}`} busy={busy} error={error} onLoad={() => void action(async () => {
+        const page = await request<DeletionPreview>(`/api/library/${deletion.kind}/${encodeURIComponent(deletion.id)}/deletion?limit=25&offset=${deletion.preview.nextOffset}`);
         if (page.revision !== deletion.preview.revision) throw new Error('References changed. Open the deletion preview again.');
-        setDeletion({ ...deletion, preview: page });
-      })}>Next references</Button>}
-      {(deletion.preview.nextOffset ?? 0) > deletion.preview.references.length && <Button size="sm" disabled={busy} onClick={() => void action(async () => {
-        const page = await request<DeletionPreview>(`/api/library/${deletion.kind}/${encodeURIComponent(deletion.id)}/deletion`);
-        if (page.revision !== deletion.preview.revision) throw new Error('References changed. Open the deletion preview again.');
-        setDeletion({ ...deletion, preview: page });
-      })}>First references</Button>}
+        setDeletion({ ...deletion, preview: { ...page, references: [...new Map([...deletion.preview.references, ...page.references].map(item => [`${item.kind}/${item.projectId}/${item.id}`, item])).values()] } });
+      })} />
       <div className="dialog-actions"><Button disabled={busy} onClick={() => setDeletion(undefined)}>Cancel</Button><Button variant="primary" disabled={busy} onClick={() => void action(async () => { await request(`/api/library/${deletion.kind}/${encodeURIComponent(deletion.id)}`, 'DELETE', { revision: deletion.preview.revision }); setDeletion(undefined); })}>Delete and remove references</Button></div>
     </div>}
   </section>;

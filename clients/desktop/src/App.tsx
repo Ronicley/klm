@@ -1,4 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
+import { AutoPage } from './features/pagination/AutoPage';
+import { captureScrollAnchor } from './features/pagination/scrollAnchor';
 import { ArrowLeft, Download, Focus, GitBranch, Maximize2, Minimize2, Minus, PanelLeft, PanelRight, PanelsTopLeft } from 'lucide-react';
 import { IS_DESKTOP, IS_MOBILE_HOST, openContentDownload, openFocus, startWindowDrag } from './platform';
 import { bindEngineIdentity, currentEngineIdentity, engineStorageKey, persistEngineIdentity } from './engineIdentity';
@@ -149,10 +151,20 @@ export function App() {
   const historyAccess = useRef(new Map<string, number>());
   const projectWindow = useRef({ key: '', pages: 1, start: '' });
   const topicWindow = useRef({ key: '', cursor: '' });
+  const topicPages = useRef(1);
+  const projectReader = useRef<(() => void) | undefined>(undefined);
+  const [projectPagingError, setProjectPagingError] = useState('');
+  const sidebarRestore = useRef<(() => void) | undefined>(undefined);
+  useLayoutEffect(() => { sidebarRestore.current?.(); sidebarRestore.current = undefined; });
   const metadataPins = useRef(new Set<string>());
   const projectMetadataIds = useRef(new Set<string>());
   const activityIds = useRef(new Set<string>());
   const [activityCursor, setActivityCursor] = useState('');
+  const [activityPages, setActivityPages] = useState(1);
+  const [activityBusy, setActivityBusy] = useState(false);
+  const [activityError, setActivityError] = useState('');
+  const activityBoundary = useRef('');
+  const activityPageCount = useRef(1);
   const [activityNext, setActivityNext] = useState('');
   useEffect(() => { const update = () => setPageVisible(!document.hidden); document.addEventListener('visibilitychange', update); return () => document.removeEventListener('visibilitychange', update); }, []);
   const [connectionError, setConnectionError] = useState('');
@@ -513,6 +525,7 @@ export function App() {
           for (const [session, items] of Object.entries(restored)) for (const item of items) if (item.status !== 'failed') generalHarnessBlocks.current.set(item.id, session);
         }
         if (identityChanged) {
+          activityBoundary.current = ''; setActivityPages(1); topicPages.current = 1;
           historyAccess.current.clear(); projectMetadataIds.current.clear(); activityIds.current.clear(); metadataPins.current.clear();
           projectWindow.current = { key: '', pages: 1, start: '' }; topicWindow.current = { key: '', cursor: '' };
           for (const id of submissionTails.current.keys()) stopVersions.current.set(id, (stopVersions.current.get(id) ?? 0) + 1);
@@ -534,7 +547,18 @@ export function App() {
           inventoryIdentity.current = next.engineId ?? '';
           return;
         }
-        const activity = await request<{ items: Session[]; nextCursor?: string }>(`/api/activity/sessions?limit=100${activityCursor ? `&cursor=${encodeURIComponent(activityCursor)}` : ''}`);
+        setActivityBusy(true);
+        const activity: { items: Session[]; nextCursor?: string } = { items: [] };
+        let cursor = ''; let consumed = 0;
+        for (let index = 0; index < activityPages || !!activityBoundary.current && !activity.items.some(item => item.id === activityBoundary.current); index++) {
+          const page = await request<{ items: Session[]; nextCursor?: string }>(`/api/activity/sessions?limit=25${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+          if (!active) return;
+          if (page.nextCursor && page.nextCursor === cursor) throw new Error('Activity pagination did not advance. Retry.');
+          activity.items.push(...page.items); activity.nextCursor = page.nextCursor; consumed++;
+          cursor = page.nextCursor ?? ''; if (!cursor) break;
+        }
+        activityBoundary.current = activity.items.at(-1)?.id ?? '';
+        activityPageCount.current = consumed;
         if (!active) return;
         inventoryIdentity.current = next.engineId ?? '';
         const projectsUnchanged = revision === projectRevision.current;
@@ -552,11 +576,14 @@ export function App() {
         });
         activityIds.current = new Set(activity.items.map(s => s.id));
         setActivityNext(activity.nextCursor ?? '');
+        setActivityError('');
         setLoaded(true);
         setConnectionError('');
       } catch (error) {
+        if (active) setActivityError(errorMessage(error));
         if (active && !loaded) setConnectionError(errorMessage(error));
       } finally {
+        if (active) setActivityBusy(false);
         refreshing = false;
         if (active && refreshAgain) { refreshAgain = false; void refresh(); }
       }
@@ -566,64 +593,70 @@ export function App() {
     let queued: ReturnType<typeof setTimeout> | undefined;
     const unsubscribe = pageVisible ? subscribeScope('global', '', () => { if (!queued) queued = setTimeout(() => { queued = undefined; void refresh(); }, 1000); }) : () => {};
     return () => { active = false; clearTimeout(queued); window.clearInterval(timer); unsubscribe(); };
-  }, [refreshVersion, pageVisible, activityCursor]);
+  }, [refreshVersion, pageVisible, activityCursor, activityPages]);
 
   useEffect(() => {
     if (!loaded || !pageVisible || generalView || !project) return;
     const id = project.id; const controller = new AbortController(); let pending = false; let again = false;
     const key = `${id}/${projectSearch}`;
     if (projectWindow.current.key !== key) projectWindow.current = { key, pages: 1, start: '' };
-    if (topicWindow.current.key !== key) topicWindow.current = { key, cursor: '' };
+    if (topicWindow.current.key !== key) { topicWindow.current = { key, cursor: '' }; topicPages.current = 1; }
+    const boundaries: { sessions?: string; topics?: string } = {};
     async function readWindow() {
-      const items: Session[] = []; let next = projectWindow.current.start;
-      for (let pageIndex = 0; pageIndex < projectWindow.current.pages; pageIndex++) {
-        const page = await request<{ items: Session[]; nextCursor?: string }>(`/api/projects/${encodeURIComponent(id)}/sessions?limit=100&archived=all&search=${encodeURIComponent(projectSearch)}${next ? `&cursor=${encodeURIComponent(next)}` : ''}`, 'GET', undefined, 15000, controller.signal);
-        items.push(...page.items); next = page.nextCursor ?? ''; if (!next) break;
+      const items: Session[] = []; let next = ''; let consumed = 0;
+      for (let pageIndex = 0; pageIndex < projectWindow.current.pages || !!boundaries.sessions && !items.some(item => item.id === boundaries.sessions); pageIndex++) {
+        const page = await request<{ items: Session[]; nextCursor?: string }>(`/api/projects/${encodeURIComponent(id)}/sessions?limit=25&archived=all&search=${encodeURIComponent(projectSearch)}${next ? `&cursor=${encodeURIComponent(next)}` : ''}`, 'GET', undefined, 15000, controller.signal);
+        if (page.nextCursor && page.nextCursor === next) throw new Error('Session pagination did not advance. Retry.');
+        items.push(...page.items); consumed++; next = page.nextCursor ?? ''; if (!next) break;
       }
+      if (!controller.signal.aborted) projectWindow.current.pages = consumed;
+      return { items, nextCursor: next };
+    }
+    async function readTopics() {
+      const items: Topic[] = []; let next = ''; let consumed = 0;
+      for (let index = 0; index < topicPages.current || !!boundaries.topics && !items.some(item => item.id === boundaries.topics); index++) {
+        const page = await request<{ items: Topic[]; nextCursor?: string }>(`/api/projects/${encodeURIComponent(id)}/topics?limit=25&search=${encodeURIComponent(projectSearch)}${next ? `&cursor=${encodeURIComponent(next)}` : ''}`, 'GET', undefined, 15000, controller.signal);
+        if (page.nextCursor && page.nextCursor === next) throw new Error('Topic pagination did not advance. Retry.');
+        items.push(...page.items); consumed++; next = page.nextCursor ?? ''; if (!next) break;
+      }
+      if (!controller.signal.aborted) topicPages.current = consumed;
       return { items, nextCursor: next };
     }
     async function load() {
       if (pending) { again = true; return; } pending = true;
+      setProjectPage(value => ({ ...value, busy: true }));
       try {
         const [page, topics] = await Promise.all([
           readWindow(),
-          request<{ items: Topic[]; nextCursor?: string }>(`/api/projects/${encodeURIComponent(id)}/topics?limit=200&search=${encodeURIComponent(projectSearch)}${topicWindow.current.cursor ? `&cursor=${encodeURIComponent(topicWindow.current.cursor)}` : ''}`, 'GET', undefined, 15000, controller.signal),
+          readTopics(),
         ]);
         if (controller.signal.aborted) return;
+        boundaries.sessions = page.items.at(-1)?.id; boundaries.topics = topics.items.at(-1)?.id;
+        const sidebar = shell.current?.querySelector<HTMLElement>('.workspace-list');
+        if (sidebar) sidebarRestore.current = captureScrollAnchor(sidebar, '.session-row, .topic-heading');
         const listed = new Set(page.items.map(item => item.id));
         projectMetadataIds.current = listed;
         setEngine(current => ({ ...current, projects: current.projects.map(p => p.id === id ? { ...p, topics: topics.items, topicOrder: topics.items.map(t => t.id) } : { ...p, topics: undefined, topicOrder: undefined }), sessions: mergeSessions(current.sessions.filter(s => listed.has(s.id) || metadataPins.current.has(s.id) || activityIds.current.has(s.id)), page.items.map(normalizeSessionMetadata)) }));
         setProjectPage({ id, next: page.nextCursor ?? '', topicsNext: topics.nextCursor ?? '', busy: false });
         setConnectionError('');
+        setProjectPagingError('');
       } catch (error) {
         if (!controller.signal.aborted && error instanceof EngineRequestError && error.status === 409 && (projectWindow.current.start || topicWindow.current.cursor)) { projectWindow.current.start = ''; topicWindow.current.cursor = ''; again = true; }
-        else if (!controller.signal.aborted) setConnectionError(errorMessage(error));
+        else if (!controller.signal.aborted) { setConnectionError(errorMessage(error)); setProjectPagingError(errorMessage(error)); }
       }
-      finally { pending = false; if (again && !controller.signal.aborted) { again = false; void load(); } }
+      finally { pending = false; if (!controller.signal.aborted) setProjectPage(value => ({ ...value, busy: false })); if (again && !controller.signal.aborted) { again = false; void load(); } }
     }
     void load(); let timer: ReturnType<typeof setTimeout> | undefined;
+    projectReader.current = () => { void load(); };
     const unsubscribe = subscribeScope('project', id, () => { if (!timer) timer = setTimeout(() => { timer = undefined; void load(); }, 750); });
-    return () => { controller.abort(); clearTimeout(timer); unsubscribe(); };
+    return () => { controller.abort(); clearTimeout(timer); unsubscribe(); projectReader.current = undefined; };
   }, [loaded, project?.id, generalView, pageVisible, refreshVersion, projectSearch]);
 
   async function loadMoreProject(topics = false) {
     if (!project || projectPage.id !== project.id || projectPage.busy) return;
     const id = project.id; const cursor = topics ? projectPage.topicsNext : projectPage.next; if (!cursor) return;
-    setProjectPage(p => ({ ...p, busy: true }));
-    try {
-      if (topics) {
-        const page = await request<{ items: Topic[]; nextCursor?: string }>(`/api/projects/${id}/topics?limit=200&search=${encodeURIComponent(projectSearch)}&cursor=${encodeURIComponent(cursor)}`);
-        topicWindow.current.cursor = cursor;
-        setEngine(current => ({ ...current, projects: current.projects.map(p => p.id === id ? { ...p, topics: page.items, topicOrder: page.items.map(t => t.id) } : p) }));
-        setProjectPage(p => ({ ...p, topicsNext: page.nextCursor ?? '' }));
-      } else {
-        const page = await request<{ items: Session[]; nextCursor?: string }>(`/api/projects/${id}/sessions?archived=all&search=${encodeURIComponent(projectSearch)}&cursor=${encodeURIComponent(cursor)}`);
-        const rotate = projectWindow.current.pages >= 4;
-        if (rotate) projectWindow.current = { ...projectWindow.current, start: cursor, pages: 1 }; else projectWindow.current.pages++;
-        projectMetadataIds.current = new Set([...(rotate ? [] : projectMetadataIds.current), ...page.items.map(s => s.id)]);
-        setEngine(current => ({ ...current, sessions: mergeSessions(rotate ? current.sessions.filter(s => metadataPins.current.has(s.id) || activityIds.current.has(s.id)) : current.sessions, page.items.map(normalizeSessionMetadata)) })); setProjectPage(p => ({ ...p, next: page.nextCursor ?? '' }));
-      }
-    } catch (error) { setConnectionError(errorMessage(error)); } finally { setProjectPage(p => ({ ...p, busy: false })); }
+    if (topics) topicPages.current++; else projectWindow.current.pages++;
+    projectReader.current?.();
   }
 
   useEffect(() => {
@@ -732,11 +765,16 @@ export function App() {
         if (controller.signal.aborted) return;
         if (pending) { again = true; return; } pending = true;
         try {
-          const update = await readConversationWindow(id, sessionsRef.current.find(s => s.id === id), controller.signal, reset);
+          const requested = sessionsRef.current.find(s => s.id === id);
+          const update = await readConversationWindow(id, requested, controller.signal, reset);
           if (controller.signal.aborted) return;
           historyAccess.current.set(id, Date.now());
           if (historyAccess.current.size > 64) for (const [old] of [...historyAccess.current].sort((a,b) => a[1]-b[1])) { if (!ids.includes(old)) historyAccess.current.delete(old); if (historyAccess.current.size <= 64) break; }
           setEngine(current => {
+            const latest = current.sessions.find(item => item.id === id);
+            if (requested?.history && latest?.history && (latest.history.startIndex !== requested.history.startIndex || latest.events.length !== requested.events.length)) {
+              again = true; schedule(); return current;
+            }
             const merged = mergeSessions(current.sessions, [update], true);
             const keep = new Set([...ids, ...[...historyAccess.current].sort((a,b) => b[1]-a[1]).slice(0,6).map(([id]) => id)]);
             return { ...current, sessions: merged.map(s => !keep.has(s.id) && s.history ? { ...s, events: [], history: undefined } : s) };
@@ -1245,7 +1283,7 @@ export function App() {
 
   if (IS_DESKTOP && (!loaded || !draftStorage.ready)) return <main className="app-shell"><section className="empty-chat"><h2>{draftStorage.error || connectionError || 'Loading engine and drafts…'}</h2>{(draftStorage.error || connectionError) && <Button onClick={() => setRefreshVersion(value => value + 1)}>Retry</Button>}</section></main>;
 
-  return <ActivityPagingContext.Provider value={{ hasMore: !!activityNext, older: !!activityCursor, next: () => setActivityCursor(activityNext), latest: () => setActivityCursor('') }}><SessionNavigationProvider key={engineIdentity} sessions={sessions} projects={projects} onOpenSession={IS_MOBILE_HOST ? openSessionOverlay : openSessionInProject}><div ref={shell} className={`app-shell ${focusMaximized ? 'is-maximized' : ''} ${focusMinimized && focusEnabled ? 'is-minimized' : ''} ${sidebarOpen ? 'sidebar-open' : ''} ${sideVisible && session ? 'side-agent-open' : ''}`}
+  return <ActivityPagingContext.Provider value={{ hasMore: !!activityNext, cursor: activityNext, busy: activityBusy, error: activityError, older: false, next: () => setActivityPages(value => Math.max(value, activityPageCount.current) + 1), latest: () => setRefreshVersion(value => value + 1) }}><SessionNavigationProvider key={engineIdentity} sessions={sessions} projects={projects} onOpenSession={IS_MOBILE_HOST ? openSessionOverlay : openSessionInProject}><div ref={shell} className={`app-shell ${focusMaximized ? 'is-maximized' : ''} ${focusMinimized && focusEnabled ? 'is-minimized' : ''} ${sidebarOpen ? 'sidebar-open' : ''} ${sideVisible && session ? 'side-agent-open' : ''}`}
     data-mobile-screen={mobileNavigationVisible ? 'sessions' : mobileSessionVisible ? 'chat' : undefined}
     data-mobile-project-rail={IS_MOBILE_HOST && generalView ? mobileProjectRailOpen ? 'open' : 'hidden' : undefined}
     style={{ ...(focusEnabled ? focusMainGeometry : undefined), zIndex: focusFront === 'main' ? 3 : 1 }} data-resized={focusEnabled && focusMainGeometry ? true : undefined} inert={focusMinimized && focusEnabled}
@@ -1286,7 +1324,8 @@ export function App() {
     <ProjectRail projects={projects} sessions={sessions} activeId={boardView ? boardProjectId : generalView || dashboardView ? '' : project?.id ?? ''} dashboardActive={dashboardView} onDashboard={() => { navigation.current += 1; setSidebarOpen(false); setOverlaySessionId(''); setView('dashboard'); }} generalActive={generalView} onGeneralAgent={() => { navigation.current += 1; setOverlaySessionId(''); setSidebarOpen(false); setMobileProjectRailOpen(false); setView('general'); }} onSelect={selectProject} onEdit={openProjectEditor} onRemove={target => removeProject(target.id)} onReorder={reorderProject} onAdd={() => void openProjectPicker()} onSettings={() => { setSidebarOpen(false); setSettingsOpen(true); }} />
     {!generalView && sidebarOpen && <button className="panel-backdrop" aria-label="Close side panel" onClick={() => setSidebarOpen(false)} />}
     {!generalView && !boardView && !dashboardView && project && <WorkspaceSidebar key={`sidebar:${project.id}`} project={project} sessions={projectSessions} activeId={view === 'chat' ? activeId : ''} activeSection={view} collapsed={topicCollapseState(workspaceNavigation, project)} archivedCollapsed={collapsedArchivedProjects.includes(project.id)} onSearchChange={setProjectSearch}
-      paging={<>{projectWindow.current.start && <Button size="sm" onClick={() => { projectWindow.current.start = ''; projectWindow.current.pages = 1; setRefreshVersion(n => n + 1); }}>Newest sessions</Button>}{projectPage.id === project.id && projectPage.next && <Button size="sm" disabled={projectPage.busy} onClick={() => void loadMoreProject()}>Load more sessions</Button>}{topicWindow.current.cursor && <Button size="sm" onClick={() => { topicWindow.current.cursor = ''; setRefreshVersion(n => n + 1); }}>First topics</Button>}{projectPage.id === project.id && projectPage.topicsNext && <Button size="sm" disabled={projectPage.busy} onClick={() => void loadMoreProject(true)}>Next topics</Button>}</>}
+      sessionsComplete={projectPage.id === project.id && !projectPage.next && !projectPage.busy}
+      paging={expanded => <><AutoPage hasMore={expanded && projectPage.id === project.id && !!projectPage.next} cursor={`${project.id}/${projectSearch}/sessions/${projectPage.next}`} busy={projectPage.busy} error={projectPagingError} onLoad={() => void loadMoreProject()} onRetry={() => projectReader.current?.()} /><AutoPage hasMore={projectPage.id === project.id && !!projectPage.topicsNext} cursor={`${project.id}/${projectSearch}/topics/${projectPage.topicsNext}`} busy={projectPage.busy} error={projectPagingError} onLoad={() => void loadMoreProject(true)} onRetry={() => projectReader.current?.()} /></>}
       onCollapsedChange={topics => setWorkspaceNavigation(current => ({ ...current, collapsedTopics: { ...current.collapsedTopics, [project.id]: typeof topics === 'function' ? topics(topicCollapseState(current, project)) : topics } }))}
       onArchivedCollapsedChange={collapsed => setWorkspaceNavigation(current => ({ ...current, collapsedArchivedProjects: collapsed ? [...new Set([...current.collapsedArchivedProjects, project.id])] : current.collapsedArchivedProjects.filter(id => id !== project.id) }))}
       onNew={newSession} onDelete={setDeletingSession} onRename={setRenamingSession} onEditTopic={topic => setEditingTopic({ projectId: project.id, topic })}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { AutoPage } from '../pagination/AutoPage';
 import { Bookmark, CircleCheck, CircleDot, CircleX, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, MessageSquare, Radio, ShieldAlert } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { EngineRequestError, type Project } from '../../engine';
@@ -66,10 +67,8 @@ function PipelineMembers({ post, query, view, now, onUnavailable }: { post: Gith
       <small>{item.groupRelation}</small>
       <ActivityDetails eventId={item.id} onUnavailable={onUnavailable} />
     </li>)}</ol>}
-    {busy && <p role="status">Loading activity…</p>}
-    {error && <p role="alert">{error} <Button variant="ghost" size="sm" onClick={retry}>Retry</Button></p>}
     {!busy && !error && !items.length && <p>No retained activity available.</p>}
-    {!busy && !error && hasMore && <Button variant="ghost" size="sm" onClick={loadMore}>Load more</Button>}
+    <AutoPage hasMore={hasMore} cursor={`${post.id}/${view}/${items.at(-1)?.id}`} busy={busy} error={error} onLoad={loadMore} onRetry={retry} />
   </div>;
 }
 

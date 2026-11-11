@@ -1,5 +1,5 @@
-import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Bot, FileCode2, FilePenLine, MessagesSquare, Plug, Search, SquareTerminal, Wrench, type LucideIcon } from 'lucide-react';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { FileCode2, FilePenLine, MessagesSquare, Plug, Search, SquareTerminal, Wrench, type LucideIcon } from 'lucide-react';
 import { AgentWork, type AgentWorkActivity, type AgentWorkItemStatus, type AgentWorkStatus, type AgentWorkThought, type AgentWorkTone } from '../../design-system/AgentWork';
 import { Button } from '../../design-system/Button';
 import { request, type EngineEvent, type Session, type SessionResponse } from '../../engine';
@@ -7,6 +7,7 @@ import { ChatMessage, InlineMarkdownContent, MarkdownContent } from './ChatMessa
 import { SessionEvent } from './SessionEvent';
 import { EventContent } from './EventContent';
 import { DelegationActivity, delegationLabel } from './DelegationActivity';
+import { SubagentActivity } from './SubagentActivity';
 
 type WorkEvent = EngineEvent & { type: 'reasoning' | 'command' | 'mcp' | 'tool' };
 type TimelineItem = { kind: 'event'; event: EngineEvent } | {
@@ -194,9 +195,11 @@ export function EventSequence({ events, status, updatedAt, renderEvent, showActi
   const lastItem = items.at(-1);
   const responding = lastItem?.kind === 'event' && lastItem.event.type === 'assistant';
   return <>
-    {items.map(item => item.kind === 'work'
-      ? <ConversationWork key={`work/${item.id}`} item={item} />
-      : <Fragment key={item.event.id}>{item.event.content ? <EventContent event={item.event} /> : renderEvent ? renderEvent(item.event) : <SessionEvent event={item.event} />}</Fragment>)}
+    {items.map(item => {
+      if (item.kind === 'work') return <div key={`work/${item.id}`} data-history-anchor={item.id}><ConversationWork item={item} /></div>;
+      const content = item.event.content ? <EventContent event={item.event} /> : renderEvent ? renderEvent(item.event) : <SessionEvent event={item.event} />;
+      return content == null ? null : <div key={item.event.id} data-history-anchor={item.event.id}>{content}</div>;
+    })}
     {showActiveWork && status === 'running' && !hasActiveWork && !responding ? <ActiveWorkPlaceholder startedAt={activeWorkStartedAt} /> : null}
   </>;
 }
@@ -249,14 +252,11 @@ function subagentEventLabel(event: EngineEvent | undefined) {
   return title && title !== 'Command' ? title : text || title || event.type;
 }
 
-function SubagentActivity({ event, session, onOpen }: { event: EngineEvent; session?: Session; onOpen?: (sessionId: string) => void }) {
+function NativeSubagentActivity({ event, session, onOpen }: { event: EngineEvent; session?: Session; onOpen?: (sessionId: string) => void }) {
   const childSessionId = typeof event.data?.childSessionId === 'string' ? event.data.childSessionId : '';
   const running = ['running', 'pending', 'started'].includes(event.status ?? 'running') && (!session || session.status === 'running');
   const detail = running ? subagentEventLabel(session?.events.at(-1)) || 'Starting' : delegationLabel(event.status || (session?.status === 'error' ? 'failed' : 'completed'));
-  return <button type="button" className={`subagent-activity ${running ? 'is-running' : ''}`} disabled={!childSessionId || !onOpen} onClick={() => onOpen?.(childSessionId)}>
-    <span className="subagent-activity-icon"><Bot aria-hidden="true" /></span>
-    <span className="subagent-activity-copy"><strong>{event.title || 'Subagent'}</strong><small title={detail}>{detail}</small></span>
-  </button>;
+  return <SubagentActivity title={session?.title || event.title || 'Subagent'} agentName={session?.agentConfig?.name} detail={detail} running={running} onOpen={childSessionId && onOpen ? () => onOpen(childSessionId) : undefined} />;
 }
 
 export function ConversationEvents({ session, subagents, onSnapshot, onEventChange, onAskSide, onOpenSubagent, working }: {
@@ -336,7 +336,7 @@ export function ConversationEvents({ session, subagents, onSnapshot, onEventChan
   return <div ref={root} className="conversation-events">
     <EventSequence events={visibleEvents} status={timelineStatus} updatedAt={session.updatedAt} showActiveWork={active} activeWorkStartedAt={activeWorkStartedAt} renderEvent={event => event.type === 'consultation'
       ? <ConsultationActivity event={event} output={grouped.get(String(event.data?.requestId)) ?? []} sessionId={session.id} onSnapshot={onSnapshot} />
-      : event.type === 'subagent' ? event.data?.managed ? event.data.kind === 'batch' ? <DelegationActivity ownerId={session.id} batchId={String(event.data.batchId)} revision={String(event.data.revision ?? '')} /> : null : <SubagentActivity event={event} session={subagents?.find(item => item.id === event.data?.childSessionId)} onOpen={onOpenSubagent} />
+      : event.type === 'subagent' ? event.data?.managed ? event.data.kind === 'batch' ? <DelegationActivity ownerId={session.id} batchId={String(event.data.batchId)} revision={String(event.data.revision ?? '')} onOpenSubagent={onOpenSubagent} /> : null : <NativeSubagentActivity event={event} session={subagents?.find(item => item.id === event.data?.childSessionId)} onOpen={onOpenSubagent} />
       : <SessionEvent event={event} onFavorite={onEventChange && event.type === 'assistant' ? value => favorite(event, value) : undefined} onRevert={event.type === 'user' || event.type === 'agent_prompt' || event.type === 'assistant' ? text => revert(event, text) : undefined} />} />
     {selection && onAskSide && <Button size="sm" className="selection-action" style={{ left: selection.left, top: selection.top }} onPointerDown={event => event.preventDefault()} onClick={() => {
       onAskSide(selection.messageId, selection.passage); setSelection(null); window.getSelection()?.removeAllRanges();

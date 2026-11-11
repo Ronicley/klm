@@ -1,5 +1,6 @@
 import { createClientEventSource } from '../../clientAuth';
 import { ENGINE_URL, request, type EventPage, type Session, type SessionUpdate } from '../../engine';
+import { historyFollowing, PAGE_SIZE, serializeHistory } from '../pagination/pagination';
 
 export type ScopeNotice = { kind: 'ready' | 'invalidate' | 'reset'; revision: string; scopes?: string[] };
 type Listener = (notice: ScopeNotice) => void;
@@ -67,8 +68,24 @@ export function subscribeScope(kind: 'global' | 'project' | 'conversation', id: 
 if (import.meta.hot) import.meta.hot.dispose(() => { clearTimeout(timer); source?.close(); scopes.clear(); });
 
 export async function readConversationWindow(id: string, current: Session | undefined, signal: AbortSignal, reset = false): Promise<SessionUpdate> {
+  return serializeHistory(id, async () => {
   const base = `/api/sessions/${encodeURIComponent(id)}`;
-  const position = current?.history?.hasNewer ? `?before=${current.history.startIndex + 50}` : '';
-  const [session, page] = await Promise.all([request<Session>(base, 'GET', undefined, 15000, signal), request<EventPage>(`${base}/history${position}`, 'GET', undefined, 15000, signal)]);
+  const session = await request<Session>(`${base}?limit=25`, 'GET', undefined, 15000, signal);
+  const old = current?.history;
+  let page: EventPage;
+  if (old && current.events.length && (!historyFollowing(id) || old.hasNewer)) {
+    const pages: EventPage[] = [];
+    const end = old.startIndex + current.events.length;
+    let after = old.startIndex - 1;
+    do {
+      const limit = Math.min(PAGE_SIZE, end - after - 1);
+      const next = await request<EventPage>(`${base}/history?limit=${limit}${after >= 0 ? `&after=${after}` : `&before=${limit}`}`, 'GET', undefined, 15000, signal);
+      if (!next.events?.length || next.endIndex <= after + 1) break;
+      pages.push(next); after = next.endIndex - 1;
+    } while (after + 1 < end);
+    const first = pages[0]; const last = pages.at(-1);
+    page = first && last ? { ...first, revision: last.revision, total: last.total, events: pages.flatMap(value => value.events ?? []), endIndex: last.endIndex, afterCursor: last.afterCursor, hasNewer: last.hasNewer } : { sessionId: id, revision: old.revision, startIndex: old.startIndex, endIndex: old.startIndex, total: old.total, events: [], hasMore: old.hasMore, hasNewer: old.hasNewer };
+  } else page = await request<EventPage>(`${base}/history?limit=${PAGE_SIZE}`, 'GET', undefined, 15000, signal);
   return { kind: 'reset', windowRefresh: !reset, revision: page.revision, summary: session, history: page, changes: [], total: page.total };
+  });
 }

@@ -129,6 +129,41 @@ func (h *openCodeHTTP) waitMCPConnected(ctx context.Context, name string) (map[s
 	}
 }
 
+func (h *openCodeHTTP) waitPolicyReady(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var plugins []struct {
+			ID    string `json:"id"`
+			State struct {
+				Status string `json:"status"`
+			} `json:"state"`
+		}
+		// The server can accept RPC requests before location plugins finish loading.
+		if err := h.json(ctx, http.MethodGet, "/api/plugin", nil, &plugins); err != nil {
+			return err
+		}
+		for _, plugin := range plugins {
+			if plugin.ID != "klm.policy" {
+				continue
+			}
+			switch plugin.State.Status {
+			case "active":
+				return nil
+			case "failed":
+				return errors.New("OpenCode KLM permission plugin failed to activate.")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("OpenCode KLM permission plugin activation did not complete: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 type openCodeV2Projection struct {
 	infos map[string]map[string]any
 	parts map[string]map[string]any

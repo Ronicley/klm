@@ -200,7 +200,8 @@ func (a *app) scheduleAutomationsLocked() {
 				continue
 			}
 		}
-		if err := validateAutomationPrompt(map[bool]string{true: config.Prompt, false: config.FollowUpPrompt}[creating], config.Mode); err != nil {
+		if err := validateAutomationRunPrompt(map[bool]string{true: config.Prompt, false: config.FollowUpPrompt}[creating], config.Mode, trigger.Variables); err != nil {
+			a.blockAutomationTriggerLocked(trigger.ID, err.Error())
 			continue
 		}
 		if mode == "reuse_created" {

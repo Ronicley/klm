@@ -2,12 +2,62 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestOpenCodeV2PolicyReadiness(t *testing.T) {
+	for _, terminal := range []string{"active", "failed"} {
+		t.Run(terminal, func(t *testing.T) {
+			requests := 0
+			h := &openCodeHTTP{base: "http://opencode.invalid", directory: "C:/project", password: "private", client: &http.Client{Transport: openCodeHistoryTransport(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/plugin" || r.URL.Query().Get("location[directory]") != "C:/project" {
+					t.Fatal("unexpected readiness request", r.Method, r.URL.Path)
+				}
+				if user, password, ok := r.BasicAuth(); !ok || user != "opencode" || password != "private" {
+					t.Fatal("readiness request lost authentication")
+				}
+				requests++
+				body := `{"data":[]}`
+				if requests == 2 {
+					body = `{"data":[{"id":"other.plugin","state":{"status":"active"}}]}`
+				} else if requests > 2 {
+					body = fmt.Sprintf(`{"data":[{"id":"klm.policy","state":{"status":%q,"error":"private details"}}]}`, terminal)
+				}
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}}
+			err := h.waitPolicyReady(context.Background())
+			if requests != 3 || (err == nil) != (terminal == "active") || err != nil && strings.Contains(err.Error(), "private details") {
+				t.Fatalf("requests=%d err=%v", requests, err)
+			}
+		})
+	}
+	t.Run("deadline", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		h := &openCodeHTTP{base: "http://opencode.invalid", client: &http.Client{Transport: openCodeHistoryTransport(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":[]}`))}, nil
+		})}}
+		if err := h.waitPolicyReady(ctx); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatal("missing plugin did not honor deadline", err)
+		}
+	})
+	t.Run("http error", func(t *testing.T) {
+		requests := 0
+		h := &openCodeHTTP{base: "http://opencode.invalid", client: &http.Client{Transport: openCodeHistoryTransport(func(r *http.Request) (*http.Response, error) {
+			requests++
+			return &http.Response{StatusCode: 400, Body: io.NopCloser(strings.NewReader("private details"))}, nil
+		})}}
+		if err := h.waitPolicyReady(context.Background()); err == nil || requests != 1 || strings.Contains(err.Error(), "private details") {
+			t.Fatal("readiness retried or exposed a terminal HTTP error", requests, err)
+		}
+	})
+}
 
 func TestOpenCodeV2MCPConnection(t *testing.T) {
 	for _, terminal := range []string{"connected", "failed"} {

@@ -5,6 +5,7 @@ import { request, type Topic } from '../../engine';
 import { topicColors } from './topics';
 import './topic-dialog.css';
 import { useTopicPage } from './useTopicPage';
+import { AutoPage } from '../pagination/AutoPage';
 import { bindDraftDiscard, flushDrafts, useEngineDraft } from '../drafts/draftStore';
 import { IS_DESKTOP } from '../../platform';
 import { beginLocalActivity } from '../engines/localActivities';
@@ -113,7 +114,7 @@ export function TopicDialog({ topic, selection, onSave, onClose, draftKey, proje
             </div>)}
             {!matches.length && <p className="topic-picker-empty" role="status">{page.loading ? 'Loading topics…' : query.trim() ? 'No matching topics' : 'No active topics'}</p>}
           </fieldset>
-          {selection?.projectId && <div>{page.older && <Button disabled={busy || page.loading} size="sm" onClick={page.first}>First topics</Button>}{page.nextCursor && <Button disabled={busy || page.loading} size="sm" onClick={page.next}>Next topics</Button>}{page.error && <p role="alert" className="form-error">{page.error}<Button size="sm" onClick={page.first}>Reload topics</Button></p>}</div>}
+          {selection?.projectId && <AutoPage hasMore={!!page.nextCursor} cursor={`${selection.projectId}/${query}/${page.nextCursor}`} busy={busy || page.loading} error={page.error} onLoad={page.next} onRetry={page.retry} />}
           <Button className="topic-create-action" variant="ghost" disabled={busy} onClick={() => changeMode('create')}><Plus aria-hidden="true" />New topic</Button>
         </> : <>
           <div className="topic-name-field">

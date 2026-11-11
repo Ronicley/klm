@@ -2,8 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import type { EventPage, Harness, Project, Session, SessionResponse, SourceReference } from '../../engine';
-import { HistoryLoader } from './HistoryLoader';
-import { ConversationEvents } from './ConversationEvents';
+import { ConversationHistory } from './ConversationHistory';
 import { HarnessIcon } from './HarnessIcon';
 import { MessageQueue } from './MessageQueue';
 import { type ComposerDraft, type SendMode } from './MessageComposer';
@@ -30,8 +29,6 @@ export function SideChatPanel({ session, project, harnesses, draft, sources, sub
   onHarness: (harness: Harness['id']) => void; onModel: (model: string, effort: string) => Promise<boolean>;
 }) {
   const panel = useRef<HTMLElement>(null);
-  const history = useRef<HTMLDivElement>(null);
-  const followingHistory = useRef(true);
   const [savedWidth, setSavedWidth] = useState(() => {
     try { const value = Number(localStorage.getItem('klm.side-agent.width.v1')); return Number.isFinite(value) && value >= minimumSideWidth ? Math.min(value, 900) : 352; }
     catch { return 352; }
@@ -75,9 +72,6 @@ export function SideChatPanel({ session, project, harnesses, draft, sources, sub
     target.addEventListener('keydown', keydown);
     return () => { siblings.forEach(item => { item.inert = false; }); target.removeEventListener('keydown', keydown); previous?.focus(); };
   }, [narrow]);
-  useEffect(() => {
-    if (followingHistory.current && history.current) history.current.scrollTo({ top: history.current.scrollHeight });
-  }, [session?.updatedAt, session?.history?.total, !!session?.history]);
   useEffect(() => { if (sources.length) panel.current?.querySelector<HTMLElement>('.composer-editor')?.focus(); }, [sources.length, session?.id]);
   const running = session?.status === 'running';
   const permissions = !!session?.permissions?.length;
@@ -96,13 +90,7 @@ export function SideChatPanel({ session, project, harnesses, draft, sources, sub
       }} />}
     <aside ref={panel} className={`side-chat-panel ${narrow ? 'side-chat-panel--full' : ''}`} style={{ width: narrow ? undefined : width }} role={narrow ? 'dialog' : undefined} aria-modal={narrow || undefined} aria-label="Side agent">
       <header className="side-chat-header"><h2>Side agent</h2><IconButton label="Close side agent" onClick={onClose}><X /></IconButton></header>
-      <div className="chat-history" ref={history} role="log" aria-label="Side conversation" aria-live="polite" onScroll={event => {
-        const element = event.currentTarget;
-        followingHistory.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
-      }}>
-        {session ? <><HistoryLoader key={session.id} session={session} onPage={onHistory} /><ConversationEvents session={session} working={running || pending} onSnapshot={onSnapshot} onEventChange={onEventChange} />{!session.history && !session.events.length ? <p className="muted" role="status">Loading history...</p> : !session.events.length && !running && !pending && <div className="empty-chat"><h2>Ask the side agent</h2></div>}</>
-          : !error && <p className="muted" role="status">Opening side agent...</p>}
-      </div>
+      {session ? <ConversationHistory key={session.id} session={session} working={!!running || pending} label="Side conversation" onSnapshot={onSnapshot} onHistory={onHistory} onEventChange={onEventChange} empty={<div className="empty-chat"><h2>Ask the side agent</h2></div>} /> : !error && <p className="muted" role="status">Opening side agent...</p>}
       {error && <div role="alert" className="storage-error">{error}{!session && <Button size="sm" onClick={onRetry}>Retry</Button>}</div>}
       {session && <div className="composer-area">
         <DelegationRequests session={session} projectName={project.name} onSnapshot={onSnapshot} />

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { AutoPage } from '../pagination/AutoPage';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { legacyImageFiles, request, type QueuedMessage, type Session, type SessionResponse } from '../../engine';
@@ -14,15 +15,16 @@ export function MessageQueue({ session, disabled, onSnapshot, onInterrupt }: { s
   const [error, setError] = useState('');
   const [page, setPage] = useState<{ items: QueuedMessage[]; nextAfterId: string; hasMore: boolean }>();
   const controller = useRef<AbortController | null>(null);
-  useEffect(() => () => controller.current?.abort(), [session.id]);
+  const baseIds = session.queue?.map(item => item.id).join('/');
+  useEffect(() => { controller.current?.abort(); controller.current = null; setPage(undefined); setPending(''); return () => controller.current?.abort(); }, [session.id, baseIds]);
   const messages = [...(session.queue ?? []), ...(session.pendingMore?.queue ? page?.items.filter(item => !session.queue?.some(base => base.id === item.id)) ?? [] : [])];
   async function more(first = false) {
-    if (pending) return; setPending('page'); setError('');
+    if (pending || controller.current) return; setPending('page'); setError('');
     const current = new AbortController(); controller.current = current;
     const after = first ? session.queue?.at(-1)?.id : page?.nextAfterId ?? session.queue?.at(-1)?.id;
-    try { const result = await request<{ items: QueuedMessage[]; nextAfterId: string; hasMore: boolean }>(`/api/sessions/${encodeURIComponent(session.id)}/pending?kind=queue${after ? `&afterId=${encodeURIComponent(after)}` : ''}`, 'GET', undefined, 15000, current.signal); if (!current.signal.aborted) setPage(result); }
+    try { const result = await request<{ items: QueuedMessage[]; nextAfterId: string; hasMore: boolean }>(`/api/sessions/${encodeURIComponent(session.id)}/pending?limit=25&kind=queue${after ? `&afterId=${encodeURIComponent(after)}` : ''}`, 'GET', undefined, 15000, current.signal); if (!current.signal.aborted) setPage(old => ({ ...result, items: [...new Map([...(first ? [] : old?.items ?? []), ...result.items].map(item => [item.id, item])).values()] })); }
     catch (error) { if (!current.signal.aborted) setError(error instanceof Error ? error.message : 'Queue changed. Reload the conversation.'); }
-    finally { if (!current.signal.aborted) setPending(''); }
+    finally { if (controller.current === current) { controller.current = null; if (!current.signal.aborted) setPending(''); } }
   }
   async function update(id: string, send: boolean) {
      if (pending || disabled || send && (agentExecutionBlocked(session) || session.delegation?.actions.interrupt === false)) return;
@@ -44,8 +46,7 @@ export function MessageQueue({ session, disabled, onSnapshot, onInterrupt }: { s
         <IconButton label="Remove queued message" disabled={disabled || !!pending || message.status === 'sending' || message.status === 'accepted' || message.status === 'interrupting'} onClick={() => void update(message.id, false)}><X /></IconButton>
       </div>
     </div>)}
-    {session.pendingMore?.queue && (page?.hasMore ?? true) && <Button size="sm" disabled={!!pending} onClick={() => void more()}>More queued messages</Button>}
-    {page && session.pendingMore?.queue && <Button size="sm" disabled={!!pending} onClick={() => void more(true)}>First additional queued messages</Button>}
+    <AutoPage hasMore={!!session.pendingMore?.queue && (page?.hasMore ?? true)} cursor={`${session.id}/${page?.nextAfterId ?? session.queue?.at(-1)?.id}`} busy={!!pending} error={error} onLoad={() => void more()} onRetry={() => void more(true)} />
     {error && <p role="alert" className="form-error">{error}</p>}
   </section>;
 }

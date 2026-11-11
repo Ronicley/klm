@@ -57,6 +57,9 @@ func (p *adapter) openCodePermissionGate(ctx context.Context, raw json.RawMessag
 	if call.Tool == "opencode_session_move" {
 		return false, errors.New("KLM-managed OpenCode sessions cannot be moved. Access worktrees with absolute paths and an explicit tool workdir when supported.")
 	}
+	if p.capabilities != nil && strings.HasPrefix(call.Tool, "opencode_") {
+		return false, errors.New("Native OpenCode administration is unavailable in a managed Library turn.")
+	}
 	if err := p.turn.ctx.Err(); err != nil {
 		return false, err
 	}
@@ -98,8 +101,12 @@ func (p *adapter) openCodePermissionGate(ctx context.Context, raw json.RawMessag
 	}
 	if p.capabilities != nil && call.Tool == "skill" {
 		allowed := false
+		key := "name"
+		if !p.openCodeV1 {
+			key = "id"
+		}
 		for _, skill := range p.capabilities.Skills {
-			if skill.Name == str(call.Input, "name") && (!skill.Internal || call.SessionID == nativeID) {
+			if skill.Name == str(call.Input, key) && (!skill.Internal || call.SessionID == nativeID) {
 				allowed = true
 				break
 			}

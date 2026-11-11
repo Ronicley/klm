@@ -1,5 +1,8 @@
 # Product
 
+> Upstream 0.6.8 source reconciliation and pending manual acceptance are recorded in
+> `UPSTREAM_0_6_8_INTEGRATION.md`.
+>
 > Upstream 0.6.7 reconciliation is not a completed rollout. See
 > `UPSTREAM_0_6_7_INTEGRATION.md` for delivered source changes and SQL feature gates.
 > Existing product requirements below are retained, not all implemented by this merge.
@@ -51,6 +54,18 @@ Exact-ID navigation and embedded topic identity keep an unloaded page from being
 mistaken for unavailable content. Topic/Library search applies to the requested
 engine/project scope before pagination. Background execution does not depend on
 open clients or subscriptions.
+
+Interactive histories and paged lists request up to 25 items per page and load
+additional pages near the relevant scroll edge, without ordinary pagination
+buttons. A history item is a persisted event, including reasoning and tools;
+rendered work groups need not occupy 25 rows. Chat history opens at the newest
+tail and pages in both directions, keeping its bounded 200-event window and
+preserving the reading anchor. Streaming follows only at the real tail. Session
+and topic lists accumulate metadata instead of dropping earlier pages after four
+loads. Closed pickers and collapsed lists do not trigger automatic pagination;
+errors retain explicit Retry recovery. Large single-event content still uses
+its separate byte/chunk contract. Implementation and pending manual checks are
+recorded in `AUTOMATIC_PAGINATION_FIX_PROGRESS.md`.
 
 On the first upgrade, exact existing `state.json`, `stream.sealed`, `stream.journal`,
 `client-auth.json` and `engine-access.json` bytes are preserved under
@@ -320,9 +335,14 @@ the initial prompt; a run in an existing/linked session sends only its follow-up
 including the first run when an existing session was chosen. Prior objectives or
 classifications in the conversation do not classify the current run.
 
-The initial webhook trigger is GitHub `pull_request/opened`, scoped by the receiving
-project rather than repository. The editor discovers and inserts PR number,
-organization login (empty when absent), and repository name references. Raw payloads
+Webhook automations select one GitHub event/action: `pull_request/opened`,
+`pull_request/ready_for_review`, or `issues` with `opened`, `closed`, `deleted`,
+`edited`, `assigned` or `milestoned`. Missing selection on existing automations
+retains `pull_request/opened`. Triggers are scoped by the receiving project rather
+than repository. Changing activation or the selected event requires the accepted
+queue to drain first. Admission rejects prompt references absent from the accepted
+event, without consuming it. The editor discovers and inserts PR or issue number, organization
+login (empty when absent), and repository name references. Raw payloads
 are not passed to automation agents. Scheduled prompts reject webhook references;
 switching activation preserves the text and requires removing those references.
 Trigger data and automatic prompts are never
@@ -753,9 +773,12 @@ erase history or attempt a cross-version resume. Existing unmarked native
 conversations retain the fork's V2 interpretation. To continue an existing
 conversation, select its original version; create a new conversation for the other
 version. Runtime behavior with real V1/V2 installations requires human validation.
-The upstream Library integration is available on the managed V1 profile below.
-V2 keeps its existing native execution and catalog; saved nonempty Library selections
-fail preparation explicitly instead of silently falling back or claiming isolation.
+Managed Library execution supports the pinned V1 profile and OpenCode V2 2.2.7
+with native V2 configuration. V2 captures the same external selections, uses only
+owned authenticated gateways and verifies the effective catalog before prompting.
+Other versions or unsupported configuration sources fail preparation, without
+removing selections or changing protocol. Source and non-model probe evidence are
+recorded in `UPSTREAM_0_6_8_INTEGRATION.md`; real model execution still needs acceptance.
 V1 uses upstream's native-boundary steering; V2 retains its existing HTTP/SSE delivery.
 Topics, live GitHub activity, Tasks, Focus windows and mobile improvements have been
 combined with the fork; integrated runtime behavior still requires human validation.
@@ -832,7 +855,7 @@ directory; a changed/missing remote contract is diagnosed rather than injected.
 Captured selections are available read-only in node activity. Legacy runs remain
 readable without being relabeled as exclusively managed.
 
-Managed Windows profiles target **Pi 0.85.1**, **OpenCode 1.18.35** and
+Managed Windows profiles target **Pi 0.85.1**, **OpenCode 1.18.35 / V2 2.2.7** and
 **Codex 0.153.4**, with version/preparation gates and effective catalog checks before
 prompting. Pi uses explicit snapshot paths and its owned extension. OpenCode uses
 a private discovery/config root, projects provider/model/instruction/native
@@ -845,6 +868,17 @@ data and the real execution directory remain in place. Organization, well-known
 remote-config authentication and administrator-managed OpenCode config require a
 separate compatible path and are explicitly refused rather than silently imported.
 
+The V2 profile projects native `providers`, `model`, built-in `agents`, ordered
+`permissions`/`policies` and instruction paths into a private config directory.
+It excludes native MCP/plugin discovery, filters skills to exact captured IDs and
+paths, and seals root/child rules after built-in configuration plugins initialize.
+Only the root can access internal skills and conversation-role tools; external
+Library tools remain separate, including under YOLO. Native administration tools
+are absent from this managed catalog. Legacy-format provider/permission/agent
+configuration, file-based agents, custom root agents and remote/admin-managed
+configuration are explicitly unsupported rather than partly imported. The native
+database, provider authentication and execution directory remain unchanged.
+
 Codex keeps its native home/auth/history and approval/sandbox flow, disables native
 model-side skill discovery plus plugin/app/hook/delegation sources, and supplies
 only selected captured skill metadata for on-demand file loading. Its app-server
@@ -854,7 +888,7 @@ to disabled entries alongside the two owned gateways, then the entire thread
 registry is checked. Native subagent tools are unavailable in this managed Codex
 profile; independent KLM sessions and graph agents retain their normal behavior.
 
-Managed OpenCode V1/Codex use a fresh managed process per complete engine turn and resume the
+Managed OpenCode V1/V2 and Codex use a fresh managed process per complete engine turn and resume the
 same native history; Codex waits for EOF shutdown before retiring it so the native
 transcript can flush. Successful ordinary OpenCode and Codex turns retain their
 session runtime, keeping the session active and visible in Happening now. OpenCode
@@ -1426,9 +1460,15 @@ metadata. Existing v1 artifacts retain their original contract. Child admission
 and Choice reservation exclude each other; Choice acceptance follows all-child
 join, owned drainage and confirmed result delivery in the same activation/workspace.
 
-The shared UI presents factual batch progress, outcomes, settings, reuse, bounded
-output and read-only child histories, plus owning-chat request cards. Isolated
-Playwright validation exercised actual frontend/backend and installed Pi, OpenCode
+The shared UI presents children as compact native-style rows: robot icon, session
+title, saved-agent name when present, and latest activity, with a text shimmer while
+active and the outcome after settlement. Activity previews update without loading
+unopened child histories. Clicking a row opens the existing read-only child tab
+(or the client's child view); contexts without child navigation retain a history
+dialog. Model, effort and status appear in the child view, and pending requests
+remain in owning-chat cards. This compact presentation awaits human validation.
+
+Earlier isolated Playwright validation exercised actual frontend/backend and installed Pi, OpenCode
 and new Codex parent/child adapters against a deterministic local model provider.
 Core evidence covers creation/overrides/source refresh, two-child consolidation,
 Pi reuse and owner question replies under YOLO, graph Save/selection, Focus controls

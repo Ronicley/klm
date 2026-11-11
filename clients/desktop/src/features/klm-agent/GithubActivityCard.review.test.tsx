@@ -1,12 +1,17 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { GithubActivityCard } from './GithubActivityCard';
 import { getActivityBookmarks, getActivityCatalog, getActivityDetails, getActivityPage, type GithubActivityItem, type GithubActivityPage } from './githubActivityApi';
 import { useActivityBookmarks } from './useActivityBookmarks';
 import { useGithubActivityFeed } from './useGithubActivityFeed';
 
 vi.mock('./githubActivityApi', async importOriginal => ({ ...await importOriginal<typeof import('./githubActivityApi')>(), getActivityPage: vi.fn(), getActivityDetails: vi.fn(), getActivityBookmarks: vi.fn(), getActivityCatalog: vi.fn() }));
+// These tests exercise member retention/watermarks. Advance the mounted edge
+// explicitly through a hook fixture; browser geometry is a manual acceptance check.
+vi.mock('../pagination/useNearEdge', () => ({ useNearEdge: (_target: unknown, options: { enabled: boolean; token: string; busy?: boolean; error?: string; load: () => void }) => {
+  useEffect(() => { if (options.enabled && !options.busy && !options.error) options.load(); }, [options.enabled, options.token, options.busy, options.error]);
+} }));
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.resetAllMocks(); });
 const now = Date.parse('2026-10-16T12:00:00Z');
 const item = (seq: number): GithubActivityItem => ({ id: `event-${seq}`, detailEventId: `event-${seq}`, projectId: 'p', projectName: 'Project', webhookId: 'w', provider: 'github', eventType: 'workflow_run', releaseSequence: String(seq), receivedAt: new Date(now).toISOString(), emittedAt: '', category: 'Pipelines', tone: 'success', icon: 'pipeline', actionLabel: 'Workflow completed', summary: 'Summary', title: `Transition ${seq}`, reference: 'Run #42' });
@@ -27,7 +32,6 @@ const props = { saved: false, onBookmark: vi.fn(), onUnavailable: vi.fn(), now }
 it('keeps page two and open Details across transitions, admitting new events only explicitly', async () => {
   const view = render(<GithubActivityCard {...props} post={card()} />);
   fireEvent.click(screen.getByRole('button', { name: 'Activity (21)' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
   await screen.findByText('Transition 10 · Run #42');
   fireEvent.click(screen.getAllByRole('button', { name: 'Details' }).at(-1)!);
   await screen.findByText('Details for event-10');
@@ -46,7 +50,6 @@ it('removes expired/removed rows and their Details when composition changes with
   events[20].expiresAt = new Date(now + 1000).toISOString();
   const view = render(<GithubActivityCard {...props} post={card()} />);
   fireEvent.click(screen.getByRole('button', { name: 'Activity (21)' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
   await screen.findByText('Transition 10 · Run #42');
   fireEvent.click(screen.getAllByRole('button', { name: 'Details' }).at(-1)!);
   await screen.findByText('Details for event-10');
@@ -131,7 +134,6 @@ function retentionFixture() {
 const flush = async (time = 0) => { await act(async () => { await vi.advanceTimersByTimeAsync(time); }); };
 async function openRetainedDetails() {
   fireEvent.click(screen.getByRole('button', { name: 'Activity (21)' })); await flush();
-  fireEvent.click(screen.getByRole('button', { name: 'Load more' })); await flush();
   fireEvent.click(screen.getAllByRole('button', { name: 'Details' }).at(-1)!); await flush();
   expect(screen.getByText('Details for event-10')).toBeInTheDocument();
 }

@@ -3,6 +3,8 @@ import { ArrowLeft, ArrowRight, CalendarClock, Check, GitPullRequest, Info, Plus
 import { Button } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
 import { Select } from '../../design-system/Select';
+import { SearchSelect } from '../../design-system/SearchSelect';
+import { AutoPage } from '../pagination/AutoPage';
 import { Toggle } from '../../design-system/Toggle';
 import { getAuthoringCatalog, request, type Project, type Session, type Topic } from '../../engine';
 import { CapabilitySelector } from '../library/CapabilitySelector';
@@ -11,12 +13,13 @@ import { topicColors } from '../workspace/topics';
 import { automationPath, type Automation, type AutomationList } from './api';
 import { useTopicPage } from '../workspace/useTopicPage';
 import { topicArchived } from '../workspace/topics';
-import { scheduledDate, sessionModes, triggerSummary, weekdays } from './presentation';
+import { scheduledDate, sessionModes, triggerSummary, webhookConfig, webhookTriggers, weekdays } from './presentation';
 import { bindDraftDiscard, useEngineDraft } from '../drafts/draftStore';
 
 const steps = ['Activation', 'Task', 'Configuration'];
 const references = [
   { token: '{{pr.number}}', name: 'PR number', meaning: 'Pull request number', example: '42' },
+  { token: '{{issue.number}}', name: 'Issue number', meaning: 'Issue number', example: '42' },
   { token: '{{organization.name}}', name: 'Organization', meaning: 'Organization login; empty when absent', example: 'octo-org' },
   { token: '{{repository.name}}', name: 'Repository', meaning: 'Repository name', example: 'hello-world' },
 ];
@@ -40,6 +43,8 @@ export function AutomationEditor({ initial: incoming, project, sessions, topics,
   const [sessionCursor, setSessionCursor] = useState('');
   const [sessionPage, setSessionPage] = useState<{ items: Session[]; nextCursor?: string }>({ items: [] });
   const [sessionLoadError, setSessionLoadError] = useState('');
+  const [sessionLoading, setSessionLoading] = useState(false);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
   const [exactDestination, setExactDestination] = useState<Session>();
   const [graphs, setGraphs] = useState<{ id: string; name: string }[]>([]);
   const [catalogError, setCatalogError] = useState('');
@@ -56,6 +61,8 @@ export function AutomationEditor({ initial: incoming, project, sessions, topics,
   const followUp = useRef<HTMLTextAreaElement>(null);
   const [promptField, setPromptField] = useEngineDraft<'prompt' | 'followUpPrompt'>(`${key}.promptField`, 'prompt');
   const sessionMode = draft.sessionMode || 'new_per_run';
+  const webhook = webhookConfig(draft);
+  const availableReferences = references.filter(ref => ref.token !== (webhook.eventType === 'issues' ? '{{pr.number}}' : '{{issue.number}}'));
   const usesSession = sessionMode === 'existing' || sessionMode === 'reuse_created' && !!draft.sessionId;
   const creating = !usesSession;
   const linked = !!initial.sessionId && (initial.sessionMode || 'new_per_run') !== 'new_per_run';
@@ -67,11 +74,11 @@ export function AutomationEditor({ initial: incoming, project, sessions, topics,
   useEffect(() => { const timer = setTimeout(() => { setSessionQuery(sessionSearch); setSessionCursor(''); }, 200); return () => clearTimeout(timer); }, [sessionSearch]);
   useEffect(() => {
     if (sessionMode !== 'existing') return;
-    const controller = new AbortController(); setSessionLoadError('');
-    const query = new URLSearchParams({ search: sessionQuery, limit: '100', ...(sessionCursor ? { cursor: sessionCursor } : {}) });
-    void request<{ items: Session[]; nextCursor?: string }>(`/api/projects/${encodeURIComponent(project.id)}/sessions?${query}`, 'GET', undefined, 15000, controller.signal).then(value => { if (!controller.signal.aborted) setSessionPage(value); }).catch(error => { if (!controller.signal.aborted) setSessionLoadError(failure(error)); });
+    const controller = new AbortController(); setSessionLoadError(''); setSessionLoading(true);
+    const query = new URLSearchParams({ search: sessionQuery, limit: '25', ...(sessionCursor ? { cursor: sessionCursor } : {}) });
+    void request<{ items: Session[]; nextCursor?: string }>(`/api/projects/${encodeURIComponent(project.id)}/sessions?${query}`, 'GET', undefined, 15000, controller.signal).then(value => { if (!controller.signal.aborted) setSessionPage(old => ({ ...value, items: sessionCursor ? [...new Map([...old.items, ...value.items].map(item => [item.id, item])).values()] : value.items })); }).catch(error => { if (!controller.signal.aborted) setSessionLoadError(failure(error)); }).finally(() => { if (!controller.signal.aborted) setSessionLoading(false); });
     return () => controller.abort();
-  }, [project.id, sessionMode, sessionQuery, sessionCursor]);
+  }, [project.id, sessionMode, sessionQuery, sessionCursor, sessionAttempt]);
   useEffect(() => {
     if (!draft.sessionId) { setExactDestination(undefined); return; }
     const controller = new AbortController();
@@ -121,8 +128,11 @@ export function AutomationEditor({ initial: incoming, project, sessions, topics,
     requestAnimationFrame(() => { editor?.focus(); editor?.setSelectionRange(start + token.length, start + token.length); });
   }
   const option = catalog?.models.find(model => model.id === draft.model || !draft.model && model.id === catalog.defaultModel);
-  const initialReferences = draft.mode === 'schedule' && creating && references.some(ref => draft.prompt.includes(ref.token));
-  const followUpReferences = draft.mode === 'schedule' && sessionMode !== 'new_per_run' && references.some(ref => (draft.followUpPrompt || '').includes(ref.token));
+  const unavailableReference = webhook.eventType === 'issues' ? '{{pr.number}}' : '{{issue.number}}';
+  const hasInvalidReferences = (text: string) => draft.mode === 'schedule' ? references.some(ref => text.includes(ref.token)) : text.includes(unavailableReference);
+  const initialReferences = creating && hasInvalidReferences(draft.prompt);
+  const followUpReferences = sessionMode !== 'new_per_run' && hasInvalidReferences(draft.followUpPrompt || '');
+  const referenceError = draft.mode === 'schedule' ? 'Remove webhook references from this scheduled prompt.' : `This event cannot provide ${unavailableReference}. Use ${webhook.eventType === 'issues' ? '{{issue.number}}' : '{{pr.number}}'} instead.`;
 
   function validate(all = false) {
     setValidation('');
@@ -134,7 +144,7 @@ export function AutomationEditor({ initial: incoming, project, sessions, topics,
       for (const field of fields) {
         field.setCustomValidity('');
         if (field.required && !field.value.trim()) field.setCustomValidity('Complete this field.');
-        if (field === prompt.current && initialReferences || field === followUp.current && followUpReferences) field.setCustomValidity('Remove webhook references from this scheduled prompt.');
+        if (field === prompt.current && initialReferences || field === followUp.current && followUpReferences) field.setCustomValidity(referenceError);
         if (!field.checkValidity()) {
           setStep(index);
           setValidation('Check the highlighted field before continuing.');
@@ -178,7 +188,13 @@ export function AutomationEditor({ initial: incoming, project, sessions, topics,
               <Button className="automation-trigger-option" aria-pressed={draft.mode === 'webhook'} onClick={() => patch({ mode: 'webhook', parallel: false })}><GitPullRequest aria-hidden="true" /><span><strong>Webhook</strong><small>When an event arrives</small></span>{draft.mode === 'webhook' && <Check aria-hidden="true" />}</Button>
             </div>
           </div>
-          {draft.mode === 'webhook' ? <div className="automation-trigger-description"><GitPullRequest aria-hidden="true" /><div><strong>Pull request opened</strong><p>From GitHub webhooks connected to this project.</p></div></div> : <>
+          {draft.mode === 'webhook' ? <label className="automation-field">GitHub event<Select label="GitHub event" variant="field" value={`${webhook.eventType}/${webhook.action}`} onChange={event => {
+            const selected = webhookTriggers.find(item => `${item.eventType}/${item.action}` === event.target.value);
+            if (selected) patch({ webhook: { eventType: selected.eventType, action: selected.action } });
+          }}>
+            <optgroup label="PR">{webhookTriggers.filter(item => item.eventType === 'pull_request').map(item => <option key={`${item.eventType}/${item.action}`} value={`${item.eventType}/${item.action}`}>{item.label}</option>)}</optgroup>
+            <optgroup label="Issue">{webhookTriggers.filter(item => item.eventType === 'issues').map(item => <option key={`${item.eventType}/${item.action}`} value={`${item.eventType}/${item.action}`}>{item.label}</option>)}</optgroup>
+          </Select></label> : <>
             <div className="automation-field-grid">
               <label className="automation-field">Repeat<Select label="Recurrence" variant="field" value={draft.schedule.recurrence} onChange={event => schedule({ recurrence: event.target.value as Automation['schedule']['recurrence'] })}><option value="once">Once</option><option value="daily">Daily</option><option value="every_days">Every N days</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></Select></label>
               <label className="automation-field">Time<Input type="time" required value={draft.schedule.time} onChange={event => schedule({ time: event.target.value })} /></label>
@@ -194,12 +210,12 @@ export function AutomationEditor({ initial: incoming, project, sessions, topics,
 
         <div data-editor-step="1" hidden={step !== 1} className="automation-step-fields">
           <label className="automation-field">Session<Select label="Session mode" variant="field" disabled={linked} value={sessionMode} onChange={event => patch({ sessionMode: event.target.value as Automation['sessionMode'], sessionId: '', parallel: false })}>{sessionModes.map(mode => <option key={mode.value} value={mode.value}>{mode.name}</option>)}</Select><small>{linked ? 'This automation is linked to a fixed session.' : sessionModes.find(mode => mode.value === sessionMode)?.description}</small></label>
-          {sessionMode === 'existing' && <><label className="automation-field">Search sessions<Input aria-label="Search automation sessions" disabled={linked} value={sessionSearch} onChange={event => setSessionSearch(event.target.value)} /></label><label className="automation-field">Destination<Select label="Existing session" variant="field" required disabled={linked} value={draft.sessionId || ''} onChange={event => patch({ sessionId: event.target.value })}><option value="">Choose a session</option>{destinations.map(s => <option key={s.id} value={s.id}>{s.title}{s.status === 'running' ? ' · Busy' : ''}</option>)}{draft.sessionId && !destinations.some(s => s.id === draft.sessionId) && <option value={draft.sessionId}>{destination?.title || 'Linked session'} · Unavailable</option>}</Select></label><div>{sessionCursor && <Button size="sm" onClick={() => setSessionCursor('')}>First sessions</Button>}{sessionPage.nextCursor && <Button size="sm" onClick={() => setSessionCursor(sessionPage.nextCursor ?? '')}>Next sessions</Button>}{sessionLoadError && <p role="alert" className="form-error">{sessionLoadError}</p>}</div></>}
+          {sessionMode === 'existing' && <div className="automation-field">Destination<SearchSelect label="Existing session" required disabled={linked} value={draft.sessionId || ''} onChange={value => patch({ sessionId: value })} searchValue={sessionSearch} onSearchChange={setSessionSearch} placeholder={destination?.title || 'Choose a session'} options={destinations.map(s => ({ value: s.id, label: s.title, description: s.status === 'running' ? 'Busy' : undefined }))} footer={<AutoPage hasMore={!!sessionPage.nextCursor} cursor={`${project.id}/${sessionQuery}/${sessionPage.nextCursor}`} busy={sessionLoading} error={sessionLoadError} onLoad={() => setSessionCursor(sessionPage.nextCursor ?? '')} onRetry={() => setSessionAttempt(value => value + 1)} />} /></div>}
           {usesSession && <div className="automation-note"><Info aria-hidden="true" /><p>Runs use the linked session’s current settings and wait until it is free.</p></div>}
-          {draft.mode === 'webhook' && <div className="automation-reference-bar"><span>Insert into {creating && sessionMode !== 'new_per_run' ? promptField === 'prompt' ? 'initial prompt' : 'follow-up prompt' : 'prompt'}</span><div>{references.map(ref => <Button key={ref.token} size="sm" title={`${ref.meaning} · Example: ${ref.example}`} onClick={() => insert(ref.token)}><Plus aria-hidden="true" />{ref.name}</Button>)}</div></div>}
+          {draft.mode === 'webhook' && <div className="automation-reference-bar"><span>Insert into {creating && sessionMode !== 'new_per_run' ? promptField === 'prompt' ? 'initial prompt' : 'follow-up prompt' : 'prompt'}</span><div>{availableReferences.map(ref => <Button key={ref.token} size="sm" title={`${ref.meaning} · Example: ${ref.example}`} onClick={() => insert(ref.token)}><Plus aria-hidden="true" />{ref.name}</Button>)}</div></div>}
           {creating && <label className="automation-field">Initial prompt<textarea className="input textarea" ref={prompt} required placeholder="Describe the task and what a successful result looks like." onFocus={() => setPromptField('prompt')} aria-invalid={initialReferences || undefined} aria-describedby={initialReferences ? 'automation-prompt-references-error' : undefined} value={draft.prompt} onChange={event => patch({ prompt: event.target.value })} rows={6} />{sessionMode !== 'new_per_run' && <small>Sent only when the session is created.</small>}</label>}
           {sessionMode !== 'new_per_run' && <label className="automation-field">Follow-up prompt<textarea className="input textarea" ref={followUp} required placeholder="Describe the task for each run in this conversation." onFocus={() => setPromptField('followUpPrompt')} aria-invalid={followUpReferences || undefined} aria-describedby={followUpReferences ? 'automation-prompt-references-error' : undefined} value={draft.followUpPrompt || ''} onChange={event => patch({ followUpPrompt: event.target.value })} rows={6} /><small>{sessionMode === 'existing' ? 'Sent on every run, including the first.' : 'Sent on every run after the session is created.'}</small></label>}
-          {(initialReferences || followUpReferences) && <p id="automation-prompt-references-error" className="form-error" role="alert">Remove PR, organization and repository references from scheduled prompts, or switch activation to Webhook.</p>}
+          {(initialReferences || followUpReferences) && <p id="automation-prompt-references-error" className="form-error" role="alert">{referenceError}</p>}
           {draft.mode === 'webhook' && sessionMode === 'new_per_run' && <div className="automation-setting"><Toggle label="Allow parallel runs" checked={draft.parallel} onCheckedChange={parallel => patch({ parallel })} /><p>Accept new runs while another is still working.</p></div>}
         </div>
 
@@ -211,9 +227,7 @@ export function AutomationEditor({ initial: incoming, project, sessions, topics,
             </div>
             <label className="automation-field">Model<Select label="Model" variant="field" value={draft.model} disabled={loading} onChange={event => patch({ model: event.target.value, effort: '' })}><option value="">{loading ? 'Loading models…' : `Harness default${catalog?.defaultModel ? ` · ${catalog.defaultModel}` : ''}`}</option>{draft.model && !catalog?.models.some(model => model.id === draft.model) && <option value={draft.model}>{draft.model} · Unavailable</option>}{catalog?.models.map(model => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}</Select></label>
             {modelError && <div className="form-error" role="alert">{modelError}<Button size="sm" onClick={() => void refresh()}>Reload models</Button></div>}
-            <label className="automation-field">Search topics<Input aria-label="Search automation topics" value={topicSearch} onChange={event => setTopicSearch(event.target.value)} /></label>
-            <label className="automation-field">Topic<Select label="Topic" variant="field" value={topicMode === 'new' ? 'new' : draft.topicId} onChange={event => { if (event.target.value === 'new') setTopicMode('new'); else { setTopicMode('existing'); setPickedTopic(topicOptions.find(t => t.id === event.target.value)); patch({ topicId: event.target.value }); } }}><option value="new">Create a new topic</option>{topicOptions.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}{topicMode === 'existing' && !topicOptions.some(t => t.id === draft.topicId) && <option value={draft.topicId}>Saved topic · {draft.topicId}</option>}</Select></label>
-            <div>{topicPage.older && <Button size="sm" onClick={topicPage.first}>First topics</Button>}{topicPage.nextCursor && <Button size="sm" disabled={topicPage.loading} onClick={topicPage.next}>Next topics</Button>}{topicPage.error && <p role="alert" className="form-error">{topicPage.error}<Button size="sm" onClick={topicPage.first}>Reload topics</Button></p>}</div>
+            <div className="automation-field">Topic<SearchSelect label="Topic" value={topicMode === 'new' ? 'new' : draft.topicId} onChange={value => { if (value === 'new') setTopicMode('new'); else { setTopicMode('existing'); setPickedTopic(topicOptions.find(t => t.id === value)); patch({ topicId: value }); } }} searchValue={topicSearch} onSearchChange={setTopicSearch} placeholder={pickedTopic?.name || 'Choose a topic'} options={[{ value: 'new', label: 'Create a new topic' }, ...topicOptions.map(t => ({ value: t.id, label: t.name }))]} footer={<AutoPage hasMore={!!topicPage.nextCursor} cursor={`${project.id}/${topicSearch}/${topicPage.nextCursor}`} busy={topicPage.loading} error={topicPage.error} onLoad={topicPage.next} onRetry={topicPage.retry} />} /></div>
             {topicMode === 'new' && <div className="automation-new-topic"><label className="automation-field">Topic name<Input required maxLength={60} placeholder="e.g. Code reviews" value={topicName} onChange={event => setTopicName(event.target.value)} /></label><div className="topic-color-picker" role="group" aria-label="Topic color">{topicColors.map(color => <Button key={color} size="sm" className={`topic-color-chip topic-color-${color}`} aria-pressed={topicColor === color} onClick={() => setTopicColor(color)}><span className="topic-color-swatch" aria-hidden="true" />{color[0].toUpperCase() + color.slice(1)}</Button>)}</div></div>}
             <div className="automation-setting"><Toggle label="YOLO mode" checked={draft.yolo} onCheckedChange={yolo => patch({ yolo })} /><p>Automatically approve tool permissions. Questions still require a reply.</p></div>
           </> : <div className="automation-note"><Info aria-hidden="true" /><div><strong>{destination?.title || 'Linked session'}</strong><p>{destination?.harness || draft.harness} · {destination?.model || 'Harness default'}{destination?.effort ? ` · ${destination.effort}` : ''}{destination?.yolo ? ' · YOLO' : ''}</p><p>Session settings and Library are managed in the conversation.</p></div></div>}

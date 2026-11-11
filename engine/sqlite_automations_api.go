@@ -145,7 +145,18 @@ func (a *app) listSQLAutomations(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			reason := ""
-			if queued > 0 && automationUsesSession(v) {
+			if queued > 0 {
+				var key string
+				if err := tx.QueryRowContext(st.ctx, `SELECT id FROM data_automation_triggers WHERE x_automationId=? AND x_consumed<>'true' ORDER BY position,id LIMIT 1`, id).Scan(&key); err != nil {
+					return err
+				}
+				var trigger AutomationTrigger
+				if err := decodeSQLiteRecord(st.ctx, tx, "automation_triggers", key, 32<<20, &trigger); err != nil {
+					return err
+				}
+				reason = trigger.BlockedReason
+			}
+			if reason == "" && queued > 0 && automationUsesSession(v) {
 				_, reason, err = a.sqlAutomationSessionBlocked(st, v.ProjectID, v.SessionID)
 				if err != nil {
 					return err
@@ -210,6 +221,15 @@ func (st *sqliteSessionTx) prepareAutomationSave(project, id string, v *Automati
 		old = &previous
 		if old.Revision != v.Revision || old.Revision == ^uint64(0) {
 			return nil, controlError(409, "Automation changed. Reload before saving.")
+		}
+		if automationActivationChanged(*old, *v) {
+			var pending bool
+			if err := st.tx.QueryRowContext(st.ctx, `SELECT EXISTS(SELECT 1 FROM data_automation_triggers WHERE x_automationId=? AND x_consumed<>'true')`, id).Scan(&pending); err != nil {
+				return nil, err
+			}
+			if pending {
+				return nil, controlError(409, automationTriggerEditBlocked)
+			}
 		}
 		if automationSessionMode(*old) != "new_per_run" && old.SessionID != "" && (v.SessionMode != automationSessionMode(*old) || v.SessionID != old.SessionID) {
 			return nil, controlError(409, "The linked session is fixed. Create another automation to use a different session.")
@@ -446,7 +466,7 @@ func (a *app) saveSQLAutomation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		if old != nil && old.Enabled && v.Enabled {
+		if old != nil && old.Enabled && v.Enabled && old.Mode == v.Mode && automationWebhookConfig(*old) == automationWebhookConfig(v) {
 			v.AfterSequence = old.AfterSequence
 		}
 		reset := old == nil || !reflect.DeepEqual(old.Schedule, v.Schedule) || old.Mode != v.Mode
@@ -559,6 +579,11 @@ func (a *app) deleteSQLAutomation(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, map[string]bool{"deleted": true})
 }
 func (a *app) listSQLAutomationRuns(w http.ResponseWriter, r *http.Request) {
+	limit, err := sqlPageLimit(r, 50)
+	if err != nil {
+		sqlHTTPError(w, err)
+		return
+	}
 	offset, err := sqlOffset(r)
 	if err != nil {
 		sqlHTTPError(w, err)
@@ -572,7 +597,7 @@ func (a *app) listSQLAutomationRuns(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(st.ctx, `SELECT r.id,s.id,s.x_title FROM data_automation_runs r JOIN data_sessions s ON s.id=r.session_id WHERE r.x_automationId=? ORDER BY r.position DESC,r.id LIMIT 51 OFFSET ?`, v.ID, offset)
+		rows, err := tx.QueryContext(st.ctx, `SELECT r.id,s.id,s.x_title FROM data_automation_runs r JOIN data_sessions s ON s.id=r.session_id WHERE r.x_automationId=? ORDER BY r.position DESC,r.id LIMIT ? OFFSET ?`, v.ID, limit+1, offset)
 		if err != nil {
 			return err
 		}
@@ -582,7 +607,7 @@ func (a *app) listSQLAutomationRuns(w http.ResponseWriter, r *http.Request) {
 			if err := rows.Scan(&id, &session, &title); err != nil {
 				return err
 			}
-			if len(items) == 50 {
+			if len(items) == limit {
 				more = true
 				break
 			}

@@ -167,7 +167,7 @@ func (a *app) captureGraphSnapshot(ctx context.Context, projectID, graphID strin
 			}
 		}
 		if agent.Harness == "opencode" {
-			if b, installed := bs[agent.Harness]; installed && b.openCodeV1 {
+			if b, installed := bs[agent.Harness]; installed {
 				if err := validateOpenCodeLibraryBinary(b); err != nil {
 					return err
 				}

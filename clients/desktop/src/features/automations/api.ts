@@ -4,10 +4,12 @@ import type { CapabilitySelection } from '../library/api';
 export const DEFAULT_ENGINE_TIME_ZONE = 'America/Sao_Paulo';
 
 export type AutomationSchedule = { time: string; date?: string; recurrence: 'once' | 'daily' | 'every_days' | 'weekly' | 'monthly'; everyDays: number; weekdays: number[]; monthDay: number; anchor?: string };
+export type AutomationWebhook = { eventType: 'pull_request' | 'issues'; action: string };
 export type Automation = {
   sessionMode?: 'new_per_run' | 'reuse_created' | 'existing'; sessionId?: string; followUpPrompt?: string;
   id: string; projectId: string; revision: Revision; operationId: string; name: string; prompt: string;
   mode: 'webhook' | 'schedule'; enabled: boolean; parallel: boolean; harness: Harness['id']; model: string; effort: string; yolo: boolean;
+  webhook?: AutomationWebhook;
   graphs: string[]; selection: CapabilitySelection; topicId: string; schedule: AutomationSchedule; nextScheduledAt?: string; afterSequence: number;
 };
 export type AutomationRow = { automation: Automation; queued: number; active: number; blockedReason?: string };

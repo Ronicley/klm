@@ -270,8 +270,12 @@ func (a *app) admitSQLAutomationLocked(id string) (*AutomationRun, bool, error) 
 		if !creating {
 			prompt = config.FollowUpPrompt
 		}
-		if err := validateAutomationPrompt(prompt, config.Mode); err != nil {
-			return nil
+		if err := validateAutomationRunPrompt(prompt, config.Mode, trigger.Variables); err != nil {
+			if trigger.BlockedReason == err.Error() {
+				return nil
+			}
+			trigger.BlockedReason = err.Error()
+			return st.putRoot("automation_triggers", trigger.ID, trigger)
 		}
 		if mode == "reuse_created" {
 			config.SessionID = s.ID

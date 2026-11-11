@@ -385,8 +385,8 @@ func TestSQLiteGraphRetryReusedEvidencePages(t *testing.T) {
 		t.Fatal(err)
 	}
 	seen := map[string]bool{}
-	for _, offset := range []int{0, 50} {
-		req := httptest.NewRequest("GET", fmt.Sprintf("/?activationId=%s&eventOffset=%d", retained, offset), nil)
+	for _, offset := range []int{0, 25, 50} {
+		req := httptest.NewRequest("GET", fmt.Sprintf("/?activationId=%s&eventOffset=%d&eventLimit=25&limit=25", retained, offset), nil)
 		req.SetPathValue("id", s.ID)
 		req.SetPathValue("runId", second.ID)
 		req.SetPathValue("nodeId", "a")
@@ -394,10 +394,14 @@ func TestSQLiteGraphRetryReusedEvidencePages(t *testing.T) {
 		a.getSQLGraphNodeActivity(w, req)
 		var value struct {
 			Activation struct {
-				Occurrence string            `json:"occurrence"`
-				Output     map[string]string `json:"output"`
-				Events     []Event           `json:"events"`
-				Total      int               `json:"total"`
+				Occurrence     string            `json:"occurrence"`
+				Output         map[string]string `json:"output"`
+				Events         []Event           `json:"events"`
+				Total          int               `json:"total"`
+				Offset         int               `json:"offset"`
+				NextOffset     int               `json:"nextOffset"`
+				PreviousOffset int               `json:"previousOffset"`
+				HasMore        bool              `json:"hasMore"`
 			} `json:"activation"`
 			Previous map[string]string `json:"previousAttempt"`
 		}
@@ -406,6 +410,9 @@ func TestSQLiteGraphRetryReusedEvidencePages(t *testing.T) {
 		}
 		if value.Activation.Total != 57 || value.Activation.Occurrence != "1" || value.Activation.Output["result"] != "retained" || value.Previous["runId"] != first.ID {
 			t.Fatal("reused output/previous attempt/decimal projection lost", w.Body.String())
+		}
+		if len(value.Activation.Events) != min(25, 57-offset) || value.Activation.Offset != offset || value.Activation.NextOffset != min(offset+25, 57) || value.Activation.PreviousOffset != max(0, offset-25) || value.Activation.HasMore != (offset+25 < 57) {
+			t.Fatal("reused evidence pagination metadata lost", w.Body.String())
 		}
 		for _, event := range value.Activation.Events {
 			if seen[event.ID] {

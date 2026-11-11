@@ -56,6 +56,13 @@ func (p *adapter) openCodeGraphConfig() (string, func(), error) {
 			return "", nil, err
 		}
 	}
+	if !p.openCodeV1 && p.capabilities != nil {
+		p.openCodeLibraryEnv, err = p.configureOpenCodeV2Library(config, dir)
+		if err != nil {
+			cleanup()
+			return "", nil, err
+		}
+	}
 	if p.openCodeV1 {
 		return p.openCodeV1Config(config, dir, cleanup)
 	}
@@ -65,7 +72,15 @@ func (p *adapter) openCodeGraphConfig() (string, func(), error) {
 	if !p.graphNode() {
 		plugin = "async function graphPlugin() {}"
 	}
-	policyData, _ := json.Marshal(map[string]any{"url": p.bridge.url, "token": p.bridge.token, "yolo": p.yolo})
+	policy := map[string]any{"url": p.bridge.url, "token": p.bridge.token, "yolo": p.yolo}
+	if p.capabilities != nil {
+		skills := []map[string]any{}
+		for _, skill := range p.capabilities.Skills {
+			skills = append(skills, map[string]any{"id": skill.ID, "path": filepath.Join(p.app.skillSnapshotPath(skill), "SKILL.md"), "internal": skill.Internal})
+		}
+		policy["library"] = map[string]any{"root": p.openCodeManagedAgent(), "skills": skills}
+	}
+	policyData, _ := json.Marshal(policy)
 	plugin = plugin + "\n" +
 		strings.Replace(openCodePermissionsPlugin, "/*KLM_PERMISSION_CONFIG*/{}", string(policyData), 1)
 	_, delegationPlugin, assetErr := p.writeDelegationAssets(dir)
@@ -641,7 +656,7 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 	if err := h.checkVersion(ctx); err != nil {
 		return failed(err)
 	}
-	if p.capabilities != nil {
+	if p.capabilities != nil && h.v1 {
 		if err := p.verifyOpenCodeLibrary(h); err != nil {
 			return failed(err)
 		}
@@ -658,17 +673,21 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 			return failed(errors.New("OpenCode did not connect to the linked-agent bridge."))
 		}
 	} else {
-		if err := h.json(ctx, http.MethodPut, "/api/experimental/mcp/klm_linked", map[string]any{"config": map[string]any{"type": "remote", "url": p.bridge.url, "headers": map[string]string{"Authorization": "Bearer " + p.bridge.token}, "oauth": false, "codemode": false, "timeout": map[string]any{"execution": linkedToolClientTimeout.Milliseconds()}}}, nil); err != nil {
-			return failed(errors.New("Could not configure the OpenCode linked-agent bridge."))
-		}
-		bridgeStatus, err = h.waitMCPConnected(ctx, "klm_linked")
+		bridgeStatus, err = h.addV2Gateway(ctx, "klm_linked", p.bridge.url, p.bridge.token, linkedToolClientTimeout.Milliseconds())
 		if err != nil {
 			return failed(err)
 		}
 	}
 	if p.capabilities != nil {
-		if err := h.json(ctx, http.MethodPost, "/mcp", map[string]any{"name": "klm_library", "config": map[string]any{"type": "remote", "url": p.bridge.libraryURL, "headers": map[string]string{"Authorization": "Bearer " + p.bridge.libraryToken}, "oauth": false, "enabled": true, "timeout": 330000}}, &bridgeStatus); err != nil {
-			return failed(err)
+		if h.v1 {
+			if err := h.json(ctx, http.MethodPost, "/mcp", map[string]any{"name": "klm_library", "config": map[string]any{"type": "remote", "url": p.bridge.libraryURL, "headers": map[string]string{"Authorization": "Bearer " + p.bridge.libraryToken}, "oauth": false, "enabled": true, "timeout": 330000}}, &bridgeStatus); err != nil {
+				return failed(err)
+			}
+		} else {
+			bridgeStatus, err = h.addV2Gateway(ctx, "klm_library", p.bridge.libraryURL, p.bridge.libraryToken, 330000)
+			if err != nil {
+				return failed(err)
+			}
 		}
 		if len(bridgeStatus) != 2 || str(object(bridgeStatus["klm_library"]), "status") != "connected" {
 			return failed(errors.New("OpenCode gateway-only Library connection was not confirmed."))
@@ -692,6 +711,9 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 			return failed(errors.New("OpenCode V1 did not activate the owned KLM permission plugin."))
 		}
 	} else {
+		if err := h.waitPolicyReady(ctx); err != nil {
+			return failed(err)
+		}
 		var inventory struct {
 			Output struct {
 				Tools []string `json:"tools"`
@@ -702,6 +724,14 @@ func (p *adapter) startOpenCodeServer(b binary, cwd string, ctx context.Context)
 			return failed(fmt.Errorf("OpenCode did not activate the owned KLM permission plugin: %w", err))
 		}
 		ids = inventory.Output.Tools
+		if p.capabilities != nil {
+			if err := p.verifyOpenCodeV2Library(h); err != nil {
+				return failed(err)
+			}
+			if err := p.verifyOpenCodeV2LibraryTools(ids); err != nil {
+				return failed(err)
+			}
+		}
 	}
 	if len(ids) == 0 {
 		return failed(errors.New("OpenCode did not identify its native tool inventory."))
@@ -1246,7 +1276,11 @@ func (p *adapter) runOpenCode(b binary, cwd string, payload submission) (err err
 		prompt["tools"] = map[string]bool{"task": false}
 	}
 	if p.capabilities != nil {
-		prompt["agent"] = p.openCodeManagedAgent()
+		if h.v1 {
+			prompt["agent"] = p.openCodeManagedAgent()
+		} else if err := h.json(ctx, http.MethodPost, sessionPath+"/agent", map[string]any{"agent": p.openCodeManagedAgent()}, nil); err != nil {
+			return err
+		}
 		if err := p.markCapabilitiesApplied(); err != nil {
 			return err
 		}

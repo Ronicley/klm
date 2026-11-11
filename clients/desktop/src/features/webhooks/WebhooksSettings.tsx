@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { AutoPage } from '../pagination/AutoPage';
 import { ArrowLeft, Copy, Github, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { Button, IconButton } from '../../design-system/Button';
 import { Input } from '../../design-system/Input';
@@ -140,19 +141,27 @@ export function WebhooksSettings({ projectId, onBusyChange }: { projectId: strin
   const mutation = useRef<AbortController | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const section = useRef<HTMLElement>(null);
-  const loadedLimit = useRef(50);
-  loadedLimit.current = Math.max(50, Math.min(100, items.length));
+  const loadedLimit = useRef(25);
+  loadedLimit.current = Math.max(25, items.length);
+  const boundary = useRef(''); boundary.current = items.at(-1)?.id ?? '';
 
   const load = useCallback(async (cursor?: string, quiet = false) => {
-    if (quiet && (listing.current || mutation.current)) return;
-    listing.current?.abort();
+    if (listing.current || quiet && mutation.current) return;
     const controller = new AbortController(); listing.current = controller;
     if (!quiet) setLoading(true);
     setListError('');
     try {
-      const page = await listWebhooks(projectId, { limit: quiet ? loadedLimit.current : 50, ...(cursor ? { cursor } : {}) }, controller.signal);
+      let page = await listWebhooks(projectId, { limit: 25, ...(cursor ? { cursor } : {}) }, controller.signal);
+      const items = [...page.items];
+      const last = boundary.current;
+      while (!cursor && page.hasMore && page.nextCursor && (items.length < loadedLimit.current || !!last && !items.some(item => item.id === last))) {
+        const next = page.nextCursor;
+        page = await listWebhooks(projectId, { limit: 25, cursor: next }, controller.signal);
+        if (page.hasMore && page.nextCursor === next) throw new Error('Webhook pagination did not advance. Retry.');
+        items.push(...page.items);
+      }
       if (!active.current || controller.signal.aborted || listing.current !== controller) return;
-      setItems(current => cursor ? [...new Map([...current, ...page.items].map(item => [item.id, item])).values()] : page.items);
+      setItems(current => [...new Map([...(cursor ? current : []), ...items].map(item => [item.id, item])).values()]);
       setNextCursor(page.nextCursor); setHasMore(page.hasMore);
     } catch (error) {
       if (active.current && !controller.signal.aborted && listing.current === controller) setListError(failureMessage(error));
@@ -163,7 +172,7 @@ export function WebhooksSettings({ projectId, onBusyChange }: { projectId: strin
 
   useEffect(() => {
     active.current = true; void load();
-    return () => { active.current = false; listing.current?.abort(); mutation.current?.abort(); };
+    return () => { active.current = false; listing.current?.abort(); listing.current = null; mutation.current?.abort(); };
   }, [load]);
 
   useEffect(() => {
@@ -251,7 +260,7 @@ export function WebhooksSettings({ projectId, onBusyChange }: { projectId: strin
           setMutationError(''); setSelected(connection);
         }} />)}
       </div>
-      {hasMore && <div className="webhook-pagination"><Button size="sm" disabled={loading || busy || !nextCursor || !!removingId} onClick={() => void load(nextCursor)}>Load more</Button></div>}
+      <AutoPage hasMore={hasMore && !!nextCursor} cursor={`${projectId}/${nextCursor}`} busy={loading || busy || !!removingId} error={listError} onLoad={() => void load(nextCursor)} />
     </div>
     {selected && editor === null && <div className="webhook-detail">
       <div className="webhook-detail-heading"><Button size="sm" variant="ghost" disabled={busy} onClick={() => { setSelected(null); setRemovingId(''); setMutationError(''); restoreFocus(); }}><ArrowLeft />Back</Button>
